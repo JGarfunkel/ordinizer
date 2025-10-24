@@ -1,0 +1,59 @@
+{
+  "templates": {
+    "map-view": {
+      "name": "map-view",
+      "description": "Interactive map view with entity visualization",
+      "files": [
+        "components/app/StyledMapView.tsx",
+        "lib/mapUtils.ts"
+      ],
+      "dependencies": ["leaflet", "react-leaflet"],
+      "requires": ["OrdinizerProvider"]
+    },
+    "score-display": {
+      "name": "score-display",
+      "description": "Score visualization with color coding",
+      "files": [
+        "components/app/StyledScoreDisplay.tsx",
+        "lib/scoreUtils.ts"
+      ],
+      "requires": ["OrdinizerProvider"]
+    },
+    "analysis-view": {
+      "name": "analysis-view",
+      "description": "Complete analysis page with Q&A display",
+      "files": [
+        "pages/AnalysisView.tsx",
+        "components/app/QuestionList.tsx"
+      ],
+      "ui": ["card", "accordion", "badge"],
+      "requires": ["OrdinizerProvider"]
+    },
+    "matrix-view": {
+      "name": "matrix-view",
+      "description": "Combined matrix view of all entities and domains",
+      "files": [
+        "pages/MatrixView.tsx"
+      ],
+      "ui": ["table", "badge"],
+      "requires": ["OrdinizerProvider"]
+    }
+  },
+  "ui": {
+    "card": "components/ui/card.tsx",
+    "button": "components/ui/button.tsx",
+    "badge": "components/ui/badge.tsx",
+    "accordion": "components/ui/accordion.tsx",
+    "table": "components/ui/table.tsx",
+    "dialog": "components/ui/dialog.tsx",
+    "select": "components/ui/select.tsx",
+    "skeleton": "components/ui/skeleton.tsx"
+  },
+  "init": {
+    "files": [
+      "lib/queryClient.ts",
+      "lib/ordinizerSetup.tsx"
+    ],
+    "styles": ["ordinizer/styles"]
+  }
+}

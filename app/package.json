@@ -1,0 +1,20 @@
+{
+  "name": "@ordinizer/app",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Complete Ordinizer application - server and client for municipal statute analysis",
+  "exports": {
+    "./server": "./server/routes.js",
+    "./client": "./client/src/App.tsx"
+  },
+  "peerDependencies": {
+    "express": "^4.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "wouter": "^3.0.0"
+  },
+  "dependencies": {
+    "ordinizer": "file:../",
+    "@ordinizer/client": "file:../client"
+  }
+}

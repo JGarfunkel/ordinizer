@@ -1,0 +1,44 @@
+{
+  "name": "ordinizer",
+  "version": "1.0.0",
+  "description": "A reusable library for municipal statute analysis and scoring",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./metadata": {
+      "import": "./dist/metadata.js",
+      "types": "./dist/metadata.d.ts"
+    }
+  },
+  "files": [
+    "dist/**/*",
+    "src/**/*"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "municipal",
+    "statute",
+    "analysis",
+    "policy",
+    "ordinance",
+    "scoring"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  },
+  "peerDependencies": {
+    "@types/node": "^18.0.0 || ^19.0.0 || ^20.0.0"
+  }
+}

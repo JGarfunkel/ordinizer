@@ -1,0 +1,52 @@
+/**
+ * Ordinizer Base Styles
+ * CSS variables for theming - can be overridden by consumers
+ */
+
+:root {
+  /* Color scale for scores (green gradient) */
+  --ordinizer-score-0: hsl(0, 70%, 50%);
+  --ordinizer-score-1: hsl(30, 70%, 50%);
+  --ordinizer-score-2: hsl(45, 70%, 50%);
+  --ordinizer-score-3: hsl(60, 70%, 50%);
+  --ordinizer-score-4: hsl(90, 60%, 45%);
+  --ordinizer-score-5: hsl(120, 60%, 40%);
+  
+  /* Map colors */
+  --ordinizer-map-fill-opacity: 0.6;
+  --ordinizer-map-stroke: #666;
+  --ordinizer-map-stroke-width: 1;
+  
+  /* Score visualization */
+  --ordinizer-score-label-color: #666;
+  --ordinizer-score-value-font-size: 1.5rem;
+  --ordinizer-score-max-font-size: 1rem;
+}
+
+/* Optional base styling for score visualization */
+.score-label {
+  color: var(--ordinizer-score-label-color);
+  font-size: 0.875rem;
+  margin-bottom: 0.25rem;
+}
+
+.score-display {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.score-value {
+  font-size: var(--ordinizer-score-value-font-size);
+  font-weight: 600;
+}
+
+.score-max {
+  font-size: var(--ordinizer-score-max-font-size);
+  opacity: 0.7;
+}
+
+.score-grade {
+  font-size: 0.875rem;
+  opacity: 0.8;
+}
