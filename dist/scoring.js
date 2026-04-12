@@ -212,17 +212,17 @@ export class ScoringEngine {
      */
     async getDomainScores(domainId) {
         const scores = {};
-        console.debug("Getting domain scores for:", domainId);
+        //    console.debug("Getting domain scores for:", domainId);
         try {
             const entities = await this.adapter.listEntities();
             for (const entity of entities) {
                 try {
-                    console.debug("Looking up analysis for entity:", entity.id);
+                    // console.debug("Looking up analysis for entity:", entity.id)
                     const analysis = await this.adapter.getAnalysis(domainId, entity.id);
                     if (analysis) {
                         // Try different score locations in analysis file
                         const score = analysis.overallScore ?? analysis.scores?.overallScore ?? null;
-                        console.debug("For entity:", entity.id, "Score:", score);
+                        // console.debug("For entity:", entity.id, "Score:", score)
                         if (score !== null && score !== undefined) {
                             scores[entity.id] = score;
                         }

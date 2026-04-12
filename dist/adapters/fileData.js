@@ -87,11 +87,11 @@ export class FileDataAdapter {
             throw new Error(`Invalid domain ID: ${domainId}`);
         }
         const normalizedEntityId = this.normalizeEntityId(entityId);
-        console.debug("Looking for " + domainId, "/", normalizedEntityId);
+        // console.debug("Looking for " + domainId, "/", normalizedEntityId);
         const analysisPath = this.options.analysisPattern
             .replace('{domainId}', domainId)
             .replace('{entityId}', normalizedEntityId);
-        console.debug("Looking up analysis file at:", analysisPath);
+        //console.debug("Looking up analysis file at:", analysisPath);
         return await this.loadJsonFile(analysisPath);
     }
     async listEntities() {
