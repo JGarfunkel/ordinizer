@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.npm
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# shadcn/ui components - generated during setup
+# Add these to gitignore if you want to keep components out of source control
+# and install them via setup script
+client/src/components/ui/
+client/src/lib/utils.ts
+client/src/hooks/use-toast.ts
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Misc
+.cache/
+.temp/
+tmp/
