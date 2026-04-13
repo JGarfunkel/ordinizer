@@ -20,6 +20,9 @@
     "./app": {
       "import": "./app/client/src/App.tsx"
     },
+    "./app/server/routes": {
+      "import": "./app/server/routes.ts"
+    },
     "./core": {
       "import": "./packages/core/src/index.ts"
     }
