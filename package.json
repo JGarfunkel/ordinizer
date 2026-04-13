@@ -13,6 +13,15 @@
     "./metadata": {
       "import": "./dist/metadata.js",
       "types": "./dist/metadata.d.ts"
+    },
+    "./client/ui": {
+      "import": "./client/src/ui/index.ts"
+    },
+    "./app": {
+      "import": "./app/client/src/App.tsx"
+    },
+    "./core": {
+      "import": "./packages/core/src/index.ts"
     }
   },
   "files": [
