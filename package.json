@@ -26,7 +26,10 @@
   },
   "files": [
     "dist/**/*",
-    "src/**/*"
+    "src/**/*",
+    "client/**/*",
+    "app/**/*",
+    "packages/**/*"
   ],
   "scripts": {
     "build": "npm exec -- tsc --project tsconfig.json",
