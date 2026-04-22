@@ -1,93 +1,22 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch, useParams, Link } from "wouter";
-import { Card, CardContent } from "@ordinizer/client/ui";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@ordinizer/client/ui";
-import { Button } from "@ordinizer/client/ui";
-import { Skeleton } from "@ordinizer/client/ui";
-import { Input } from "@ordinizer/client/ui";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@ordinizer/client/ui";
-import { Popover, PopoverContent, PopoverTrigger } from "@ordinizer/client/ui";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@ordinizer/client/ui";
+import { Card, CardContent } from "../ui";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui";
+import { Button } from "../ui";
+import { Skeleton } from "../ui";
+import { Input } from "../ui";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "../ui";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../ui";
 import { AlertCircle, Scale, MapPin, FolderOpen, ArrowLeft, X, HelpCircle, RotateCcw, Check, ChevronsUpDown, FileText, ExternalLink, Ban, Grid, Database } from "lucide-react";
 import { apiPath } from "../lib/apiConfig";
-import MunicipalityMap from "../components/MunicipalityMap";
-import ScoreVisualization from "../components/ScoreVisualization";
+import EntityMap from "../components/EntityMap";
+import { ScoreVisualization } from "../components/ScoreVisualization";
 import { queryClient } from "../lib/queryClient";
 import { getDefaultRealmId } from '../lib/realmUtils';
 import { useBasePath } from "../contexts/BasePathContext";
-import type { Municipality, MunicipalityDomain } from "@ordinizer/core";
-
-interface QuestionWithAnswer {
-  id: number; // Fixed: should be number to match scoring data
-  title: string;
-  text: string;
-  order: string;
-  answer: string;
-  sourceReference: string | null;
-  lastUpdated: Date | null;
-  relevantSections?: string[];
-  gap?: string; // Added: gap analysis for scores < 1.0
-  resolvedSectionUrls?: Array<{sectionNumber: string, sectionUrl?: string}>; // Added: pre-resolved URLs
-}
-
-interface BestPractice {
-  questionId: number;
-  question: string;
-  bestAnswer: string;
-  bestScore: number;
-  bestMunicipality: {
-    id: string;
-    displayName: string;
-  };
-  quantitativeHighlights?: string[];
-  supportingExamples: Array<{
-    municipality: {
-      id: string;
-      displayName: string;
-    };
-    score: number;
-    confidence: number;
-  }>;
-
-  commonGaps: string[];
-}
-
-interface MetaAnalysisData {
-  domain: {
-    id: string;
-    displayName: string;
-    description?: string;
-  };
-  analysisDate: string;
-  totalMunicipalitiesAnalyzed: number;
-  averageScore: number;
-  highestScoringMunicipality: {
-    id: string;
-    displayName: string;
-    score: number;
-  };
-  bestPractices: BestPractice[];
-  overallRecommendations: {
-    commonWeaknesses: string[];
-    keyImprovements: string[];
-    modelMunicipalities: string[];
-  };
-  version: string;
-}
-
-interface AnalysisResponse {
-  municipality: Municipality;
-  domain: MunicipalityDomain;
-  statute: any;
-  questions: QuestionWithAnswer[];
-  alignmentSuggestions?: {
-    strengths?: string[];
-    improvements?: string[];
-    recommendations?: string[];
-    bestPractices?: string[];
-  };
-}
+import type { Entity, EntityDomain, Realm, MetaAnalysis, AnalysisResponse } from "@ordinizer/core";
 
 // Simplified Statute Link Component - purely presentational
 const StatuteLink = ({ 
@@ -126,15 +55,15 @@ export default function Home() {
   const search = useSearch();
   const params = useParams();
   const { buildPath } = useBasePath();
-  const [selectedMunicipalityId, setSelectedMunicipalityId] = useState<string>("");
+  const [selectedEntityId, setSelectedEntityId] = useState<string>("");
   const [selectedDomainId, setSelectedDomainId] = useState<string>("");
   const [selectedRealmId, setSelectedRealmId] = useState<string>("");
   const [selectedVersion, setSelectedVersion] = useState<string>("current");
   const [showResults, setShowResults] = useState(false);
   const [showSidebarAnalysis, setShowSidebarAnalysis] = useState(false);
-  const [municipalityComboOpen, setMunicipalityComboOpen] = useState(false);
+  const [municipalityComboOpen, setEntityComboOpen] = useState(false);
   const [questionMunicipalitiesPopup, setQuestionMunicipalitiesPopup] = useState<{questionId: string; municipalities: any[]} | null>(null);
-  const [municipalityAnswerPopup, setMunicipalityAnswerPopup] = useState<{questionId: number; municipalityId: string; answer: string; score: number; confidence: number} | null>(null);
+  const [municipalityAnswerPopup, setEntityAnswerPopup] = useState<{questionId: number; municipalityId: string; answer: string; score: number; confidence: number} | null>(null);
 
   // Helper function to check if answer is "Not specified"
   const isNotSpecified = (answer: string): boolean => {
@@ -160,14 +89,16 @@ export default function Home() {
   };
 
   // Function to handle municipality click in meta-analysis
-  const handleMetaMunicipalityClick = async (questionId: number, municipalityId: string, domainId: string) => {
+  const handleMetaEntityClick = async (questionId: number, municipalityId: string, domainId: string) => {
     try {
       const response = await fetch(apiPath(`analyses/${selectedRealmId}/${municipalityId}/${domainId}`));
       if (response.ok) {
-        const analysisData = await response.json();
+        const responseData = await response.json();
+        // Server returns { analysis: Analysis }; unwrap the wrapper
+        const analysisData = responseData.analysis ?? responseData;
         const question = analysisData.questions.find((q: any) => q.id === questionId);
         if (question) {
-          setMunicipalityAnswerPopup({
+          setEntityAnswerPopup({
             questionId,
             municipalityId,
             answer: question.answer,
@@ -182,19 +113,19 @@ export default function Home() {
   };
 
   // Fetch realms
-  const { data: realms, isLoading: realmsLoading } = useQuery<{id: string; name: string; displayName: string}[]>({
+  const { data: realms, isLoading: realmsLoading } = useQuery<Realm[]>({
     queryKey: [apiPath('realms')],
   });
 
   // Get current realm info for terminology
-  const currentRealm = realms?.find((r: any) => r.id === selectedRealmId);
-  const isPolicy = false; // Default to false since type property doesn't exist
+  const currentRealm = realms?.find(r => r.id === selectedRealmId);
+  const isPolicy = currentRealm?.ruleType === 'policy';
   const documentType = isPolicy ? 'policy' : 'statute';
   const documentTypeCapitalized = isPolicy ? 'Policy' : 'Statute';
-  const entityType = 'Municipality'; // Default to Municipality since entityType doesn't exist
+  const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
 
   // Fetch entities for current realm (municipalities, school districts, etc.)
-  const { data: entities, isLoading: entitiesLoading } = useQuery<Municipality[]>({
+  const { data: entities, isLoading: entitiesLoading } = useQuery<Entity[]>({
     queryKey: [apiPath(`realms/${selectedRealmId}/entities`)],
     enabled: !!selectedRealmId,
   });
@@ -204,13 +135,13 @@ export default function Home() {
   const municipalitiesLoading = entitiesLoading;
 
   // Helper function to create municipality display name for URL
-  const createMunicipalitySlug = (municipality: Municipality): string => {
+  const createEntitySlug = (municipality: Entity): string => {
     // Use the municipality ID directly since it's already in the correct format
     return municipality.id;
   };
 
   // Helper function to find municipality by slug
-  const findMunicipalityBySlug = (slug: string, municipalities: Municipality[]): Municipality | undefined => {
+  const findEntityBySlug = (slug: string, municipalities: Entity[]): Entity | undefined => {
     // Since slug is now the municipality ID, just find by exact ID match
     return municipalities.find(m => m.id === slug);
   };
@@ -240,7 +171,7 @@ export default function Home() {
     console.log('🔄 URL Effect triggered:', { 
       params, 
       search, 
-      selectedMunicipalityId, 
+      selectedEntityId, 
       selectedDomainId 
     });
     
@@ -265,12 +196,12 @@ export default function Home() {
       // Handle municipality if provided (/realm/westchester-municipal-environmental/trees/NY-Ardsley)
       if (params.municipality && municipalities) {
         const municipalitySlug = params.municipality;
-        const municipality = findMunicipalityBySlug(municipalitySlug, municipalities);
+        const municipality = findEntityBySlug(municipalitySlug, municipalities);
         console.log('🏛️ Found municipality from slug:', municipalitySlug, '->', municipality?.displayName);
         
-        if (municipality && municipality.id !== selectedMunicipalityId) {
+        if (municipality && municipality.id !== selectedEntityId) {
           console.log('🔄 Setting municipality from URL:', municipality.id);
-          setSelectedMunicipalityId(municipality.id);
+          setSelectedEntityId(municipality.id);
           setSelectedVersion("current"); // Reset to current version when municipality changes
           setShowSidebarAnalysis(true); // Show analysis in sidebar, keep map visible
           setShowResults(false); // Always keep map visible
@@ -280,9 +211,9 @@ export default function Home() {
       else if (!params.municipality) {
         console.log('📍 Domain-only path, clearing municipality and sidebar');
         // Clear municipality if it's set (avoid React warnings by using setTimeout)
-        if (selectedMunicipalityId) {
+        if (selectedEntityId) {
           console.log('🧹 Clearing municipality from domain-only URL');
-          setTimeout(() => setSelectedMunicipalityId(""), 0);
+          setTimeout(() => setSelectedEntityId(""), 0);
         }
         setShowResults(false);
         setShowSidebarAnalysis(false);
@@ -296,8 +227,8 @@ export default function Home() {
     const municipalityParam = urlParams.get('municipality');
     const domainParam = urlParams.get('domain');
     
-    if (municipalityParam && municipalityParam !== selectedMunicipalityId) {
-      setSelectedMunicipalityId(municipalityParam);
+    if (municipalityParam && municipalityParam !== selectedEntityId) {
+      setSelectedEntityId(municipalityParam);
       setSelectedVersion("current"); // Reset to current version when municipality changes
     }
     if (domainParam && domainParam !== selectedDomainId) {
@@ -309,11 +240,11 @@ export default function Home() {
       setShowResults(false); // Always keep map visible
     } else if (!municipalityParam && !domainParam && !params.domain && !params.municipality) {
       // Clear state when no parameters
-      setSelectedMunicipalityId("");
+      setSelectedEntityId("");
       setSelectedDomainId("");
       setShowResults(false);
     }
-  }, [search, params, municipalities, selectedDomainId, selectedMunicipalityId]);
+  }, [search, params, municipalities, selectedDomainId, selectedEntityId]);
 
   // Update URL when selections change - prefer path-based routing
   const updateURL = useCallback((municipalityId: string, domainId: string) => {
@@ -339,19 +270,13 @@ export default function Home() {
     queryKey: [apiPath('realms'), selectedRealmId, 'domains'],
     enabled: !!selectedRealmId,
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
-    onSuccess: (data) => {
-      console.log('🏗️  Domains loaded for realm', selectedRealmId, ':', data?.map(d => d.displayName));
-    },
-    onError: (error) => {
-      console.error('❌ Error loading domains for realm', selectedRealmId, ':', error);
-    }
   });
 
 
   // Fetch domains for selected municipality
-  const { data: availableDomains, isLoading: domainsLoading } = useQuery<MunicipalityDomain[]>({
-    queryKey: [apiPath('realms'), selectedRealmId, 'jurisdictions', selectedMunicipalityId, 'domains'],
-    enabled: !!selectedMunicipalityId && !!selectedRealmId
+  const { data: availableDomains, isLoading: domainsLoading } = useQuery<EntityDomain[]>({
+    queryKey: [apiPath('realms'), selectedRealmId, 'entities', selectedEntityId, 'domains'],
+    enabled: !!selectedEntityId && !!selectedRealmId
   });
 
   // Fetch domain summary data to determine if municipality uses state code
@@ -361,34 +286,36 @@ export default function Home() {
   });
 
   // Fetch meta-analysis when domain is selected but no municipality
-  const { data: metaAnalysisData, isLoading: metaLoading } = useQuery<MetaAnalysisData>({
+  const { data: metaAnalysisData, isLoading: metaLoading } = useQuery<MetaAnalysis>({
     queryKey: [apiPath('domains'), selectedRealmId, selectedDomainId, 'meta-analysis'],
-    enabled: !!selectedDomainId && !selectedMunicipalityId && !!selectedRealmId
+    enabled: !!selectedDomainId && !selectedEntityId && !!selectedRealmId
   });
 
   // Fetch analysis data
   // Check if selected municipality uses state code
-  const selectedMunicipalitySummary = domainSummary?.find(s => s.municipalityId === selectedMunicipalityId);
-  const usesStateCode = selectedMunicipalitySummary?.stateCodeApplies || false;
+  const selectedEntitySummary = domainSummary?.find(s => s.municipalityId === selectedEntityId);
+  const usesStateCode = selectedEntitySummary?.stateCodeApplies || false;
   
   // Determine which municipality ID to use for analysis fetch
-  const analysisTargetMunicipalityId = usesStateCode ? 'NY-State' : selectedMunicipalityId;
+  const analysisTargetEntityId = usesStateCode ? `${currentRealm?.state}-State` : selectedEntityId;
 
   // Fetch available analysis versions
   const { data: versionsData } = useQuery<{versions: Array<{version: string; filename: string; displayName: string; timestamp: string; isCurrent: boolean}>}>({
-    queryKey: [apiPath('analyses'), selectedRealmId, analysisTargetMunicipalityId, selectedDomainId, 'versions'],
-    enabled: !!selectedMunicipalityId && !!selectedDomainId && !!selectedRealmId
+    queryKey: [apiPath('analyses'), selectedRealmId, analysisTargetEntityId, selectedDomainId, 'versions'],
+    enabled: !!selectedEntityId && !!selectedDomainId && !!selectedRealmId
   });
 
   const { data: analysisData, isLoading: analysisLoading, error: analysisError } = useQuery<AnalysisResponse>({
-    queryKey: [apiPath('analyses'), selectedRealmId, analysisTargetMunicipalityId, selectedDomainId, selectedVersion],
+    queryKey: [apiPath('analyses'), selectedRealmId, analysisTargetEntityId, selectedDomainId, selectedVersion],
     queryFn: async () => {
-      const url = apiPath(`analyses/${selectedRealmId}/${analysisTargetMunicipalityId}/${selectedDomainId}${selectedVersion !== 'current' ? `?version=${encodeURIComponent(selectedVersion)}` : ''}`);
+      const url = apiPath(`analyses/${selectedRealmId}/${analysisTargetEntityId}/${selectedDomainId}${selectedVersion !== 'current' ? `?version=${encodeURIComponent(selectedVersion)}` : ''}`);
       const response = await fetch(url);
       if (!response.ok) throw new Error('Failed to fetch analysis');
-      return response.json();
+      const data = await response.json();
+      // Server returns { analysis: Analysis }; unwrap the wrapper
+      return data.analysis ?? data;
     },
-    enabled: (showResults || showSidebarAnalysis) && !!selectedMunicipalityId && !!selectedDomainId && !!selectedRealmId
+    enabled: (showResults || showSidebarAnalysis) && !!selectedEntityId && !!selectedDomainId && !!selectedRealmId
   });
 
   // Fetch environmental protection scores for the selected municipality
@@ -410,20 +337,19 @@ export default function Home() {
     overallScore: number;
     scoreColor: string;
   }>({
-    queryKey: [apiPath('scores'), selectedRealmId, selectedMunicipalityId, selectedDomainId],
-    enabled: !usesStateCode && !!selectedMunicipalityId && !!selectedDomainId && !!selectedRealmId,
+    queryKey: [apiPath('scores'), selectedRealmId, selectedEntityId, selectedDomainId],
+    enabled: !usesStateCode && !!selectedEntityId && !!selectedDomainId && !!selectedRealmId,
     staleTime: 1000 * 60 * 5 // Cache for 5 minutes
   });
 
   // Add effect to log analysis data changes
   useEffect(() => {
-    if (analysisData && selectedDomainId && selectedMunicipalityId) {
+    if (analysisData && selectedDomainId && selectedEntityId) {
       console.log('Analysis data received:', {
         municipality: analysisData?.municipality?.displayName,
         domain: analysisData?.domain?.displayName,
         questionsCount: analysisData?.questions?.length || 0,
         hasAlignmentSuggestions: !!analysisData?.alignmentSuggestions,
-        statuteLength: analysisData?.statute?.content?.length || 0,
         showSidebarAnalysis,
         showResults
       });
@@ -431,39 +357,24 @@ export default function Home() {
     if (analysisError) {
       console.error('Analysis data fetch failed:', analysisError);
     }
-  }, [analysisData, analysisError, showSidebarAnalysis, showResults, selectedDomainId, selectedMunicipalityId]);
+  }, [analysisData, analysisError, showSidebarAnalysis, showResults, selectedDomainId, selectedEntityId]);
 
-  const selectedMunicipality = municipalities?.find(m => m.id === selectedMunicipalityId);
+  const selectedEntity = municipalities?.find(m => m.id === selectedEntityId);
   const selectedDomain = availableDomains?.find(d => d.id === selectedDomainId);
 
-  // Function to get color based on grade
-  const getGradeColor = (grade: string | null | undefined, available: boolean) => {
-    if (!available) {
-      return "bg-gray-200 text-gray-500 cursor-not-allowed";
-    }
-    switch (grade?.toUpperCase()) {
-      case 'A': return "bg-green-500 text-white hover:bg-green-600";
-      case 'B': return "bg-blue-500 text-white hover:bg-blue-600";
-      case 'C': return "bg-yellow-500 text-white hover:bg-yellow-600";
-      case 'D': return "bg-orange-500 text-white hover:bg-orange-600";
-      case 'F': return "bg-red-500 text-white hover:bg-red-600";
-      default: return "bg-civic-blue text-white hover:bg-civic-blue-dark";
-    }
-  };
-
-  const handleMunicipalityChange = (value: string) => {
+  const handleEntityChange = (value: string) => {
     console.log('🏛️  Dropdown municipality selection:', value);
     const municipality = municipalities?.find(m => m.id === value);
     console.log('🏛️  Found municipality object:', municipality?.displayName, 'ID:', municipality?.id);
     
-    setSelectedMunicipalityId(value);
+    setSelectedEntityId(value);
     // Don't clear domain selection when changing municipality
     // If domain is already selected, show results in right pane, don't navigate
     if (selectedDomainId) {
       setShowSidebarAnalysis(true);
       // Update URL for deep linking but don't navigate
       if (municipality) {
-        const slug = createMunicipalitySlug(municipality);
+        const slug = createEntitySlug(municipality);
         console.log('🏛️  Created slug for URL:', slug);
         window.history.pushState({}, '', `/realm/${selectedRealmId}/${selectedDomainId}/${slug}`);
       }
@@ -494,9 +405,9 @@ export default function Home() {
       console.log('🔄 Clearing domain selection due to realm change');
       setSelectedDomainId("");
     }
-    if (selectedMunicipalityId) {
+    if (selectedEntityId) {
       console.log('🔄 Clearing municipality selection due to realm change');
-      setSelectedMunicipalityId("");
+      setSelectedEntityId("");
     }
     
     // Clear UI state
@@ -512,25 +423,25 @@ export default function Home() {
     console.log('Domain change - domainId:', domainId, 'available:', available, 'current selectedDomainId:', selectedDomainId);
     
     // For municipalities with loaded domains, check availability
-    if (selectedMunicipalityId && available !== undefined && !available) return;
+    if (selectedEntityId && available !== undefined && !available) return;
     
     // If clicking the same domain, unselect it
     if (selectedDomainId === domainId) {
       console.log('Unselecting domain:', domainId);
       setSelectedDomainId("");
       setShowSidebarAnalysis(false);
-      updateURL(selectedMunicipalityId, "");
+      updateURL(selectedEntityId, "");
     } else {
       // Select new domain
       console.log('Selecting new domain:', domainId);
       setSelectedDomainId(domainId);
       
       // Show results in sidebar if both municipality and domain are selected
-      if (selectedMunicipalityId) {
-        console.log('Municipality already selected, showing sidebar analysis');
+      if (selectedEntityId) {
+        console.log('Entity already selected, showing sidebar analysis');
         setShowSidebarAnalysis(true);
         setShowResults(false); // Ensure we stay in the main selection interface
-        updateURL(selectedMunicipalityId, domainId);
+        updateURL(selectedEntityId, domainId);
       } else {
         // If no municipality selected, navigate to domain-only path
         console.log('No municipality selected, navigating to domain path');
@@ -540,11 +451,11 @@ export default function Home() {
   };
 
   // Map click handler - clean state updates without timeout issues
-  const handleMapMunicipalityClick = useCallback((municipalityId: string) => {
+  const handleMapEntityClick = useCallback((municipalityId: string) => {
     console.log('Map click - municipality:', municipalityId);
     
     // Always set the municipality
-    setSelectedMunicipalityId(municipalityId);
+    setSelectedEntityId(municipalityId);
     
     // Check current domain state and update sidebar accordingly
     setSelectedDomainId(currentDomainId => {
@@ -557,7 +468,7 @@ export default function Home() {
         // Update URL for deep linking
         const municipality = municipalities?.find(m => m.id === municipalityId);
         if (municipality) {
-          const slug = createMunicipalitySlug(municipality);
+          const slug = createEntitySlug(municipality);
           updateURL(municipalityId, currentDomainId);
         }
       } else {
@@ -574,7 +485,7 @@ export default function Home() {
     });
     
     setShowResults(false); // Always stay in selection interface
-  }, [municipalities, createMunicipalitySlug, updateURL]);
+  }, [municipalities, createEntitySlug, updateURL]);
 
   return (
     <div className="min-h-screen bg-civic-bg">
@@ -615,12 +526,6 @@ export default function Home() {
                 <Grid className="w-4 h-4" />
                 Matrix
               </a>
-              <a 
-                href="/faq" 
-                className="text-civic-gray-light hover:text-gray-900 transition-colors font-medium"
-              >
-                FAQ
-              </a>
               <button className="text-civic-gray-light hover:text-gray-900 transition-colors">
                 <AlertCircle className="text-lg" />
               </button>
@@ -633,9 +538,9 @@ export default function Home() {
         {/* Single Interface */}
         {!showResults ? (
           <div className="space-y-6">
-            {/* Municipality Selection */}
+            {/* Entity Selection */}
             <div className="flex items-center gap-2 relative z-10">
-              <Popover open={municipalityComboOpen} onOpenChange={setMunicipalityComboOpen}>
+              <Popover open={municipalityComboOpen} onOpenChange={setEntityComboOpen}>
                 <PopoverTrigger asChild>
                   <Button
                     variant="outline"
@@ -643,8 +548,8 @@ export default function Home() {
                     aria-expanded={municipalityComboOpen}
                     className="w-1/2 justify-between"
                   >
-                    {selectedMunicipalityId
-                      ? municipalities?.find((m) => m.id === selectedMunicipalityId)?.displayName
+                    {selectedEntityId
+                      ? municipalities?.find((m) => m.id === selectedEntityId)?.displayName
                       : `Choose a ${currentRealm?.entityType === 'school-districts' ? 'school district' : 'municipality'}...`}
                     <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -660,13 +565,13 @@ export default function Home() {
                             key={municipality.id}
                             value={`${municipality.id} ${municipality.displayName}`}
                             onSelect={() => {
-                              handleMunicipalityChange(municipality.id);
-                              setMunicipalityComboOpen(false);
+                              handleEntityChange(municipality.id);
+                              setEntityComboOpen(false);
                             }}
                           >
                             <Check
                               className={`mr-2 h-4 w-4 ${
-                                selectedMunicipalityId === municipality.id ? "opacity-100" : "opacity-0"
+                                selectedEntityId === municipality.id ? "opacity-100" : "opacity-0"
                               }`}
                             />
                             {municipality.displayName}
@@ -677,17 +582,17 @@ export default function Home() {
                   </Command>
                 </PopoverContent>
               </Popover>
-              {(selectedMunicipalityId || selectedDomainId) && (
+              {(selectedEntityId || selectedDomainId) && (
                 <div className="flex gap-1">
-                  {/* Clear Municipality Button */}
-                  {selectedMunicipalityId && (
+                  {/* Clear Entity Button */}
+                  {selectedEntityId && (
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => {
                         console.log('🧹 Clearing selected municipality...');
                         console.log('🧹 Current state before clear:', {
-                          selectedMunicipalityId,
+                          selectedEntityId,
                           selectedDomainId,
                           currentURL: window.location.pathname
                         });
@@ -700,10 +605,10 @@ export default function Home() {
                         // Clear state after navigation to prevent race condition
                         setTimeout(() => {
                           console.log('🧹 Clearing state after navigation...');
-                          setSelectedMunicipalityId("");
+                          setSelectedEntityId("");
                           setShowResults(false);
                           setShowSidebarAnalysis(false);
-                          setMunicipalityComboOpen(false);
+                          setEntityComboOpen(false);
                         }, 50);
                       }}
                       className="text-gray-600 hover:text-gray-900"
@@ -721,10 +626,10 @@ export default function Home() {
                       // Invalidate all relevant caches to force fresh data fetch
                       queryClient.invalidateQueries({ queryKey: [apiPath('municipalities')] });
                       queryClient.invalidateQueries({ queryKey: [apiPath('domains')] });
-                      queryClient.invalidateQueries({ queryKey: [apiPath('westchester-boundaries')] });
-                      if (selectedMunicipalityId && selectedDomainId) {
-                        queryClient.invalidateQueries({ queryKey: [apiPath('analyses'), selectedMunicipalityId, selectedDomainId] });
-                        queryClient.invalidateQueries({ queryKey: [apiPath('municipalities'), selectedMunicipalityId, 'domains'] });
+                      queryClient.invalidateQueries({ queryKey: [apiPath(`map-boundaries?realm=${selectedRealmId}`)] });
+                      if (selectedEntityId && selectedDomainId) {
+                        queryClient.invalidateQueries({ queryKey: [apiPath('analyses'), selectedEntityId, selectedDomainId] });
+                        queryClient.invalidateQueries({ queryKey: [apiPath('municipalities'), selectedEntityId, 'domains'] });
                       }
                       if (selectedDomainId) {
                         queryClient.invalidateQueries({ queryKey: [apiPath('domains'), selectedDomainId, 'summary'] });
@@ -741,7 +646,7 @@ export default function Home() {
                     variant="outline"
                     size="sm"
                     onClick={() => {
-                      setSelectedMunicipalityId("");
+                      setSelectedEntityId("");
                       setSelectedDomainId("");
                       setShowResults(false);
                       setShowSidebarAnalysis(false);
@@ -771,7 +676,7 @@ export default function Home() {
                       allDomains: allDomains?.map(d => ({ id: d.id, name: d.displayName })) || [],
                       allDomainsLoading,
                       selectedDomainId,
-                      selectedMunicipalityId
+                      selectedEntityId
                     });
                     
                     // Don't render anything while loading new domains for a different realm
@@ -791,7 +696,7 @@ export default function Home() {
                       const domainId = domain.id;
                       // Find domain data if municipality is selected
                       const domainData = availableDomains?.find(d => d.id === domainId);
-                      const isAvailable = !selectedMunicipalityId || domainData?.available !== false;
+                      const isAvailable = !selectedEntityId || domainData?.available !== false;
                       const grade = domainData?.grade;
                       
                       
@@ -799,33 +704,30 @@ export default function Home() {
                         <button
                           key={domainId}
                           onClick={() => handleDomainChange(domainId, isAvailable)}
-                          disabled={Boolean(selectedMunicipalityId && !isAvailable)}
+                          disabled={Boolean(selectedEntityId && !isAvailable)}
                           className={`
                             px-4 py-2 rounded-full text-sm font-medium transition-all duration-200
                             ${selectedDomainId === domainId 
                               ? 'bg-civic-blue text-white shadow-lg ring-2 ring-civic-blue ring-offset-2' 
                               : ''
                             }
-                            ${isAvailable && selectedDomainId !== domainId && selectedMunicipalityId
+                            ${isAvailable && selectedDomainId !== domainId && selectedEntityId
                               ? 'ring-1 ring-civic-blue/50 bg-civic-blue/5'
                               : ''
                             }
-                            ${selectedDomainId !== domainId ? getGradeColor(grade, isAvailable) : ''}
-                            ${selectedMunicipalityId && !isAvailable ? 'opacity-60' : ''}
-                            ${!selectedMunicipalityId && selectedDomainId !== domainId ? 'bg-gray-100 text-gray-700 hover:bg-gray-200' : ''}
+                            ${selectedEntityId && !isAvailable ? 'opacity-60' : ''}
+                            ${!selectedEntityId && selectedDomainId !== domainId ? 'bg-gray-100 text-gray-700 hover:bg-gray-200' : ''}
                           `}
                           title={
-                            selectedMunicipalityId && !isAvailable
+                            selectedEntityId && !isAvailable
                               ? `No ${documentType} available for this domain`
-                              : grade 
-                                ? `Grade: ${grade.toUpperCase()}`
-                                : selectedMunicipalityId 
+                                : selectedEntityId 
                                   ? 'Available'
                                   : domain.description || `${domain.displayName} regulations`
                           }
                         >
                           {domain.displayName}
-                          {grade && <span className="ml-1 text-xs">({grade.toUpperCase()})</span>}
+                          {grade && <span className="ml-1 text-xs">({String(grade).toUpperCase()})</span>}
                         </button>
                       );
                     });
@@ -857,14 +759,14 @@ export default function Home() {
                   <CardContent className="p-0">
                     <div className="w-full lg:w-[450px] h-[300px] sm:h-[400px] lg:h-[500px]">
                       {selectedRealmId && !entitiesLoading ? (
-                        <MunicipalityMap
+                        <EntityMap
                           selectedDomain={selectedDomainId}
-                          onMunicipalityClick={handleMapMunicipalityClick}
+                          onEntityClick={handleMapEntityClick}
                           allowCollapse={true}
                           className="w-full h-full"
-                          selectedMunicipalityId={selectedMunicipalityId}
+                          selectedEntityId={selectedEntityId}
                           realmId={selectedRealmId}
-                          entities={municipalities || []}
+                          realm={currentRealm}
                         />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center bg-gray-50">
@@ -942,13 +844,13 @@ export default function Home() {
 
               {/* Analysis Results Section - Always visible on mobile when data is available */}
               <div className="flex-1 space-y-4 w-full min-h-0">
-                {selectedMunicipalityId && !selectedDomainId && availableDomains && (
+                {selectedEntityId && !selectedDomainId && availableDomains && (
                   <Card className="shadow-sm border border-gray-200">
                     <CardContent className="p-6">
                       <div className="space-y-4">
                         <div className="text-center border-b pb-4">
                           <h3 className="text-xl font-bold text-gray-900 mb-2">
-                            {selectedMunicipality?.displayName} - Domain Overview
+                            {selectedEntity?.displayName} - Domain Overview
                           </h3>
                           <p className="text-sm text-gray-600">
                             Environmental and municipal regulations analysis
@@ -972,7 +874,7 @@ export default function Home() {
                                   onClick={() => {
                                     if (hasData) {
                                       setSelectedDomainId(domain.id);
-                                      navigate(buildPath(`/${domain.id}/${selectedMunicipalityId}`));
+                                      navigate(buildPath(`/${domain.id}/${selectedEntityId}`));
                                     }
                                   }}
                                 >
@@ -1020,7 +922,7 @@ export default function Home() {
                                     {hasData && (
                                       <div className="flex items-center gap-2">
                                         <Link
-                                          href={`/${domain.id}/${selectedMunicipalityId}`}
+                                          href={`/${domain.id}/${selectedEntityId}`}
                                           className="text-blue-600 hover:text-blue-800 transition-colors"
                                         >
                                           <ExternalLink className="w-4 h-4" />
@@ -1045,9 +947,9 @@ export default function Home() {
 
                 {/* Meta-Analysis Display - Show when domain selected but no municipality */}
                 {(() => {
-                  const shouldShow = !selectedMunicipalityId && selectedDomainId && metaAnalysisData;
+                  const shouldShow = !selectedEntityId && selectedDomainId && metaAnalysisData;
                   console.log('🔍 Meta-Analysis Display Check:', {
-                    selectedMunicipalityId: selectedMunicipalityId,
+                    selectedEntityId: selectedEntityId,
                     selectedDomainId: selectedDomainId,
                     hasMetaAnalysisData: !!metaAnalysisData,
                     shouldShow: shouldShow
@@ -1076,7 +978,7 @@ export default function Home() {
                               {metaAnalysisData?.bestPractices?.length || 0} best practices identified
                             </span>
                             <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full">
-                              Leading: {metaAnalysisData?.highestScoringMunicipality?.displayName}
+                              Leading: {metaAnalysisData?.highestScoringEntity?.displayName}
                             </span>
                           </div>
                         </div>
@@ -1105,7 +1007,7 @@ export default function Home() {
                                       {practice.supportingExamples.slice(0, 3).map((example, idx) => (
                                         <button 
                                           key={idx}
-                                          onClick={() => handleMetaMunicipalityClick(practice.questionId, example.municipality.id, selectedDomainId)}
+                                          onClick={() => handleMetaEntityClick(practice.questionId, example.municipality.id, selectedDomainId)}
                                           className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 transition-colors cursor-pointer"
                                         >
                                           {example.municipality.displayName}
@@ -1174,9 +1076,9 @@ export default function Home() {
 
                 {/* Loading state for meta-analysis */}
                 {(() => {
-                  const shouldShowLoading = !selectedMunicipalityId && selectedDomainId && metaLoading;
+                  const shouldShowLoading = !selectedEntityId && selectedDomainId && metaLoading;
                   console.log('⏳ Meta-Analysis Loading Check:', {
-                    selectedMunicipalityId: selectedMunicipalityId,
+                    selectedEntityId: selectedEntityId,
                     selectedDomainId: selectedDomainId,
                     metaLoading: metaLoading,
                     shouldShowLoading: shouldShowLoading
@@ -1192,7 +1094,7 @@ export default function Home() {
                 )}
                 
                 {/* Show results in right pane when both municipality and domain are selected */}
-                {showSidebarAnalysis && selectedMunicipalityId && selectedDomainId && (
+                {showSidebarAnalysis && selectedEntityId && selectedDomainId && (
                   <Card className="shadow-sm border border-gray-200">
                     <CardContent className="p-4">
                       {analysisLoading ? (
@@ -1204,7 +1106,7 @@ export default function Home() {
                           {/* Header */}
                           <div className="text-center border-b pb-4">
                             <h3 className="text-xl font-bold text-gray-900 mb-1">
-                              {usesStateCode ? municipalities?.find(m => m.id === selectedMunicipalityId)?.displayName : analysisData.municipality.displayName}
+                              {usesStateCode ? municipalities?.find(m => m.id === selectedEntityId)?.displayName : analysisData.municipality.displayName}
                             </h3>
                             <h4 className="text-base text-civic-blue capitalize">
                               {analysisData.domain.displayName} Regulations
@@ -1215,7 +1117,7 @@ export default function Home() {
                               </div>
                             ) : analysisData.domain.grade && (
                               <div className="inline-flex items-center px-3 py-2 mt-2 rounded-full text-sm font-medium bg-civic-blue text-white">
-                                Grade: {analysisData.domain.grade.toUpperCase()}
+                                Grade: {String(analysisData.domain.grade).toUpperCase()}
                               </div>
                             )}
                             
@@ -1297,8 +1199,6 @@ export default function Home() {
                                           <div className="ml-3 flex-shrink-0">
                                             <ScoreVisualization 
                                               score={scoredQuestion.score}
-                                              weight={scoredQuestion.weight}
-                                              showWeight={true}
                                               maxScore={1}
                                             />
                                           </div>
@@ -1357,8 +1257,7 @@ export default function Home() {
                                                   return refs.map((section: string, index: number) => (
                                                     <span key={index}>
                                                       <StatuteLink 
-                                                        href={analysisData.statute?.sourceUrl}
-                                                        municipalityId={usesStateCode ? 'NY-State' : analysisData.municipality.id} 
+                                                        municipalityId={usesStateCode ? `${currentRealm?.state}-State` : analysisData.municipality.id} 
                                                         domainId={analysisData.domain.id}
                                                       >
                                                         {section}
@@ -1372,8 +1271,7 @@ export default function Home() {
                                                     <span key={index}>
                                                       <StatuteLink 
                                                         href={ref.url}
-                                                        fallbackHref={analysisData.statute?.sourceUrl}
-                                                        municipalityId={usesStateCode ? 'NY-State' : analysisData.municipality.id} 
+                                                        municipalityId={usesStateCode ? `${currentRealm?.state}-State` : analysisData.municipality.id} 
                                                         domainId={analysisData.domain.id}
                                                       >
                                                         {ref.name}
@@ -1387,8 +1285,7 @@ export default function Home() {
                                           ) : (
                                             // Fallback to single sourceReference link
                                             <StatuteLink 
-                                              fallbackHref={analysisData.statute?.sourceUrl}
-                                              municipalityId={usesStateCode ? 'NY-State' : analysisData.municipality.id} 
+                                              municipalityId={usesStateCode ? `${currentRealm?.state}-State` : analysisData.municipality.id} 
                                               domainId={analysisData.domain.id}
                                             >
                                               <span className="ml-1">{qa.sourceReference}</span>
@@ -1497,10 +1394,10 @@ export default function Home() {
                     Back to Selection
                   </Button>
                   
-                  {selectedMunicipality && (
+                  {selectedEntity && (
                     <div className="mt-4">
                       <h3 className="font-semibold text-gray-900 mb-2">Selected</h3>
-                      <p className="text-sm text-gray-600 mb-1">{selectedMunicipality.displayName}</p>
+                      <p className="text-sm text-gray-600 mb-1">{selectedEntity.displayName}</p>
                       <p className="text-sm text-civic-blue capitalize">{selectedDomain?.displayName}</p>
                     </div>
                   )}
@@ -1521,7 +1418,7 @@ export default function Home() {
                     <CardContent className="p-6">
                       <div className="text-center">
                         <h1 className="text-2xl font-bold text-gray-900 mb-2">
-                          {usesStateCode ? municipalities?.find(m => m.id === selectedMunicipalityId)?.displayName : analysisData.municipality.displayName}
+                          {usesStateCode ? municipalities?.find(m => m.id === selectedEntityId)?.displayName : analysisData.municipality.displayName}
                         </h1>
                         <h2 className="text-lg text-civic-blue mb-4 capitalize">
                           {analysisData.domain.displayName} Regulations
@@ -1532,7 +1429,7 @@ export default function Home() {
                           </div>
                         ) : (
                           <div className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-civic-blue text-white">
-                            {analysisData.domain.grade ? `Grade: ${analysisData.domain.grade.toUpperCase()}` : 'Analysis Available'}
+                            {analysisData.domain.grade ? `Grade: ${String(analysisData.domain.grade).toUpperCase()}` : 'Analysis Available'}
                           </div>
                         )}
                       </div>
@@ -1636,7 +1533,6 @@ export default function Home() {
                                   <p className="text-xs text-blue-600 mt-2">
                                     Reference: 
                                     <StatuteLink 
-                                      fallbackHref={analysisData.statute?.sourceUrl}
                                       municipalityId={analysisData.municipality.id} 
                                       domainId={analysisData.domain.id}
                                     >
@@ -1670,7 +1566,6 @@ export default function Home() {
                             </h2>
                           </div>
                           <StatuteLink 
-                            fallbackHref={analysisData.statute?.sourceUrl}
                             municipalityId={analysisData.municipality.id} 
                             domainId={analysisData.domain.id}
                           >
@@ -1748,7 +1643,7 @@ export default function Home() {
                     <AlertCircle className="mx-auto h-12 w-12 text-red-500 mb-4" />
                     <h3 className="text-lg font-medium text-gray-900 mb-2">Analysis Not Found</h3>
                     <p className="text-civic-gray-light">
-                      No {documentType} analysis is available for {selectedMunicipality?.displayName} in the {selectedDomain?.displayName} domain.
+                      No {documentType} analysis is available for {selectedEntity?.displayName} in the {selectedDomain?.displayName} domain.
                     </p>
                   </CardContent>
                 </Card>
@@ -1784,7 +1679,7 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
-      {/* Municipality Answer Popup from Meta-Analysis */}
+      {/* Entity Answer Popup from Meta-Analysis */}
       {municipalityAnswerPopup && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg max-w-2xl w-full max-h-[80vh] overflow-y-auto">
@@ -1799,7 +1694,7 @@ export default function Home() {
                   </p>
                 </div>
                 <button
-                  onClick={() => setMunicipalityAnswerPopup(null)}
+                  onClick={() => setEntityAnswerPopup(null)}
                   className="text-gray-400 hover:text-gray-600"
                 >
                   <X size={24} />
@@ -1816,8 +1711,8 @@ export default function Home() {
                 <div className="text-center pt-2">
                   <button
                     onClick={() => {
-                      setMunicipalityAnswerPopup(null);
-                      setSelectedMunicipalityId(municipalityAnswerPopup.municipalityId);
+                      setEntityAnswerPopup(null);
+                      setSelectedEntityId(municipalityAnswerPopup.municipalityId);
                       setShowSidebarAnalysis(true);
                       updateURL(municipalityAnswerPopup.municipalityId, selectedDomainId);
                     }}
@@ -1831,26 +1726,6 @@ export default function Home() {
           </div>
         </div>
       )}
-
-      {/* Footer */}
-      <footer className="bg-white border-t border-gray-200 mt-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="flex flex-col md:flex-row items-center justify-between">
-            <div className="flex items-center space-x-3 mb-4 md:mb-0">
-              <div className="w-8 h-8 bg-civic-blue rounded-lg flex items-center justify-center">
-                <Scale className="text-white text-sm" />
-              </div>
-              <span className="text-sm text-civic-gray-light">Ordinizer © 2025 Civilly Engaged. Making municipal law accessible.</span>
-            </div>
-            <div className="flex items-center space-x-6 text-sm text-civic-gray-light">
-              <a href="#" className="hover:text-gray-900 transition-colors">About</a>
-              <Link href={buildPath("/data/sourcedata")} className="hover:text-gray-900 transition-colors">Data Sources</Link>
-              <a href="#" className="hover:text-gray-900 transition-colors">API</a>
-              <a href="#" className="hover:text-gray-900 transition-colors">Contact</a>
-            </div>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }

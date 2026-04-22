@@ -6,8 +6,8 @@
  * API calls need to be prefixed accordingly (e.g., /api/ordinizer)
  */
 
-// API prefix - can be overridden via environment variable
-export const API_PREFIX = import.meta.env.VITE_ORDINIZER_API_PREFIX || '/api/ordinizer';
+// TOD: Consider making API_PREFIX configurable via environment variable if needed in the future
+export const API_PREFIX = '/api/ordinizer';
 
 /**
  * Creates an API path with the correct prefix

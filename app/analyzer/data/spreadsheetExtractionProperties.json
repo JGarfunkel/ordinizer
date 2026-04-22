@@ -1,0 +1,79 @@
+{
+  "url": "https://docs.google.com/spreadsheets/d/1Nc5xZZ9OrRgI2pnGjlBmo7yvpiQELYSEp19e73Gl_UE/edit?gid=2126758775#gid=2126758775",
+  "state": "NY",
+  "county": "Westchester",
+  "realm": "westchester-municipal-environmental",
+  "domains": [
+    {
+      "name": "Trees",
+      "displayName": "Trees & Urban Forestry",
+      "description": "Tree removal, planting, and maintenance regulations",
+      "columnSlug": "trees",
+      "columnIndex": 4
+    },
+    {
+      "name": "GLB",
+      "displayName": "Gas Leaf Blowers",
+      "description": "Gas-powered leaf blower regulations and restrictions",
+      "columnSlug": "glb",
+      "columnIndex": 5
+    },
+    {
+      "name": "Wetland Protection",
+      "displayName": "Wetland Protection",
+      "description": "Wetland conservation and protection ordinances",
+      "columnSlug": "wetland-protection",
+      "columnIndex": 2
+    },
+    {
+      "name": "Dark Sky",
+      "displayName": "Dark Sky Protection",
+      "description": "Light pollution control and dark sky protection",
+      "columnSlug": "dark-sky",
+      "columnIndex": 8
+    },
+    {
+      "name": "Weeds",
+      "displayName": "Weed Management",
+      "description": "Weed control, noxious plant management, and vegetation regulations",
+      "columnSlug": "weeds",
+      "columnIndex": 3
+    },
+    {
+      "name": "Cluster Zoning",
+      "displayName": "Cluster Zoning",
+      "description": "Cluster development and conservation zoning regulations",
+      "columnSlug": "cluster-zoning",
+      "columnIndex": 7
+    },
+    {
+      "name": "Flood Damage Protection",
+      "displayName": "Flood Damage Protection",
+      "description": "Flood prevention and damage control ordinances"
+    },
+    {
+      "name": "Solar 1",
+      "displayName": "Solar Energy",
+      "description": "Solar installation and renewable energy regulations"
+    },
+    {
+      "name": "Slopes",
+      "displayName": "Slope Protection",
+      "description": "Steep slope development and erosion control regulations"
+    }
+  ],
+  "domainMapping": {
+    "Weeds": "Property Maintenance"
+  },
+  "additionalColumnIndices": {
+    "cac-cb-etc": 1,
+    "property-maintenance": 3,
+    "invasives": 6
+  },
+  "suppliedGrades": {
+    "GG": "Very Good",
+    "G": "Good",
+    "Y": "Yellow",
+    "R": "Red"
+  }
+}

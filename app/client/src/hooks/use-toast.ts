@@ -1,12 +1,7 @@
 import * as React from "react"
 
-import type {
-  ToastActionElement,
-  ToastProps,
-} from "@ordinizer/client/ui"
-
-const TOAST_LIMIT = 1
-const TOAST_REMOVE_DELAY = 1000000
+const TOAST_LIMIT = 3
+const TOAST_REMOVE_DELAY = 2000
 
 type ToasterToast = ToastProps & {
   id: string
@@ -25,7 +20,7 @@ const actionTypes = {
 let count = 0
 
 function genId() {
-  count = (count + 1) % Number.MAX_SAFE_INTEGER
+  count = (count + 1) % Number.MAX_VALUE
   return count.toString()
 }
 
@@ -90,8 +85,6 @@ export const reducer = (state: State, action: Action): State => {
     case "DISMISS_TOAST": {
       const { toastId } = action
 
-      // ! Side effects ! - This could be extracted into a dismissToast() action,
-      // but I'll keep it here for simplicity
       if (toastId) {
         addToRemoveQueue(toastId)
       } else {
@@ -189,3 +182,9 @@ function useToast() {
 }
 
 export { useToast, toast }
+
+// Import types from toast component
+import type { ToastProps as ToastPropsType, ToastActionElement as ToastActionElementType } from '../ui/toast'
+
+export type ToastProps = ToastPropsType
+export type ToastActionElement = ToastActionElementType

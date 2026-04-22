@@ -3,7 +3,7 @@
  * Export function to register all ordinizer API routes with a prefix
  */
 import type { Express } from "express";
-import { registerRoutes } from "./routes.js";
+import { registerAllRoutes } from "./routes";
 
 export interface OrdinizerServerOptions {
   /**
@@ -25,8 +25,8 @@ export async function registerOrdinizerRoutes(
   const { apiPrefix = "" } = options;
   
   // Register all routes with the prefix
-  // The registerRoutes function will handle the prefix internally
-  return await registerRoutes(app, apiPrefix);
+  // The registerAllRoutes function will handle the prefix internally
+  return await registerAllRoutes(app, apiPrefix);
 }
 
-export { registerRoutes };
+export { registerAllRoutes };

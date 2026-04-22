@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
-import { Card, CardContent, CardHeader, CardTitle } from "@ordinizer/client/ui";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui";
 import { getEnvironmentalScoreLegend } from '../lib/scoreColors';
-import { Button } from "@ordinizer/client/ui";
-import { Badge } from "@ordinizer/client/ui";
+import { Button } from "../ui";
+import { Badge } from "../ui";
 import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { apiPath } from "../lib/apiConfig";
 import { Link, useParams } from 'wouter';
@@ -64,7 +64,7 @@ export default function CombinedMatrix() {
   const isPolicy = currentRealm?.type === 'policy';
   const documentType = isPolicy ? 'policy' : 'statute';
   const documentTypeCapitalized = isPolicy ? 'Policy' : 'Statute';
-  const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Municipality';
+  const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
 
   const { data: matrixData, isLoading, error } = useQuery<CombinedMatrixData>({
     queryKey: [apiPath('realms'), realmId, 'combined-matrix'],
@@ -171,7 +171,7 @@ export default function CombinedMatrix() {
                       key={municipalityRow.municipality.id}
                       className={`border-b hover:bg-gray-50 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-25'}`}
                     >
-                      {/* Municipality Name */}
+                      {/* Entity Name */}
                       <td className="px-3 py-2 border-r bg-gray-50 sticky left-0 z-10">
                         <div className="font-medium text-sm text-gray-900">
                           {municipalityRow.municipality.displayName}

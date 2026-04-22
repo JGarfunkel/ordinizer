@@ -1,20 +1,18 @@
 {
   "name": "@ordinizer/app",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
-  "description": "Complete Ordinizer application - server and client for municipal statute analysis",
-  "exports": {
-    "./server": "./server/routes.js",
-    "./client": "./client/src/App.tsx"
-  },
-  "peerDependencies": {
-    "express": "^4.0.0",
-    "react": "^18.0.0",
-    "react-dom": "^18.0.0",
-    "wouter": "^3.0.0"
+  "description": "Complete Ordinizer application workspace",
+  "scripts": {
+    "build": "npm run build --workspace @ordinizer/client && npm run build --workspace @ordinizer/server && npm run build --workspace @ordinizer/analyzer --if-present",
+    "typecheck": "npm run typecheck --workspace @ordinizer/client && npm run typecheck --workspace @ordinizer/server && npm run typecheck --workspace @ordinizer/analyzer --if-present"
   },
   "dependencies": {
-    "ordinizer": "file:../",
-    "@ordinizer/client": "file:../client"
+    "@ordinizer/analyzer": "file:./analyzer",
+    "@ordinizer/client": "file:./client",
+    "@ordinizer/server": "file:./server",
+    "@ordinizer/core": "file:../packages/core",
+    "@ordinizer/servercore": "file:../packages/servercore"
   }
 }

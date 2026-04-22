@@ -11,16 +11,16 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@ordinizer/client/ui";
+} from "../ui";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@ordinizer/client/ui";
-import { Button } from "@ordinizer/client/ui";
-import { Badge } from "@ordinizer/client/ui";
-import ScoreVisualization from '../components/ScoreVisualization';
+} from "../ui";
+import { Button } from "../ui";
+import { Badge } from "../ui";
+import { ScoreVisualization } from '../components/ScoreVisualization';
 import { getMatrixScoreColor, getEnvironmentalScoreGradient } from '../lib/scoreColors';
 
 interface MatrixData {
@@ -34,7 +34,7 @@ interface MatrixData {
     category?: string;
     weight?: number;
   }>;
-  municipalities: Array<{
+  entities: Array<{
     id: string;
     displayName: string;
     scores: Record<number, {
@@ -42,6 +42,7 @@ interface MatrixData {
       confidence: number;
       answer: string;
       sourceRefs: string[];
+      analyzedAt?: string;
     }>;
     totalScore: number;
     statute?: {
@@ -49,12 +50,13 @@ interface MatrixData {
       title: string;
       url: string;
     };
+    lastUpdated?: string;
     referencesStateCode?: boolean;
   }>;
 }
 
 interface CellPopupProps {
-  municipality: string;
+  entity: string;
   question: string;
   score: number;
   confidence: number;
@@ -66,13 +68,13 @@ interface CellPopupProps {
   onOpenChange: (open: boolean) => void;
 }
 
-function CellPopup({ municipality, question, score, confidence, answer, sourceRefs, analyzedAt, lastUpdated, open, onOpenChange }: CellPopupProps) {
+function CellPopup({ entity, question, score, confidence, answer, sourceRefs, analyzedAt, lastUpdated, open, onOpenChange }: CellPopupProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-lg font-semibold">
-            {municipality}
+            {entity}
           </DialogTitle>
           <DialogDescription className="text-sm text-muted-foreground">
             {question}
@@ -140,7 +142,7 @@ export default function MatrixPage() {
   const { domain, realmid } = useParams<{ domain: string; realmid: string }>();
   const { buildPath } = useBasePath();
   const [selectedCell, setSelectedCell] = useState<{
-    municipality: string;
+    entity: string;
     question: string;
     score: number;
     confidence: number;
@@ -160,7 +162,7 @@ export default function MatrixPage() {
   const isPolicy = currentRealm?.type === 'policy';
   const documentType = isPolicy ? 'policy' : 'statute';
   const documentTypeCapitalized = isPolicy ? 'Policy' : 'Statute';
-  const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Municipality';
+  const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
 
   const { data: matrixData, isLoading, error, refetch } = useQuery<MatrixData>({
     queryKey: [apiPath(`domains/${realmid}/${domain}/matrix`)],
@@ -250,7 +252,7 @@ export default function MatrixPage() {
                 <thead className="bg-muted/50">
                   <tr>
                     <th className="sticky left-0 z-10 bg-muted/50 px-4 py-3 text-left font-medium w-[200px] border-r">
-                      Municipality
+                      Entity
                     </th>
                     <th className="sticky left-[200px] z-10 bg-muted/50 px-3 py-3 text-center font-medium w-[150px] border-r">
                       {documentTypeCapitalized}
@@ -290,35 +292,35 @@ export default function MatrixPage() {
                 </tr>
               </thead>
               <tbody>
-                {matrixData.municipalities.map((municipality) => (
-                  <tr key={municipality.id} className="border-t hover:bg-muted/30">
+                {matrixData.entities.map((entity) => (
+                  <tr key={entity.id} className="border-t hover:bg-muted/30">
                     <td className="sticky left-0 z-10 bg-background px-4 py-2 font-medium border-r w-[200px]">
-                      <span data-testid={`text-municipality-${municipality.id}`}>
-                        {municipality.displayName}
+                      <span data-testid={`text-entity-${entity.id}`}>
+                        {entity.displayName}
                       </span>
                     </td>
                     <td className="sticky left-[200px] z-10 bg-background px-3 py-2 text-center border-r w-[150px]">
-                      {municipality.statute ? (
-                        municipality.statute.number === 'State Code' ? (
-                          <span className="text-xs font-medium text-blue-600 dark:text-blue-400" data-testid={`text-state-code-${municipality.id}`}>
+                      {entity.statute ? (
+                        entity.statute.number === 'State Code' ? (
+                          <span className="text-xs font-medium text-blue-600 dark:text-blue-400" data-testid={`text-state-code-${entity.id}`}>
                             State Code
                           </span>
                         ) : (
                           <a
-                            href={municipality.statute.url}
+                            href={entity.statute.url}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex flex-col items-center gap-0.5 text-civic-blue hover:text-civic-blue-dark text-xs group"
-                            data-testid={`link-statute-${municipality.id}`}
-                            title={`${municipality.statute.number}${municipality.statute.title ? ` - ${municipality.statute.title}` : ''}`}
+                            data-testid={`link-statute-${entity.id}`}
+                            title={`${entity.statute.number}${entity.statute.title ? ` - ${entity.statute.title}` : ''}`}
                           >
                             <div className="flex items-center gap-1">
-                              <span className="font-medium">{municipality.statute.number}</span>
+                              <span className="font-medium">{entity.statute.number}</span>
                               <ExternalLink className="w-3 h-3 flex-shrink-0 opacity-60 group-hover:opacity-100" />
                             </div>
-                            {municipality.statute.title && (
+                            {entity.statute.title && (
                               <span className="text-[10px] text-muted-foreground truncate max-w-[120px] leading-tight">
-                                {municipality.statute.title}
+                                {entity.statute.title}
                               </span>
                             )}
                           </a>
@@ -330,34 +332,34 @@ export default function MatrixPage() {
                     <td 
                       className="sticky left-[350px] z-10 px-3 py-2 text-center border-r font-medium w-[100px]"
                       style={{
-                        backgroundColor: municipality.referencesStateCode ? '#f8f9fa' : getEnvironmentalScoreGradient(municipality.totalScore || 0).backgroundColor,
+                        backgroundColor: entity.referencesStateCode ? '#f8f9fa' : getEnvironmentalScoreGradient(entity.totalScore || 0).backgroundColor,
                       }}
                     >
-                      {municipality.referencesStateCode ? (
+                      {entity.referencesStateCode ? (
                         <span className="text-xs text-gray-400">—</span>
                       ) : (
-                        <Link href={buildPath(`/${domain}/${municipality.id}`)}>
-                          <span className={`text-sm font-medium cursor-pointer hover:underline ${getEnvironmentalScoreGradient(municipality.totalScore || 0).textColor}`} data-testid={`link-total-score-${municipality.id}`}>
-                            {((municipality.totalScore || 0) * 10).toFixed(1)}
+                        <Link href={buildPath(`/${domain}/${entity.id}`)}>
+                          <span className={`text-sm font-medium cursor-pointer hover:underline ${getEnvironmentalScoreGradient(entity.totalScore || 0).textColor}`} data-testid={`link-total-score-${entity.id}`}>
+                            {((entity.totalScore || 0) * 10).toFixed(1)}
                           </span>
                         </Link>
                       )}
                     </td>
                     {matrixData.questions.map((question) => {
-                      if (municipality.referencesStateCode || !municipality.statute) {
-                        // Show empty cells for state code municipalities or when no {documentType} exists
+                      if (entity.referencesStateCode || !entity.statute) {
+                        // Show empty cells for state code entities or when no {documentType} exists
                         return (
                           <td 
                             key={question.id} 
                             className="px-3 py-2 text-center border-r last:border-r-0 bg-gray-50 dark:bg-gray-900 w-[120px]"
-                            data-testid={`cell-${municipality.id}-${question.id}-empty`}
+                            data-testid={`cell-${entity.id}-${question.id}-empty`}
                           >
                             <span className="text-xs text-gray-400">—</span>
                           </td>
                         );
                       }
 
-                      const scoreData = municipality.scores[question.id];
+                      const scoreData = entity.scores[question.id];
                       const score = scoreData?.score || 0;
                       const confidence = scoreData?.confidence || 0;
                       
@@ -365,17 +367,17 @@ export default function MatrixPage() {
                         <td 
                           key={question.id} 
                           onClick={() => setSelectedCell({
-                            municipality: municipality.displayName,
+                            entity: entity.displayName,
                             question: question.question,
                             score: score,
                             confidence: confidence,
                             answer: scoreData?.answer || `Not specified in the ${documentType}.`,
                             sourceRefs: scoreData?.sourceRefs || [],
                             analyzedAt: scoreData?.analyzedAt,
-                            lastUpdated: municipality.lastUpdated
+                            lastUpdated: entity.lastUpdated
                           })}
                           className={`px-3 py-2 text-center border-r last:border-r-0 cursor-pointer transition-colors hover:opacity-80 w-[120px] ${getMatrixScoreColor(score)}`}
-                          data-testid={`cell-${municipality.id}-${question.id}`}
+                          data-testid={`cell-${entity.id}-${question.id}`}
                         >
                           <div className="flex justify-center">
                             <ScoreVisualization 
@@ -397,9 +399,9 @@ export default function MatrixPage() {
         {/* Summary Stats */}
         <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-muted/30 rounded-lg p-4">
-            <h3 className="font-medium text-sm text-muted-foreground">Total Municipalities</h3>
-            <p className="text-2xl font-bold" data-testid="text-total-municipalities">
-              {matrixData.municipalities.length}
+            <h3 className="font-medium text-sm text-muted-foreground">Total entities</h3>
+            <p className="text-2xl font-bold" data-testid="text-total-entities">
+              {matrixData.entities.length}
             </p>
           </div>
           <div className="bg-muted/30 rounded-lg p-4">
@@ -411,7 +413,7 @@ export default function MatrixPage() {
           <div className="bg-muted/30 rounded-lg p-4">
             <h3 className="font-medium text-sm text-muted-foreground">Total Analyses</h3>
             <p className="text-2xl font-bold" data-testid="text-total-analyses">
-              {matrixData.municipalities.length * matrixData.questions.length}
+              {matrixData.entities.length * matrixData.questions.length}
             </p>
           </div>
         </div>
@@ -419,7 +421,7 @@ export default function MatrixPage() {
         {/* Cell Details Popup */}
         {selectedCell && (
           <CellPopup
-            municipality={selectedCell.municipality}
+            entity={selectedCell.entity}
             question={selectedCell.question}
             score={selectedCell.score}
             confidence={selectedCell.confidence}

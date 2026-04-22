@@ -4,8 +4,6 @@
  */
 import { Router, Switch, Route } from "wouter";
 import Home from "./pages/home";
-import WestchesterDataPage from "./pages/westchester-data";
-import FAQ from "./pages/faq";
 import Matrix from "./pages/matrix";
 import AdminDomains from "./pages/admin-domains";
 import CombinedMatrix from "./pages/combined-matrix";
@@ -38,8 +36,6 @@ export function OrdinizerApp({ basePath = "" }: OrdinizerAppProps) {
         {/* Admin and utility routes */}
         <Route path={`${prefix}/questions/:realmid/domains`} component={AdminDomains} />
         <Route path={`${prefix}/combined-matrix`} component={CombinedMatrix} />
-        <Route path={`${prefix}/faq`} component={FAQ} />
-        <Route path={`${prefix}/data/sourcedata`} component={WestchesterDataPage} />
         
         {/* Legacy routes for backward compatibility - less specific, so they come last */}
         <Route path={`${prefix}/:domain/:municipality`} component={Home} />

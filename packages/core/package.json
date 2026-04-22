@@ -20,7 +20,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "clean": "node -e \"['dist','tsconfig.tsbuildinfo'].forEach(f=>require('fs').rmSync(f,{recursive:true,force:true}))\""
   },
   "keywords": [
     "ordinizer",

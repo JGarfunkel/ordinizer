@@ -1,3 +1,0 @@
-Testing chevron_right replacement:
-Before: Home chevron_right Documents chevron_right Test
-After conversion should show newlines between sections

@@ -1,0 +1,31 @@
+{
+  "name": "@ordinizer/analyzer",
+  "version": "1.0.0",
+  "description": "Analysis and offline data preparation tools for Ordinizer.",
+  "main": "lib/createMetaAnalysis.ts",
+  "types": "lib/createMetaAnalysis.d.ts",
+  "scripts": {
+    "meta-analysis": "tsx lib/createMetaAnalysis.ts",
+    "smoke-test": "tsx lib/smokeTest.ts",
+    "test": "npx --node-options=--experimental-vm-modules jest"
+  },
+  "dependencies": {
+    "@ordinizer/core": "file:../../packages/core",
+    "@pinecone-database/pinecone": "^6.1.2",
+    "@types/jsdom": "^28.0.1",
+    "@types/node": "^20.19.39",
+    "axios": "^1.15.1",
+    "fs-extra": "^11.1.1",
+    "googleapis": "^171.4.0",
+    "jsdom": "^28.0.1",
+    "openai": "^4.0.0",
+    "pdf-parse": "^2.4.5",
+    "ts-node": "^10.9.2"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.4.0",
+    "tsx": "^4.7.0"
+  }
+}

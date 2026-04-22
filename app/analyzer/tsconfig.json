@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "../..",
+    "baseUrl": ".",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "paths": {
+      "@ordinizer/core": ["../../packages/core/src"],
+      "@ordinizer/core/*": ["../../packages/core/src/*"],
+      "@ordinizer/servercore": ["../../packages/servercore/src"],
+      "@ordinizer/servercore/*": ["../../packages/servercore/src/*"]
+    },
+    "types": ["node"],
+    "isolatedModules": true
+  },
+  "include": ["lib/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

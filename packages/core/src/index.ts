@@ -5,20 +5,5 @@
  * used throughout the Ordinizer ecosystem.
  */
 
-// Re-export all types from schema
-export type {
-  Municipality,
-  Domain,
-  MunicipalityDomain,
-  Statute,
-  Question,
-  Analysis,
-  QuestionWithAnswer,
-  AnalysisResponse,
-  InsertMunicipality,
-  InsertDomain,
-  InsertMunicipalityDomain,
-  InsertStatute,
-  InsertQuestion,
-  InsertAnalysis,
-} from './schema';
+// Re-export all types and interfaces from schema
+export * from './schema';

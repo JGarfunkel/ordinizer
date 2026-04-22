@@ -90,19 +90,6 @@ export function getMatrixScoreColor(score: number): string {
 }
 
 /**
- * Get grade-based color classes
- * @param grade - Letter grade (A-F) or null/undefined
- * @param available - Whether the grade is available/clickable
- * @returns Tailwind CSS classes for styling
- */
-export function getGradeColor(grade: string | null | undefined, available: boolean): string {
-  if (!available) return GRADE_COLORS.UNAVAILABLE;
-  
-  const upperGrade = grade?.toUpperCase() as keyof typeof GRADE_COLORS;
-  return GRADE_COLORS[upperGrade] || GRADE_COLORS.DEFAULT;
-}
-
-/**
  * Get legend items for environmental protection scores
  * @returns Array of legend items with color and label
  */

@@ -1,4 +1,4 @@
-import { Card, CardContent } from "@ordinizer/client/ui";
+import { Card, CardContent } from "../ui";
 import { AlertCircle } from "lucide-react";
 
 export default function NotFound() {

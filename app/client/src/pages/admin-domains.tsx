@@ -1,43 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { useParams, Link } from 'wouter';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@ordinizer/client/ui";
-import { Badge } from "@ordinizer/client/ui";
-import { Separator } from "@ordinizer/client/ui";
-import { ScrollArea } from "@ordinizer/client/ui";
-import { Button } from "@ordinizer/client/ui";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui";
+import { Badge } from "../ui";
+import { Button } from "../ui";
 import { apiPath } from "../lib/apiConfig";
 import { ArrowLeft, ExternalLink, Database } from 'lucide-react';
 import { useBasePath } from '../contexts/BasePathContext';
-
-interface Question {
-  id: number;
-  category: string;
-  question: string;
-  scoreInstructions: string;
-  weight: number;
-  order: number;
-}
-
-interface DomainWithQuestions {
-  id: string;
-  name: string;
-  displayName: string;
-  questions: Question[];
-  questionCount: number;
-  totalWeight: number;
-}
-
-interface DataSource {
-  id: string;
-  name: string;
-  displayName: string;
-  description: string;
-  type: string;
-  url: string;
-  domains: string[];
-  municipalities: number;
-  status: string;
-}
+import type { Question, DomainWithQuestions, DataSource, Realm } from '@ordinizer/core';
 
 export default function AdminDomains() {
   const { realmid } = useParams<{ realmid: string }>();
@@ -53,7 +22,7 @@ export default function AdminDomains() {
   });
 
   // Get realm info
-  const { data: realms } = useQuery({
+  const { data: realms } = useQuery<Realm[]>({
     queryKey: [apiPath('realms')],
     staleTime: 1000 * 60 * 60 // Cache for 1 hour
   });
@@ -167,7 +136,7 @@ export default function AdminDomains() {
                     <li key={question.id} data-testid={`question-${domain.id}-${question.id}`} className="leading-relaxed">
                       <span className="font-semibold">{question.category}:</span> 
                       <div>
-                        {question.question}
+                        {question.text}
                         {question.weight > 1 && (
                           <span className="ml-2 text-xs text-muted-foreground font-medium" data-testid={`question-weight-${domain.id}-${question.id}`}>
                             (x{question.weight})

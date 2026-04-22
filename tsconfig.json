@@ -6,6 +6,11 @@
     "lib": ["ES2022"],
     "declaration": true,
     "outDir": "./dist",
+    "baseUrl": ".",
+    "paths": {
+      "@ordinizer/core": ["packages/core/src"],
+      "@ordinizer/servercore": ["packages/servercore/src"]
+    },
     "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
