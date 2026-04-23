@@ -11,7 +11,7 @@ export function registerDomainRoutes(app: Express, apiPrefix: string = "/api") {
       if (!realm) {
         return res.status(404).json({ error: "Realm not found" });
       }
-      const domains = await storage.getDomainsByRealm(realmId);
+      const domains = await storage.getDomains();
       const domainsWithQuestions = await Promise.all(
         domains.map(async (domain) => {
           try {
@@ -35,16 +35,14 @@ export function registerDomainRoutes(app: Express, apiPrefix: string = "/api") {
       const { realmId, domainId } = req.params;
       console.log(`[questions] realmId=${realmId} domainId=${domainId}`);
       const storage = getDefaultStorage(realmId);
-      console.debug("Using storage with dataDir:", storage.getDataDir());
-      const realmDomains = await storage.getDomainsByRealm(realmId);
-      console.debug(`Found ${realmDomains.length} domains for realmId=${realmId}`);
-      const domain = realmDomains.find((d) => d.id === domainId);
+      const domain = await storage.getDomain(domainId);
       if (!domain) {
         return res.status(404).json({ error: "Domain not found" });
       }
       const questions = await storage.getQuestionsByDomain(domainId, realmId);
       res.json({ ...domain, questions });
     } catch (error) {
+      console.log(`Error fetching questions for domain ${req.params.domainId} in realm ${req.params.realmId}:`, error);
       res.status(500).json({ error: "Failed to fetch domain questions" });
     }
   });

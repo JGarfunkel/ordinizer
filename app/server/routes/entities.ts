@@ -9,7 +9,7 @@ export function registerEntityRoutes(app: Express, apiPrefix: string = "/api") {
     try {
       const { realmId } = req.params;
       const storage = getReadOnlyStorage(realmId);
-      const entities = await storage.getEntitiesByRealm(realmId);
+      const entities = await storage.getEntities();
       if (!entities) {
         return res.status(404).json({ error: "Entities not found for this realm" });
       }
@@ -42,7 +42,7 @@ export function registerEntityRoutes(app: Express, apiPrefix: string = "/api") {
       const storage = getReadOnlyStorage(realmId);
       const entity = await storage.getEntity(entityId);
       if (!entity) {
-        return res.status(404).json({ error: "Entity not found" });
+        return res.status(404).json({ error: "Entity not found: ", entityId });
       }
       storage.getEntityDomains(entityId).then((domains) => {
         res.json(domains);

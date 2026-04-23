@@ -7,6 +7,7 @@ import { apiPath } from "../lib/apiConfig";
 import { ArrowLeft, ExternalLink, Database } from 'lucide-react';
 import { useBasePath } from '../contexts/BasePathContext';
 import type { Question, DomainWithQuestions, DataSource, Realm } from '@ordinizer/core';
+import { useRealms } from '../hooks/useRealms';
 
 export default function AdminDomains() {
   const { realmid } = useParams<{ realmid: string }>();
@@ -22,10 +23,7 @@ export default function AdminDomains() {
   });
 
   // Get realm info
-  const { data: realms } = useQuery<Realm[]>({
-    queryKey: [apiPath('realms')],
-    staleTime: 1000 * 60 * 60 // Cache for 1 hour
-  });
+  const { data: realms } = useRealms();
 
   const currentRealm = realms?.find((r: any) => r.id === realmid);
 

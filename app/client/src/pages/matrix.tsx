@@ -4,6 +4,7 @@ import { ArrowLeft, Info, ExternalLink, RotateCcw } from 'lucide-react';
 import { apiPath } from "../lib/apiConfig";
 import { useState } from 'react';
 import { useBasePath } from '../contexts/BasePathContext';
+import { useRealms } from '../hooks/useRealms';
 import {
   Dialog,
   DialogContent,
@@ -153,10 +154,7 @@ export default function MatrixPage() {
   } | null>(null);
 
   // Fetch realm info to determine terminology
-  const { data: realms } = useQuery<Array<any>>({
-    queryKey: [apiPath('realms')],
-    staleTime: 1000 * 60 * 60 // Cache for 1 hour
-  });
+  const { data: realms } = useRealms();
 
   const currentRealm = realms?.find((r: any) => r.id === realmid);
   const isPolicy = currentRealm?.type === 'policy';

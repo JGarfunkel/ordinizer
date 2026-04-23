@@ -35,7 +35,7 @@ export function registerAnalysisRoutes(app: Express, apiPrefix: string = "/api")
           if (!analysis) {
             return res.status(404).json({ error: 'Analysis not found' });
           }
-          res.json({ analysis });
+          res.json(analysis);
         });
 
     } catch (error) {

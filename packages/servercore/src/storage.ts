@@ -141,7 +141,6 @@ export interface IStorageReadOnly {
   getRealm(id: string): Promise<any | undefined>;
   getDataDir(): string;
 
-  getEntitiesByRealm(realmId: string): Promise<Entity[]>;
   getEntities(): Promise<Entity[]>;
   getEntity(entityId: string): Promise<Entity | undefined>;
 
@@ -223,8 +222,10 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   protected realmConfig: Realm | null = null;
   protected entityCollection: EntityCollection | null = null;
   protected domains: Domain[] | null = null;
+  protected domainMap: Map<string, Domain> | null = null;
   protected mapBoundaries: any | null = null;
   protected questionCache: Map<string, Question[]> = new Map();
+  protected entityDomainCache: Map<string, EntityDomain[]> = new Map();
 
   constructor(realmId: string) {
     this.realmId = realmId;
@@ -250,23 +251,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     await fs.ensureDir(this.dataDir);
   }
 
-  /**
-   * Resolve the realm-specific data subdirectory and document type.
-   * Returns defaults when realmId is not supplied.
-   */
-  protected async resolveRealmParts(realmId?: string): Promise<{ dataPath: string; realmType: string; state: string }> {
-    let dataPath = "";
-    let realmType = "statute";
-    let state = "";
-    if (realmId) {
-      const realm = await this.getRealm(realmId);
-      if (realm?.datapath) dataPath = realm.datapath;
-      if (realm?.state) state = realm.state;
 
-      if (realm?.ruleType)  realmType = realm.ruleType;
-    }
-    return { dataPath, realmType, state };
-  }
 
   // -------------------------------------------------------------------------
   // Realm
@@ -307,10 +292,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   // -------------------------------------------------------------------------
 
   async getEntities(): Promise<Entity[]> {
-    return this.getEntitiesByRealm(this.realmId);
-  }
-
-  async getEntitiesByRealm(realmId: string): Promise<Entity[]> {
+    const realmId = this.realmId;
     if (this.entityCollection) {
       console.debug("Reading entities from cache:", this.entityCollection.entities.length, "entities");
       return this.entityCollection.entities;
@@ -345,20 +327,6 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     return entities.find((e) => e.id === entityId);
   }
 
-  async addEntity(entity: Entity, realmId: string): Promise<Entity> {
-    const all = await this.getEntitiesByRealm(realmId);
-    all.push(entity);
-    const collectionFile = await this.getRealmConfig().then(realm => realm?.entityFile ? path.join(this.dataDir, realm.entityFile) : null);
-    if (collectionFile) {
-      await fs.writeJson(
-        collectionFile,
-        { entities: all, lastUpdated: new Date().toISOString() },
-        { spaces: 2 },
-      );
-    }
-    return entity;
-  }
-
   // -------------------------------------------------------------------------
   // Domains
   // -------------------------------------------------------------------------
@@ -375,7 +343,13 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     const realmDomainsFile = path.join(this.dataDir, "domains.json");
     if (await fs.pathExists(realmDomainsFile)) {
       const data = await fs.readJson(realmDomainsFile);
-      return (this.domains = data.domains || []);
+      if (data.domains) {
+        const domains: Domain[] = data.domains || [];
+        this.domains = domains;
+        // set domainMap for quick lookup by ID
+        this.domainMap = new Map(domains.map((d: Domain) => [d.id, d]));
+        return domains;
+      }
     } else {
       console.warn("Domains file does not exist for realm:", this.realmId, "expected at path:", realmDomainsFile);
     }
@@ -401,6 +375,9 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
    * @returns domain object or undefined if not found
    */
   async getDomain(id: string): Promise<Domain | undefined> {
+    if (this.domainMap) {
+      return this.domainMap.get(id);
+    }
     const all = await this.getDomains();
     return all.find((d) => d.id === id);
   }
@@ -454,11 +431,13 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     domainId: string,
     realmId?: string,
   ): Promise<Statute | undefined> {
-    const { dataPath, realmType, state } = await this.resolveRealmParts(realmId);
+    const realmConfig = await this.getRealmConfig();
+    const realmType = realmConfig.ruleType ?? 'statute';
+    const state = realmConfig.state ?? '';
 
     // Check for state-code redirect in metadata
     const stateFolder = state ? `${state}-State` : "";
-    const metadataPath = path.join(this.dataDir, dataPath, domainId, entityId, "metadata.json");
+    const metadataPath = path.join(this.getDataDir(), domainId, entityId, "metadata.json");
     let targetId = entityId;
     if (stateFolder && await fs.pathExists(metadataPath)) {
       try {
@@ -473,7 +452,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
       } catch { /* ignore */ }
     }
 
-    const file = path.join(this.dataDir, dataPath, domainId, targetId, `${realmType}.txt`);
+    const file = path.join(this.getDataDir(), domainId, targetId, `${realmType}.txt`);
     if (!await fs.pathExists(file)) return undefined;
     const content = await fs.readFile(file, "utf-8");
     return {
@@ -493,11 +472,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     if (this.questionCache.has(domainId)) {
       return this.questionCache.get(domainId)!;
     }
-    if (!this.realmConfig) {
-      throw new Error("realm is not set");
-    }
-    const dataPath = this.realmConfig.datapath;
-    const file = path.join(this.dataDir, dataPath, domainId, "questions.json");
+    const file = path.join(this.getDataDir(), domainId, "questions.json");
     console.debug("Reading questions for domain", domainId, "from file:", file);
     if (!await fs.pathExists(file)) return [];
     const data = await fs.readJson(file);
@@ -526,6 +501,8 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
   async getAnalysisVersionsByEntityAndDomain(entityId: string, domainId: string): Promise<AnalysisVersionRef[]> {
     const directoryPath = path.join(this.dataDir, domainId, entityId);
+    console.debug("Checking for analysis versions in directory:", directoryPath);
+    if (!await fs.pathExists(directoryPath)) return [];
     const files = await fs.readdir(directoryPath);
       const versions: AnalysisVersionRef[] = [];
       const currentAnalysisPath = path.join(directoryPath, 'analysis.json');
@@ -583,18 +560,29 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   }
 
   async getEntityDomains(entityId: string): Promise<EntityDomain[]> {
+    if (this.entityDomainCache.has(entityId)) {
+      console.debug("Returning cached entity-domain associations for entityId:", entityId);
+      return this.entityDomainCache.get(entityId)!;
+    }
     const allDomains = await this.getDomains();
     const result: EntityDomain[] = [];
     for (const domain of allDomains) {
       const dir = path.join(this.dataDir, domain.id, entityId);
-      const available = await fs.pathExists(path.join(dir, "statute.txt"));
+      let available = false; // will set to true if the analysis is found
+
+      // legacy code - do we care if statute text exists?
+      // const statuteFile = path.join(dir, "statute.txt");  
+      // console.debug("Checking for statute file at path:", statuteFile, "available:", available);
       let grade: string | undefined;
       const analysisFile = path.join(dir, "analysis.json");
       if (await fs.pathExists(analysisFile)) {
         try {
           const analysis = await fs.readJson(analysisFile);
           grade = analysis.grade ?? undefined;
+          available = true;
         } catch { /* ignore */ }
+      } else {
+        console.warn(`No analysis found for entity ${entityId} in domain ${domain.id} at expected path:`, analysisFile);
       }
       result.push({
         id: `${entityId}-${domain.id}`,
@@ -606,16 +594,18 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
         grade,
       });
     }
+    this.entityDomainCache.set(entityId, result);
     return result;
   }
 
   async getDomainSummary(domainId: string, realmId: string): Promise<DomainSummaryRow[]> {
-    const { dataPath, state } = await this.resolveRealmParts(realmId);
-    const municipalities = await this.getEntitiesByRealm(realmId);
+    const realmConfig = await this.getRealmConfig();
+    const state = realmConfig.state ?? '';
+    const municipalities = await this.getEntities();
 
     const result: DomainSummaryRow[] = [];
     for (const municipality of municipalities) {
-      const dir = path.join(this.dataDir, dataPath, domainId, municipality.id);
+      const dir = path.join(this.getDataDir(), domainId, municipality.id);
       const available = await fs.pathExists(path.join(dir, "statute.txt"));
       let grade: string | null = null;
       let gradeColor: string | null = null;
@@ -662,8 +652,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
    * Returns the data as a Ruleset or null when the file does not exist.
    */
   async getRuleset(domainId: string, entityId: string, realmId?: string): Promise<Ruleset | null> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    const file = path.join(this.dataDir, dataPath, domainId, entityId, "metadata.json");
+    const file = path.join(this.getDataDir(), domainId, entityId, "metadata.json");
     if (!await fs.pathExists(file)) return null;
     return fs.readJson(file);
   }
@@ -685,8 +674,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
    * Returns null when the file does not exist.
    */
   async getAnalysisRaw(domainId: string, entityId: string, realmId?: string): Promise<Analysis | null> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    const file = path.join(this.dataDir, dataPath, domainId, entityId, "analysis.json");
+    const file = path.join(this.getDataDir(), domainId, entityId, "analysis.json");
     if (!await fs.pathExists(file)) return null;
     return fs.readJson(file);
   }
@@ -696,8 +684,9 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
    * Returns null when the file does not exist.
    */
   async getDocumentText(domainId: string, entityId: string, realmId?: string): Promise<string | null> {
-    const { dataPath, realmType } = await this.resolveRealmParts(realmId);
-    const file = path.join(this.dataDir, dataPath, domainId, entityId, `${realmType}.txt`);
+    const realmConfig = await this.getRealmConfig();
+    const realmType = realmConfig.ruleType ?? 'statute';
+    const file = path.join(this.getDataDir(), domainId, entityId, `${realmType}.txt`);
     if (!await fs.pathExists(file)) return null;
     return fs.readFile(file, "utf-8");
   }
@@ -710,8 +699,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     entityId: string,
     realmId?: string,
   ): Promise<{ guidance?: string; form?: string }> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    const dir = path.join(this.dataDir, dataPath, domainId, entityId);
+    const dir = path.join(this.getDataDir(), domainId, entityId);
     const sources: { guidance?: string; form?: string } = {};
 
     const guidancePath = path.join(dir, "guidance.txt");
@@ -765,14 +753,12 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     const realm = await this.getRealm(realmId);
     if (!realm) return [];
 
-    const domains = await this.getDomainsByRealm(realmId);
+    const domains = await this.getDomains();
     const visibleDomains = domains.filter((d: any) => d.show !== false);
-    const municipalities = await this.getEntitiesByRealm(realmId);
+    const municipalities = await this.getEntities();
     const validMunicipalities = municipalities
       .filter((m: any) => !(m as any).test)
       .sort((a: any, b: any) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
-
-    const { dataPath } = await this.resolveRealmParts(realmId);
 
     const result: CombinedMatrixRow[] = [];
     for (const municipality of validMunicipalities) {
@@ -785,7 +771,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
       };
 
       for (const domain of visibleDomains) {
-        const dir = path.join(this.dataDir, dataPath, domain.id, municipality.id);
+        const dir = path.join(this.getDataDir(), domain.id, municipality.id);
         const metadataPath = path.join(dir, "metadata.json");
         const analysisPath = path.join(dir, "analysis.json");
 
@@ -855,8 +841,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
    * Excludes hidden directories.
    */
   async listDomainIds(realmId?: string): Promise<string[]> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    const dir = path.join(this.dataDir, dataPath);
+    const dir = this.getDataDir();
     if (!await fs.pathExists(dir)) return [];
     const entries = await fs.readdir(dir, { withFileTypes: true });
     return entries.filter((e) => e.isDirectory() && !e.name.startsWith(".")).map((e) => e.name);
@@ -868,8 +853,9 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
    * For policy realms returns all non-hidden directories.
    */
   async listEntityIds(domainId: string, realmId?: string, realmTypeOverride?: string): Promise<string[]> {
-    const { dataPath, realmType } = await this.resolveRealmParts(realmId);
-    const dir = path.join(this.dataDir, dataPath, domainId);
+    const realmConfig = await this.getRealmConfig();
+    const realmType = realmConfig.ruleType ?? 'statute';
+    const dir = path.join(this.getDataDir(), domainId);
     if (!await fs.pathExists(dir)) return [];
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const effective = realmTypeOverride ?? realmType;
@@ -884,8 +870,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
    * Returns { exists: false, mtime: epoch } when absent.
    */
   async getAnalysisStat(domainId: string, entityId: string, realmId?: string): Promise<FileStat> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    const file = path.join(this.dataDir, dataPath, domainId, entityId, "analysis.json");
+    const file = path.join(this.getDataDir(), domainId, entityId, "analysis.json");
     if (!await fs.pathExists(file)) return { mtime: new Date(0), exists: false };
     const stat = await fs.stat(file);
     return { mtime: stat.mtime, exists: true };
@@ -895,8 +880,9 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
    * Stat the statute/policy document for an entity/domain.
    */
   async getDocumentStat(domainId: string, entityId: string, realmId?: string): Promise<FileStat> {
-    const { dataPath, realmType } = await this.resolveRealmParts(realmId);
-    const file = path.join(this.dataDir, dataPath, domainId, entityId, `${realmType}.txt`);
+    const realmConfig = await this.getRealmConfig();
+    const realmType = realmConfig.ruleType ?? 'statute';
+    const file = path.join(this.getDataDir(), domainId, entityId, `${realmType}.txt`);
     if (!await fs.pathExists(file)) return { mtime: new Date(0), exists: false };
     const stat = await fs.stat(file);
     return { mtime: stat.mtime, exists: true };
@@ -904,8 +890,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
   /** True when metadata.json (ruleset) exists for the given entity/domain. */
   async rulesetExists(domainId: string, entityId: string, realmId?: string): Promise<boolean> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    return fs.pathExists(path.join(this.dataDir, dataPath, domainId, entityId, "metadata.json"));
+    return fs.pathExists(path.join(this.getDataDir(), domainId, entityId, "metadata.json"));
   }
 
   /** @deprecated Use rulesetExists() instead. */
@@ -915,28 +900,26 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
   /** True when analysis.json exists for the given entity/domain. */
   async analysisExists(domainId: string, entityId: string, realmId?: string): Promise<boolean> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    return fs.pathExists(path.join(this.dataDir, dataPath, domainId, entityId, "analysis.json"));
+    return fs.pathExists(path.join(this.getDataDir(), domainId, entityId, "analysis.json"));
   }
 
   /** True when the statute/policy document exists for the given entity/domain. */
   async documentExists(domainId: string, entityId: string, realmId?: string): Promise<boolean> {
-    const { dataPath, realmType } = await this.resolveRealmParts(realmId);
-    return fs.pathExists(path.join(this.dataDir, dataPath, domainId, entityId, `${realmType}.txt`));
+    const realmConfig = await this.getRealmConfig();
+    const realmType = realmConfig.ruleType ?? 'statute';
+    return fs.pathExists(path.join(this.getDataDir(), domainId, entityId, `${realmType}.txt`));
   }
 
   /** True when questions.json exists for the given domain. */
   async questionsExist(domainId: string, realmId?: string): Promise<boolean> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    return fs.pathExists(path.join(this.dataDir, dataPath, domainId, "questions.json"));
+    return fs.pathExists(path.join(this.getDataDir(), domainId, "questions.json"));
   }
 
   /**
    * Write (or overwrite) questions.json for a domain.
    */
   async writeQuestions(domainId: string, data: any, realmId?: string): Promise<void> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    const file = path.join(this.dataDir, dataPath, domainId, "questions.json");
+    const file = path.join(this.getDataDir(), domainId, "questions.json");
     await fs.writeJson(file, data, { spaces: 2 });
   }
 
@@ -989,8 +972,7 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
    * Write (or overwrite) analysis.json for an entity/domain.
    */
   async writeAnalysis(domainId: string, entityId: string, data: Analysis, realmId?: string): Promise<void> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    const file = path.join(this.dataDir, dataPath, domainId, entityId, "analysis.json");
+    const file = path.join(this.getDataDir(), domainId, entityId, "analysis.json");
     await fs.writeJson(file, data, { spaces: 2 });
   }
 
@@ -999,12 +981,11 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
    * Returns the backup path and the original file's mtime, or null when no analysis exists.
    */
   async writeAnalysisBackup(domainId: string, entityId: string, realmId?: string): Promise<BackupResult | null> {
-    const { dataPath } = await this.resolveRealmParts(realmId);
-    const file = path.join(this.dataDir, dataPath, domainId, entityId, "analysis.json");
+    const file = path.join(this.getDataDir(), domainId, entityId, "analysis.json");
     if (!await fs.pathExists(file)) return null;
     const stat = await fs.stat(file);
     const timestamp = stat.mtime.toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const backupFile = path.join(this.dataDir, dataPath, domainId, entityId, `analysis-backup-${timestamp}.json`);
+    const backupFile = path.join(this.getDataDir(), domainId, entityId, `analysis-backup-${timestamp}.json`);
     await fs.copy(file, backupFile);
     return { backupPath: backupFile, mtime: stat.mtime };
   }
@@ -1026,6 +1007,21 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
     if (!item) return undefined;
     return { ...item, ...updates, lastUpdated: new Date().toISOString() };
   }
+
+    async addEntity(entity: Entity, realmId: string): Promise<Entity> {
+    const all = await this.getEntities();
+    all.push(entity);
+    const collectionFile = await this.getRealmConfig().then(realm => realm?.entityFile ? path.join(this.dataDir, realm.entityFile) : null);
+    if (collectionFile) {
+      await fs.writeJson(
+        collectionFile,
+        { entities: all, lastUpdated: new Date().toISOString() },
+        { spaces: 2 },
+      );
+    }
+    return entity;
+  }
+
 
 
 

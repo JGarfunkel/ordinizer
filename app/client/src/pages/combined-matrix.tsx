@@ -9,6 +9,7 @@ import { Link, useParams } from 'wouter';
 import { useEffect, useState } from 'react';
 import { getDefaultRealmId } from '../lib/realmUtils';
 import { useBasePath } from '../contexts/BasePathContext';
+import { useRealms } from '../hooks/useRealms';
 
 interface CombinedMatrixData {
   domains: Array<{
@@ -55,10 +56,7 @@ export default function CombinedMatrix() {
   }, [params.realmid]);
 
   // Fetch realm info to determine terminology
-  const { data: realms } = useQuery<Array<any>>({
-    queryKey: [apiPath('realms')],
-    staleTime: 1000 * 60 * 60 // Cache for 1 hour
-  });
+  const { data: realms } = useRealms();
 
   const currentRealm = realms?.find((r: any) => r.id === realmId);
   const isPolicy = currentRealm?.type === 'policy';

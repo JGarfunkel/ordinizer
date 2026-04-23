@@ -9,6 +9,9 @@ import AdminDomains from "./pages/admin-domains";
 import CombinedMatrix from "./pages/combined-matrix";
 import NotFound from "./pages/not-found";
 import { BasePathProvider } from "./contexts/BasePathContext";
+import { OrdinizerProvider } from "./providers/OrdinizerProvider";
+import { queryClient } from "./lib/queryClient";
+import { API_PREFIX } from "./lib/apiConfig";
 
 interface OrdinizerAppProps {
   /**
@@ -24,7 +27,8 @@ export function OrdinizerApp({ basePath = "" }: OrdinizerAppProps) {
   const prefix = basePath || "";
   
   return (
-    <BasePathProvider basePath={basePath}>
+    <OrdinizerProvider baseUrl="" apiPrefix={API_PREFIX} queryClient={queryClient}>
+      <BasePathProvider basePath={basePath}>
       <Switch>
         {/* Most specific routes first - realm-based routes */}
         <Route path={`${prefix}/realm/:realmid/:domain/matrix`} component={Matrix} />
@@ -45,7 +49,8 @@ export function OrdinizerApp({ basePath = "" }: OrdinizerAppProps) {
         <Route path={prefix || "/"} component={Home} />
         <Route component={NotFound} />
       </Switch>
-    </BasePathProvider>
+      </BasePathProvider>
+    </OrdinizerProvider>
   );
 }
 

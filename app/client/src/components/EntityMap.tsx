@@ -353,9 +353,7 @@ export default function EntityMap({
       if (!selectedEntity || !selectedDomain) return null;
       const response = await fetch(apiPath(`analyses/${realmId}/${selectedEntity.id}/${selectedDomain}`));
       if (!response.ok) throw new Error('Analysis not found');
-      const data = await response.json();
-      // Server returns { analysis: Analysis }; unwrap the wrapper
-      return data.analysis ?? data;
+      return response.json();
     },
     enabled: !!(selectedEntity && selectedDomain),
   });
@@ -608,7 +606,7 @@ export default function EntityMap({
           <div className="font-medium">{hoverTooltip.entityName}</div>
           {selectedDomain && hoverTooltip.score !== undefined && (
             <div className="text-xs text-gray-300 mt-1">
-              {hoverTooltip.score > 0 ? `Score: ${hoverTooltip.score.toFixed(1)}` : 'Data available'}
+              {hoverTooltip.score > 0 ? `Score: ${(hoverTooltip.score * 10).toFixed(1)}` : 'Data available'}
             </div>
           )}
         </div>
@@ -715,9 +713,10 @@ export default function EntityMap({
                 
                 // Priority 1: Environmental protection score
                 if (environmentalScore) {
-                  const scoreCategory = environmentalScore.score >= 8.0 ? 'Strong' :
-                                       environmentalScore.score >= 5.0 ? 'Moderate' :
-                                       environmentalScore.score >= 2.0 ? 'Weak' : 'Very Weak';
+                  const displayScore = environmentalScore.score * 10;
+                  const scoreCategory = displayScore >= 8.0 ? 'Strong' :
+                                       displayScore >= 5.0 ? 'Moderate' :
+                                       displayScore >= 2.0 ? 'Weak' : 'Very Weak';
                   
                   return (
                     <div className="mb-3 text-center">
@@ -727,7 +726,7 @@ export default function EntityMap({
                           className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium text-gray-900"
                           style={{backgroundColor: environmentalScore.color}}
                         >
-                          Score: {environmentalScore.score.toFixed(1)}/10.0 ({scoreCategory})
+                          Score: {displayScore.toFixed(1)}/10.0 ({scoreCategory})
                         </span>
                         {summary?.grade && (
                           <div className="text-xs text-gray-500">

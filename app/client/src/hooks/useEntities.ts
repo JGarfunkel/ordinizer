@@ -1,20 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { useOrdinizer } from '../providers/OrdinizerProvider';
-
-export interface Entity {
-  id: string;
-  name: string;
-  displayName: string;
-  type?: string;
-  [key: string]: any;
-}
+import { apiPath } from '../lib/apiConfig';
+import type { Entity } from '@ordinizer/core';
 
 export function useEntities(realmId?: string) {
-  const { baseUrl, fetcher, apiPrefix } = useOrdinizer();
+  const { fetcher } = useOrdinizer();
 
   return useQuery<Entity[]>({
-    queryKey: [apiPrefix + '/realms', realmId, 'entities'],
-    queryFn: () => fetcher(`${baseUrl}${apiPrefix}/realms/${realmId}/entities`),
+    queryKey: [apiPath(`realms/${realmId}/entities`)],
+    queryFn: () => fetcher(apiPath(`realms/${realmId}/entities`)),
     enabled: !!realmId,
   });
 }

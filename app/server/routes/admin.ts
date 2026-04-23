@@ -9,7 +9,7 @@ export function registerAdminRoutes(app: Express, apiPrefix: string = "/api") {
     try {
       const { realmId } = req.params;
       const storage = getReadOnlyStorage(realmId);
-      const domains = await storage.getDomainsByRealm(realmId);
+      const domains = await storage.getDomains();
       const domainsWithQuestions = [];
       for (const domain of domains) {
         let questions: Question[] = [];

@@ -4,7 +4,7 @@ import { registerDomainRoutes } from "./domains";
 import { registerEntityRoutes } from "./entities";
 import { registerMatrixRoutes } from "./matrix";
 import { registerAdminRoutes } from "./admin";
-//import { registerDatasourceRoutes } from "./datasources";
+import { registerDatasourceRoutes } from "./datasources";
 import { registerStatuteRoutes } from "./statutes";
 import { registerScoreRoutes } from "./scores";
 import { registerAnalysisRoutes } from "./analyses";
@@ -21,7 +21,7 @@ export function registerAllRoutes(app: Express, apiPrefix = "/api") {
   registerEntityRoutes(app, apiPrefix);
   registerMatrixRoutes(app, apiPrefix);
   registerAdminRoutes(app, apiPrefix);
-  // registerDatasourceRoutes(app, apiPrefix);
+  registerDatasourceRoutes(app, apiPrefix);
   registerStatuteRoutes(app, apiPrefix);
   registerScoreRoutes(app, apiPrefix);
   registerAnalysisRoutes(app, apiPrefix);

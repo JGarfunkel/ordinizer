@@ -1,17 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { useOrdinizer } from '../providers/OrdinizerProvider';
+import { apiPath } from '../lib/apiConfig';
 import type { Analysis } from '@ordinizer/core';
 
 export function useAnalysis(realmId?: string, entityId?: string, domainId?: string) {
-  const { baseUrl, fetcher, apiPrefix } = useOrdinizer();
+  const { fetcher } = useOrdinizer();
 
   return useQuery<Analysis>({
-    queryKey: [apiPrefix + '/analyses', realmId, entityId, domainId],
-    queryFn: async () => {
-      const data = await fetcher(`${baseUrl}${apiPrefix}/analyses/${realmId}/${entityId}/${domainId}`);
-      // Server returns { analysis: Analysis }; unwrap the wrapper
-      return data.analysis ?? data;
-    },
+    queryKey: [apiPath('analyses'), realmId, entityId, domainId],
+    queryFn: () => fetcher(apiPath(`analyses/${realmId}/${entityId}/${domainId}`)),
     enabled: !!realmId && !!entityId && !!domainId,
   });
 }

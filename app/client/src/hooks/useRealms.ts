@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { useOrdinizer } from '../providers/OrdinizerProvider';
+import { apiPath } from '../lib/apiConfig';
 import type { Realm } from '@ordinizer/core';
 
 export function useRealms() {
-  const { baseUrl, fetcher, apiPrefix } = useOrdinizer();
+  const { fetcher } = useOrdinizer();
 
   return useQuery<Realm[]>({
-    queryKey: [apiPrefix + '/realms'],
-    queryFn: () => fetcher(`${baseUrl}${apiPrefix}/realms`),
+    queryKey: [apiPath('realms')],
+    queryFn: () => fetcher(apiPath('realms')),
   });
 }

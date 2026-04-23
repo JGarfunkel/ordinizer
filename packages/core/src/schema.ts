@@ -125,6 +125,7 @@ export interface Analysis {
   domain?: {            // Current format (backward compatibility)
     id: string;
     displayName: string;
+    grade?: string | number; // May be present in analysis JSON files
   };
   grades?: Record<string, any>; // Legacy grades (backward compatibility)
   questions: AnalyzedQuestion[];
@@ -137,6 +138,12 @@ export interface Analysis {
     questionsAnswered?: number;
     totalQuestions?: number;
     scoreBreakdown?: any;
+  };
+  alignmentSuggestions?: {
+    strengths?: string[];
+    improvements?: string[];
+    recommendations?: string[];
+    bestPractices?: string[];
   };
   metadata?: {
     analysisDate?: string;
@@ -227,11 +234,12 @@ export interface QuestionWithAnswer {
   resolvedSectionUrls?: Array<{sectionNumber: string, sectionUrl?: string}>;
 }
 
+/** @deprecated Use Analysis directly — the server now returns Analysis without a wrapper. */
 export interface AnalysisResponse {
   municipality: Entity;
   domain: EntityDomain;
   ruleset?: Ruleset;
-  questions: QuestionWithAnswer[];
+  questions: AnalyzedQuestion[];
   lastUpdated?: string;
   alignmentSuggestions?: {
     strengths?: string[];
@@ -383,8 +391,14 @@ export interface AnalyzedQuestion {
   confidence: number;  // Can be 0-1 or 0-100
   score: number;       // Environmental protection score
   sourceRefs?: (string | SourceRef)[];
+  /** Flat string reference — present in older analysis JSON files */
+  sourceReference?: string | null;
+  /** Structured section list — present in older analysis JSON files */
+  relevantSections?: (string | { name: string; url?: string })[];
   gap?: string;        // Current format: gap analysis
   gapAnalysis?: string; // Library format: gap analysis
+  /** Per-question timestamp set when the question was last analysed */
+  analyzedAt?: string;
 }
 
 export interface SourceRef {
