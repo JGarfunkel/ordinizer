@@ -1,0 +1,9 @@
+{
+  "entityId": "E2",
+  "domainId": "D1",
+  "questions": [
+    { "id": "Q1", "score": 0.5, "answer": "B1", "confidence": 0.7 },
+    { "id": "Q2", "score": 0.9, "answer": "B2", "confidence": 0.9 },
+    { "id": "Q3", "score": 0.4, "answer": "B3", "confidence": 0.6 }
+  ]
+}

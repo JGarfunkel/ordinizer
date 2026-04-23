@@ -4,24 +4,21 @@
  */
 
 // Core exports
-export { OrdinizerConfig } from './config.js';
-export { RulesetResolver, MetadataResolver } from './metadata.js';
-export { ScoringEngine } from './scoring.js';
+export { OrdinizerConfig } from './config';
+export { RulesetResolver, MetadataResolver } from './metadata';
+export { ScoringEngine } from './scoring';
 
 // Import for internal use
-import { OrdinizerConfig } from './config.js';
-import { RulesetResolver } from './metadata.js';
-import { ScoringEngine } from './scoring.js';
-import { getReadOnlyStorage } from './storage.js';
-import type { Realm } from '@ordinizer/core';
-import type { IStorage, IStorageReadOnly } from './storage.js';
+import { ScoringEngine } from './scoring';
+import { getReadOnlyStorage } from './storage';
+import type { IStorage, IStorageReadOnly } from './storage';
 
 // Utility exports
-export type { ScoreOptions, QuestionWithScore, DetailedEntityScore } from './scoring.js';
-export type { StatuteMetadata, MetadataSource, Metadata, RealmType } from './metadata.js';
-export { JsonFileStorage, IStorage, getDefaultStorage, getReadOnlyStorage, getRealmsFromStorage } from './storage.js';
-export type { IStorageReadOnly, FileStat } from './storage.js';
-export { getSourceForRealm } from './metadata.js';
+export type { ScoreOptions, QuestionWithScore, DetailedEntityScore } from './scoring';
+export type { StatuteMetadata, MetadataSource, Metadata, RealmType } from './metadata';
+export { JsonFileStorage, getDefaultStorage, getReadOnlyStorage, getRealmsFromStorage } from './storage';
+export type { IStorage, IStorageReadOnly, FileStat } from './storage';
+export { getSourceForRealm } from './metadata';
 
 // Re-export commonly used types from @ordinizer/core for convenience
 export type { Analysis, MetaAnalysis, Ruleset, RulesetSource, Realm } from '@ordinizer/core';
@@ -33,7 +30,7 @@ export {
   getStableQuestionKey,
   normalizeConfidence, 
   normalizeAnalysis, 
-} from './utils.js';
+} from './utils';
 
 const ordinizerMap: Map<string, Ordinizer> = new Map();
 
@@ -128,6 +125,10 @@ export class Ordinizer {
 
   async getDomainScores(domainId: string) {
     return await this.scoringEngine.getDomainScores(domainId);
+  }
+
+  async getDomainMatrixData(domainId: string) {
+    return await this.scoringEngine.getDomainMatrixData(domainId);
   }
 
   async calculateDomainScores(domainId: string) {

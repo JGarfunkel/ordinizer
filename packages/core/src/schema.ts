@@ -82,11 +82,12 @@ export interface Ruleset {
   originalCellValue?: string; // The original text from the source file (for reference)
   metadataCreated: string; // Timestamp when the ruleset metadata was created
   stateCodeApplies: boolean; // legacy field indicating if state code applies, used for scoring adjustments
+  statuteNumber?: string; // Optional statute number (e.g., "Section 5.2")
   sources: RulesetSource[]; // Array of sources that inform this ruleset, with metadata about each source
 }
 
 export interface RulesetSource {
-  downloadedAt: string; // Timestamp when the source was downloaded
+  downloadedAt?: string; // Timestamp when the source was downloaded
   sourceUrl: string; // URL of the source document
   title?: string; // Optional title of the source document
   type?: 'statute' | 'policy' | 'form' | 'guidance'; // Type of the governance source
@@ -106,7 +107,7 @@ export interface Question {
   id: number; // Changed: used as number in storage.ts
   domainId: string;
   title: string;
-  text: string;
+  question: string; // TODO consider changing to something else to avoid question.question redundancy
   category?: string;
   order: string;
   weight: number; // Added: used in scoring
@@ -411,6 +412,42 @@ export interface SourceRef {
   url?: string;
 }
 
+export interface MatrixData {
+  domain: {
+    id: string;
+    displayName: string;
+  };
+  questions: Array<{
+    id: number;
+    question: string;
+    category?: string;
+    weight?: number;
+  }>;
+  entities: MatrixEntity[];
+}
+
+export interface MatrixEntity {
+    id: string;
+    displayName: string;
+    scores: Record<string, QuestionScore>
+    totalScore: number;
+    statute?: {
+      number: string;
+      title: string;
+      url: string;
+    };
+    lastUpdated?: string;
+    referencesStateCode?: boolean;
+}
+
+export interface QuestionScore {
+      score: number;
+      confidence: number;
+      answer: string;
+      sourceRefs: string[];
+      analyzedAt?: string;
+}
+
 export interface EntitySummary {
   entityId: string;
   name?: string;
@@ -441,7 +478,7 @@ export interface DomainSummaryRow {
 }
 
 export interface CombinedMatrixRow {
-  municipality: {
+  entity: {
     id: string;
     displayName: string;
   };

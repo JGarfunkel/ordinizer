@@ -3,7 +3,8 @@
  * Extracted and generalized from server/lib/scoringUtils.ts
  */
 
-import type { Analysis, Entity, EntitySummary, DomainSummary, Question, Realm } from '@ordinizer/core';
+import type { Analysis, Entity, EntitySummary, DomainSummary, QuestionScore, 
+              Realm, MatrixData, RulesetSource, MatrixEntity} from '@ordinizer/core';
 import type { IStorageReadOnly } from './storage.js';
 
 export interface ScoreOptions {
@@ -119,7 +120,7 @@ export class ScoringEngine {
 
         questionsWithScores.push({
           id: question.id,
-          question: question.text || '',
+          question: question.question || '',
           answer: analyzedQuestion?.answer || "Not analyzed",
           score,
           weight,
@@ -294,6 +295,75 @@ export class ScoringEngine {
     }
 
     return scores;
+  }
+
+  async getDomainMatrixData(domainId: string): Promise<MatrixData> {
+    const entities = await this.getDomainMatrixEntities(domainId);
+    return {
+      domain: {
+        id: domainId,
+        displayName: (await this.storage.getDomain(domainId))?.displayName || 'Unknown Domain'
+      },
+      questions: (await this.storage.getQuestionsByDomain(domainId)).map(question => ({
+        id: question.id,
+        question: question.question,
+        category: question.category,
+      })),
+      entities
+    };
+  }
+
+  // TODO - clean up this data - it should probably be just captured in the Analysis file going forward
+  async getStatuteData(domainId: string, entityId: string): Promise<{ number: string; title: string; url: string }> {
+        const ruleset = await this.storage.getRuleset(domainId, entityId);
+        let firstSource: RulesetSource | undefined = undefined;
+        if (ruleset?.sources && ruleset.sources.length > 0) {
+          firstSource = ruleset.sources[0];
+        }
+        return {
+          number: ruleset?.statuteNumber || '',
+          title: firstSource?.title || '',
+          url: firstSource?.sourceUrl || ''
+        };
+  }
+
+  async getDomainMatrixEntities(domainId: string): Promise<MatrixEntity[]> {
+    const entities = await this.storage.getEntities();
+    const matrixEntity: MatrixEntity[] = await Promise.all(
+      entities.map(async entity => {
+        console.debug(`Processing entity ${entity.id} for domain ${domainId}`);
+        const analysis = await this.storage.getAnalysisByEntityAndDomain(entity.id, domainId);
+        
+        return {
+          id: entity.id,
+          displayName: entity.displayName || entity.name,
+          scores: this.createScoreMap(analysis),
+          totalScore: analysis?.overallScore ?? analysis?.scores?.overallScore ?? 0,
+          statute: await this.getStatuteData(domainId, entity.id)
+
+        };
+      })
+    );
+    return matrixEntity;
+  }
+  
+  createScoreMap(analysis: Analysis | null): Record<string, QuestionScore> {
+    const scoreMap: Record<string, QuestionScore> = {};
+    const questions = analysis?.questions;
+    if (!questions || !Array.isArray(questions)) return scoreMap;
+    console.debug(`Creating score map for analysis with ${questions.length} questions`);
+    questions.forEach((question: any) => {
+      // Support both AnalysisQuestion and Question types
+      const id = String(question.id);
+      scoreMap[id] = {
+        score: typeof question.score === 'number' ? question.score : 0,
+        confidence: typeof question.confidence === 'number' ? question.confidence : 0,
+        answer: question.answer ?? '',
+        sourceRefs: question.sourceRefs ?? question.relevantSections ?? [],
+        analyzedAt: question.analyzedAt ?? undefined
+      };
+    });
+    return scoreMap;
   }
 
   /**

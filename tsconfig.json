@@ -20,7 +20,8 @@
     "allowSyntheticDefaultImports": true
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "app/server/tests/**/*"
   ],
   "exclude": [
     "node_modules",

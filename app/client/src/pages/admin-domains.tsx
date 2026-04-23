@@ -134,7 +134,7 @@ export default function AdminDomains() {
                     <li key={question.id} data-testid={`question-${domain.id}-${question.id}`} className="leading-relaxed">
                       <span className="font-semibold">{question.category}:</span> 
                       <div>
-                        {question.text}
+                        {question.question}
                         {question.weight > 1 && (
                           <span className="ml-2 text-xs text-muted-foreground font-medium" data-testid={`question-weight-${domain.id}-${question.id}`}>
                             (x{question.weight})

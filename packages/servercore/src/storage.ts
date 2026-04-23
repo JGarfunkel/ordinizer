@@ -18,7 +18,7 @@ import type {
 } from "@ordinizer/core";
 import { log } from "util";
 
-const DEFAULT_DATA_ROOT = "data";
+const DEFAULT_DATA_ROOT = process.env.DATA_ROOT || "data";
 
 const storageInstanceMap: Record<string, IStorage> = {};
 const readOnlyStorageInstanceMap: Record<string, IStorageReadOnly> = {};
@@ -170,7 +170,7 @@ export interface IStorageReadOnly {
   // --- Data access methods (previously handled by raw fs in routes) ---
 
   /** Read the ruleset (metadata.json) for an entity/domain. */
-  getRuleset(domainId: string, entityId: string, realmId?: string): Promise<Ruleset | null>;
+  getRuleset(domainId: string, entityId: string): Promise<Ruleset | null>;
 
   /** Read the statute or policy text for an entity/domain. */
   getDocumentText(domainId: string, entityId: string, realmId?: string): Promise<string | null>;
@@ -495,7 +495,10 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     domainId: string,
   ): Promise<Analysis | null> {
     const file = path.join(this.dataDir, domainId, entityId, "analysis.json");
-    if (!await fs.pathExists(file)) return null;
+    if (!await fs.pathExists(file))  {
+      console.debug("No analysis for entity", entityId, "and domain", domainId, "from file:", file);
+      return null;
+    }
     return await fs.readJson(file);
   }
 
@@ -651,15 +654,18 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
    * Read metadata.json for an entity/domain in the given realm.
    * Returns the data as a Ruleset or null when the file does not exist.
    */
-  async getRuleset(domainId: string, entityId: string, realmId?: string): Promise<Ruleset | null> {
+  async getRuleset(domainId: string, entityId: string): Promise<Ruleset | null> {
     const file = path.join(this.getDataDir(), domainId, entityId, "metadata.json");
-    if (!await fs.pathExists(file)) return null;
+    if (!await fs.pathExists(file)) {
+        console.debug("No metadata found for entity", entityId, "and domain", domainId, "from file:", file);
+        return null;
+    }
     return fs.readJson(file);
   }
 
   /** @deprecated Use getRuleset() instead. */
-  async getRegulationMetadata(domainId: string, entityId: string, realmId?: string): Promise<Ruleset | null> {
-    return this.getRuleset(domainId, entityId, realmId);
+  async getRegulationMetadata(domainId: string, entityId: string): Promise<Ruleset | null> {
+    return this.getRuleset(domainId, entityId);
   }
 
     async getMetaAnalysisByDomain(domainId: string): Promise<any | null> {
@@ -755,23 +761,23 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
     const domains = await this.getDomains();
     const visibleDomains = domains.filter((d: any) => d.show !== false);
-    const municipalities = await this.getEntities();
-    const validMunicipalities = municipalities
-      .filter((m: any) => !(m as any).test)
+    const entities = await this.getEntities();
+    const validEntities = entities
+      .filter((e: any) => !(e as any).test)
       .sort((a: any, b: any) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
 
     const result: CombinedMatrixRow[] = [];
-    for (const municipality of validMunicipalities) {
+    for (const entity of validEntities) {
       const row: CombinedMatrixRow = {
-        municipality: {
-          id: municipality.id,
-          displayName: municipality.displayName || municipality.name,
+        entity: {
+          id: entity.id,
+          displayName: entity.displayName || entity.name,
         },
         domains: {},
       };
 
       for (const domain of visibleDomains) {
-        const dir = path.join(this.getDataDir(), domain.id, municipality.id);
+        const dir = path.join(this.getDataDir(), domain.id, entity.id);
         const metadataPath = path.join(dir, "metadata.json");
         const analysisPath = path.join(dir, "analysis.json");
 

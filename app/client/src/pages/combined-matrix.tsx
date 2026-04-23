@@ -59,9 +59,8 @@ export default function CombinedMatrix() {
   const { data: realms } = useRealms();
 
   const currentRealm = realms?.find((r: any) => r.id === realmId);
-  const isPolicy = currentRealm?.type === 'policy';
-  const documentType = isPolicy ? 'policy' : 'statute';
-  const documentTypeCapitalized = isPolicy ? 'Policy' : 'Statute';
+  const documentType = currentRealm?.ruleType;
+  const documentTypeCapitalized = documentType ? documentType.charAt(0).toUpperCase() + documentType.slice(1) : '';
   const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
 
   const { data: matrixData, isLoading, error } = useQuery<CombinedMatrixData>({

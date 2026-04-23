@@ -1,0 +1,11 @@
+{
+  "realms": [
+    {
+      "id": "oz",
+      "name": "The Land of Oz",
+      "entityFile": "entities.json",
+      "datapath": ".",
+      "state": "OZ"
+    }
+  ]
+}

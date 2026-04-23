@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { getReadOnlyStorage } from "../storage";
 import { getOrdinizer } from "@ordinizer/servercore";
+import { MatrixData } from "@ordinizer/core";
 
 export function registerMatrixRoutes(app: Express, apiPrefix: string = "/api") {
   // Matrix view endpoint for domain analysis (realm-aware)
@@ -8,8 +9,15 @@ export function registerMatrixRoutes(app: Express, apiPrefix: string = "/api") {
     try {
       const { realmId, domainId } = req.params;
       const storage = getReadOnlyStorage(realmId);
-      const summary = await storage.getDomainSummary(domainId, realmId);
-      res.json(summary);
+      const ordinizer = await getOrdinizer(realmId);
+      const domain = await storage.getDomain(domainId);
+      if (!domain) {
+        return res.status(404).json({ error: 'Domain not found' });
+      }
+      const entities = await storage.getEntities();
+      const entityMatrixRecords = await ordinizer.getDomainMatrixData(domainId);
+      res.json(entityMatrixRecords);
+      
     } catch (error) {
       res.status(500).json({ error: 'Failed to load matrix data' });
     }

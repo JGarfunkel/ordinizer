@@ -1,0 +1,6 @@
+{
+  "domains": [
+    { "id": "D1", "name": "Domain One", "displayName": "Domain One" },
+    { "id": "D2", "name": "Domain Two", "displayName": "Domain Two" }
+  ]
+}

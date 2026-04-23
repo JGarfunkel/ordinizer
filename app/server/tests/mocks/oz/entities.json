@@ -1,0 +1,6 @@
+{
+  "entities": [
+    { "id": "E1", "name": "Entity One", "displayName": "Entity One" },
+    { "id": "E2", "name": "Entity Two", "displayName": "Entity Two" }
+  ]
+}

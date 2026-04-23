@@ -23,38 +23,7 @@ import { Button } from "../ui";
 import { Badge } from "../ui";
 import { ScoreVisualization } from '../components/ScoreVisualization';
 import { getMatrixScoreColor, getEnvironmentalScoreGradient } from '../lib/scoreColors';
-
-interface MatrixData {
-  domain: {
-    id: string;
-    displayName: string;
-  };
-  questions: Array<{
-    id: number;
-    question: string;
-    category?: string;
-    weight?: number;
-  }>;
-  entities: Array<{
-    id: string;
-    displayName: string;
-    scores: Record<number, {
-      score: number;
-      confidence: number;
-      answer: string;
-      sourceRefs: string[];
-      analyzedAt?: string;
-    }>;
-    totalScore: number;
-    statute?: {
-      number: string;
-      title: string;
-      url: string;
-    };
-    lastUpdated?: string;
-    referencesStateCode?: boolean;
-  }>;
-}
+import { MatrixData } from '@ordinizer/core';
 
 interface CellPopupProps {
   entity: string;
@@ -157,10 +126,10 @@ export default function MatrixPage() {
   const { data: realms } = useRealms();
 
   const currentRealm = realms?.find((r: any) => r.id === realmid);
-  const isPolicy = currentRealm?.type === 'policy';
-  const documentType = isPolicy ? 'policy' : 'statute';
-  const documentTypeCapitalized = isPolicy ? 'Policy' : 'Statute';
-  const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
+  // const isPolicy = currentRealm?.ruleType === 'policy';
+  const documentType = currentRealm?.ruleType;
+  const documentTypeCapitalized = documentType ? documentType.charAt(0).toUpperCase() + documentType.slice(1) : 'Document';
+  //const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
 
   const { data: matrixData, isLoading, error, refetch } = useQuery<MatrixData>({
     queryKey: [apiPath(`domains/${realmid}/${domain}/matrix`)],
@@ -228,7 +197,6 @@ export default function MatrixPage() {
               {matrixData.domain.displayName} - Analysis Matrix
             </h1>
           </div>
-          
           {/* Refresh Button */}
           <Button 
             variant="outline" 
@@ -338,7 +306,7 @@ export default function MatrixPage() {
                       ) : (
                         <Link href={buildPath(`/${domain}/${entity.id}`)}>
                           <span className={`text-sm font-medium cursor-pointer hover:underline ${getEnvironmentalScoreGradient(entity.totalScore || 0).textColor}`} data-testid={`link-total-score-${entity.id}`}>
-                            {((entity.totalScore || 0) * 10).toFixed(1)}
+                            {entity.totalScore !== undefined ? entity.totalScore.toFixed(2) : '—'}
                           </span>
                         </Link>
                       )}
@@ -357,7 +325,8 @@ export default function MatrixPage() {
                         );
                       }
 
-                      const scoreData = entity.scores[question.id];
+                      const scoreData = entity.scores[String(question.id)];
+                      // console.log(`Rendering cell for entity ${entity.displayName} and question ${question.question} with score data:`, scoreData);
                       const score = scoreData?.score || 0;
                       const confidence = scoreData?.confidence || 0;
                       

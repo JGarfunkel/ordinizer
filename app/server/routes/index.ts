@@ -8,7 +8,7 @@ import { registerDatasourceRoutes } from "./datasources";
 import { registerStatuteRoutes } from "./statutes";
 import { registerScoreRoutes } from "./scores";
 import { registerAnalysisRoutes } from "./analyses";
-import { registerQuestionEntityRoutes } from "./questionMunicipalities";
+//import { registerQuestionEntityRoutes } from "./questionMunicipalities";
 import { registerMapBoundariesRoutes } from "./mapBoundaries";
 import { registerMetaAnalysisRoutes } from "./metaAnalysis";
 import { registerCombinedMatrixRoutes } from "./combinedMatrix";
@@ -25,7 +25,7 @@ export function registerAllRoutes(app: Express, apiPrefix = "/api") {
   registerStatuteRoutes(app, apiPrefix);
   registerScoreRoutes(app, apiPrefix);
   registerAnalysisRoutes(app, apiPrefix);
-  registerQuestionEntityRoutes(app, apiPrefix);
+  // registerQuestionEntityRoutes(app, apiPrefix);
   registerMapBoundariesRoutes(app, apiPrefix);
   registerMetaAnalysisRoutes(app, apiPrefix);
   registerCombinedMatrixRoutes(app, apiPrefix);

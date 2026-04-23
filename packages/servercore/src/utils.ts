@@ -22,7 +22,7 @@ export function getDomainId(analysis: Analysis): string {
  * Get the question text from a question object, handling both field names
  */
 export function getQuestionText(question: Question): string {
-  return question.text || '';
+  return question.question || '';
 }
 
 /**
