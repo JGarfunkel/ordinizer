@@ -40,7 +40,7 @@ export function DomainOverviewCard({
             {allDomains
               ?.filter((domain) => domain.show !== false)
               .map((domain) => {
-                const municipalityDomain = availableDomains.find((d) => d.id === domain.id);
+                const municipalityDomain = availableDomains.find((d) => d.domainId === domain.id);
                 const hasData = municipalityDomain && municipalityDomain.available;
                 const score = hasData ? (municipalityDomain as any)?.score?.score || null : null;
 

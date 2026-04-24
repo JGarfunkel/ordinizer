@@ -343,8 +343,8 @@ export default function EntityMap({
     
   // Debug logging for municipality selection
   if (selectedEntityId) {
-    console.log('🗺️ Map component - Direct municipality ID:', selectedEntityId);
-    console.log('🗺️ Map component - Found municipality:', selectedEntity?.displayName);
+    // console.log('🗺️ Map component - Direct municipality ID:', selectedEntityId);
+    // console.log('🗺️ Map component - Found municipality:', selectedEntity?.displayName);
   }
     
   const { data: analysisData, isLoading: analysisLoading } = useQuery({
@@ -526,7 +526,7 @@ export default function EntityMap({
   };
 
   const onEachFeature = (feature: any, layer: any) => {
-    console.log('🔧 DEBUG: onEachFeature called for:', feature.properties?.NAME || 'Unknown');
+    //console.log('🔧 DEBUG: onEachFeature called for:', feature.properties?.NAME || 'Unknown');
     layer.on({
       click: (e: any) => {
         console.log('🔥 DEBUG: CLICK EVENT FIRED for:', e.target.feature?.properties?.NAME || 'Unknown');

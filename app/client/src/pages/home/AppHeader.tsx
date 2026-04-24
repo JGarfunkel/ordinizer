@@ -2,6 +2,8 @@ import { Scale, AlertCircle, Grid } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui";
 import type { Realm } from "@ordinizer/core";
 
+const contextPath = import.meta.env.BASE_URL;
+
 interface AppHeaderProps {
   selectedRealmId: string;
   realms: Realm[] | undefined;
@@ -55,16 +57,13 @@ export function AppHeader({
               </Select>
             </div>
             <a
-              href={`/realm/${selectedRealmId}/matrix`}
+              href={`${contextPath}matrix/${selectedRealmId}`}
               className="text-civic-gray-light hover:text-gray-900 transition-colors font-medium flex items-center gap-1"
               title="View complete analysis matrix for all municipalities and domains"
             >
               <Grid className="w-4 h-4" />
               Matrix
             </a>
-            <button className="text-civic-gray-light hover:text-gray-900 transition-colors">
-              <AlertCircle className="text-lg" />
-            </button>
           </div>
         </div>
       </div>

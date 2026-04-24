@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { getReadOnlyStorage } from "../storage";
+import { Domain } from "@ordinizer/core";
 
 export function registerCombinedMatrixRoutes(app: Express, apiPrefix: string = "/api") {
   // Get combined matrix data for all domains and municipalities (realm-specific)
@@ -8,17 +9,17 @@ export function registerCombinedMatrixRoutes(app: Express, apiPrefix: string = "
       const { realmId } = req.params;
       const storage = getReadOnlyStorage(realmId);
 
-      const domains = await storage.getDomainsByRealm(realmId);
-      const visibleDomains = domains.filter((d: any) => d.show !== false);
+      const domains = await storage.getDomains();
+      const visibleDomains = domains.filter((d: Domain) => d.show !== false);
       const matrixData = await storage.getCombinedMatrixData(realmId);
 
       res.json({
-        domains: visibleDomains.map((d: any) => ({
+        domains: visibleDomains.map((d: Domain) => ({
           id: d.id,
           displayName: d.displayName || d.name,
           description: d.description
         })),
-        municipalities: matrixData
+        entities: matrixData
       });
     } catch (error) {
       console.error('Error generating combined matrix:', error);

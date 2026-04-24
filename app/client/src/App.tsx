@@ -34,7 +34,7 @@ export function OrdinizerApp({ basePath = "" }: OrdinizerAppProps) {
         <Route path={`${prefix}/realm/:realmid/:domain/matrix`} component={Matrix} />
         <Route path={`${prefix}/realm/:realmid/:domain/:municipality`} component={Home} />
         <Route path={`${prefix}/realm/:realmid/:domain`} component={Home} />
-        <Route path={`${prefix}/realm/:realmid/matrix`} component={CombinedMatrix} />
+        <Route path={`${prefix}/matrix/:realmid`} component={CombinedMatrix} />
         <Route path={`${prefix}/realm/:realmid`} component={Home} />
         
         {/* Admin and utility routes */}

@@ -114,14 +114,14 @@ export default function Home() {
   useEffect(() => {
     const realmIdFromRoute = params.realmid;
     if (realmIdFromRoute && realmIdFromRoute !== selectedRealmId) {
-      console.log('ðŸ›ï¸ Setting realm ID from route:', realmIdFromRoute);
+      // console.log('Setting realm ID from route:', realmIdFromRoute);
       setSelectedRealmId(realmIdFromRoute);
     } else if (!realmIdFromRoute && !selectedRealmId) {
       // Fallback to dynamically determined default realm
-      console.log('ðŸ›ï¸ No realm in route, determining default dynamically');
+      // console.log('ðŸ›ï¸ No realm in route, determining default dynamically');
       getDefaultRealmId().then(defaultRealmId => {
         if (defaultRealmId) {
-          console.log('ðŸ›ï¸ Using default realm:', defaultRealmId);
+          // console.log('ðŸ›ï¸ Using default realm:', defaultRealmId);
           setSelectedRealmId(defaultRealmId);
         }
       }).catch(error => {
@@ -132,28 +132,28 @@ export default function Home() {
 
   // Parse both path parameters and query parameters
   useEffect(() => {
-    console.log('ðŸ”„ URL Effect triggered:', { 
-      params, 
-      search, 
-      selectedEntityId, 
-      selectedDomainId 
-    });
+    // console.log('URL Effect triggered:', { 
+    //   params, 
+    //   search, 
+    //   selectedEntityId, 
+    //   selectedDomainId 
+    // });
     
     // Handle path-based routing (/realm/westchester-municipal-environmental/trees/NY-Ardsley or /realm/westchester-municipal-environmental/trees)
     if (params.realmid && params.domain) {
       const realmId = params.realmid;
       const domainId = params.domain;
-      console.log('ðŸ“ Path-based routing - realm:', realmId, 'domain:', domainId, 'municipality:', params.municipality);
+      // console.log('Path-based routing - realm:', realmId, 'domain:', domainId, 'municipality:', params.municipality);
       
       // Set realm if different
       if (realmId !== selectedRealmId) {
-        console.log('ðŸ”„ Setting realm from URL:', realmId);
+        // console.log('Setting realm from URL:', realmId);
         setSelectedRealmId(realmId);
       }
       
       // Set domain if different
       if (domainId !== selectedDomainId) {
-        console.log('ðŸ”„ Setting domain:', domainId);
+        // console.log('Setting domain from URL:', domainId);
         setSelectedDomainId(domainId);
       }
       
@@ -161,10 +161,10 @@ export default function Home() {
       if (params.municipality && municipalities) {
         const municipalitySlug = params.municipality;
         const municipality = findEntityBySlug(municipalitySlug, municipalities);
-        console.log('ðŸ›ï¸ Found municipality from slug:', municipalitySlug, '->', municipality?.displayName);
+        // console.log('Found municipality from slug:', municipalitySlug, '->', municipality?.displayName);
         
         if (municipality && municipality.id !== selectedEntityId) {
-          console.log('ðŸ”„ Setting municipality from URL:', municipality.id);
+          // console.log('Setting municipality from URL:', municipality.id);
           setSelectedEntityId(municipality.id);
           setSelectedVersion("current"); // Reset to current version when municipality changes
           setShowSidebarAnalysis(true); // Show analysis in sidebar, keep map visible
@@ -173,10 +173,10 @@ export default function Home() {
       }
       // If only domain is provided (/realm/westchester-municipal-environmental/trees), don't show results yet - wait for municipality selection
       else if (!params.municipality) {
-        console.log('ðŸ“ Domain-only path, clearing municipality and sidebar');
+        // console.log('Domain-only path, clearing municipality and sidebar');
         // Clear municipality if it's set (avoid React warnings by using setTimeout)
         if (selectedEntityId) {
-          console.log('ðŸ§¹ Clearing municipality from domain-only URL');
+          // console.log('Clearing municipality from domain-only URL');
           setTimeout(() => setSelectedEntityId(""), 0);
         }
         setShowResults(false);
@@ -307,14 +307,14 @@ export default function Home() {
   // Add effect to log analysis data changes
   useEffect(() => {
     if (analysisData && selectedDomainId && selectedEntityId) {
-      console.log('Analysis data received:', {
-        municipality: analysisData?.municipality?.displayName,
-        domain: analysisData?.domain?.displayName,
-        questionsCount: analysisData?.questions?.length || 0,
-        hasAlignmentSuggestions: !!analysisData?.alignmentSuggestions,
-        showSidebarAnalysis,
-        showResults
-      });
+      // console.log('Analysis data received:', {
+      //   municipality: analysisData?.municipality?.displayName,
+      //   domain: analysisData?.domain?.displayName,
+      //   questionsCount: analysisData?.questions?.length || 0,
+      //   hasAlignmentSuggestions: !!analysisData?.alignmentSuggestions,
+      //   showSidebarAnalysis,
+      //   showResults
+      // });
     }
     if (analysisError) {
       console.error('Analysis data fetch failed:', analysisError);
@@ -325,9 +325,9 @@ export default function Home() {
   const selectedDomain = availableDomains?.find(d => d.id === selectedDomainId);
 
   const handleEntityChange = (value: string) => {
-    console.log('ðŸ›ï¸  Dropdown municipality selection:', value);
+    // console.log('Dropdown municipality selection:', value);
     const municipality = municipalities?.find(m => m.id === value);
-    console.log('ðŸ›ï¸  Found municipality object:', municipality?.displayName, 'ID:', municipality?.id);
+    // console.log('Found municipality object:', municipality?.displayName, 'ID:', municipality?.id);
     
     setSelectedEntityId(value);
     // Don't clear domain selection when changing municipality
@@ -337,7 +337,7 @@ export default function Home() {
       // Update URL for deep linking but don't navigate
       if (municipality) {
         const slug = createEntitySlug(municipality);
-        console.log('ðŸ›ï¸  Created slug for URL:', slug);
+        // console.log('Created slug for URL:', slug);
         window.history.pushState({}, '', `/realm/${selectedRealmId}/${selectedDomainId}/${slug}`);
       }
     } else {
@@ -347,28 +347,28 @@ export default function Home() {
   };
 
   const handleRealmChange = (realmId: string) => {
-    console.log('ðŸ›ï¸  === REALM CHANGE START ===');
-    console.log('ðŸ›ï¸  Changing from', selectedRealmId, 'to', realmId);
-    console.log('ðŸ›ï¸  Current allDomains before change:', allDomains?.map(d => d.displayName));
+    // console.log('=== REALM CHANGE START ===');
+    // console.log('Changing from', selectedRealmId, 'to', realmId);
+    // console.log('Current allDomains before change:', allDomains?.map(d => d.displayName));
     
     // Store old realm ID before updating
     const oldRealmId = selectedRealmId;
     
     // Completely clear all realm-related queries
-    console.log('ðŸ›ï¸  Removing ALL realm queries from cache');
+    // console.log('Removing ALL realm queries from cache');
     queryClient.removeQueries({ queryKey: [apiPath('realms')] });
     queryClient.clear(); // Nuclear option - clear entire cache
     
-    console.log('ðŸ›ï¸  Setting selectedRealmId to:', realmId);
+    // console.log('Setting selectedRealmId to:', realmId);
     setSelectedRealmId(realmId);
     
     // Reset domain and municipality when realm changes since different realms have different domains/entities
     if (selectedDomainId) {
-      console.log('ðŸ”„ Clearing domain selection due to realm change');
+      // console.log('Clearing domain selection due to realm change');
       setSelectedDomainId("");
     }
     if (selectedEntityId) {
-      console.log('ðŸ”„ Clearing municipality selection due to realm change');
+      // console.log('Clearing municipality selection due to realm change');
       setSelectedEntityId("");
     }
     
@@ -378,35 +378,35 @@ export default function Home() {
     
     // Navigate to the new realm route
     navigate(buildPath(`/realm/${realmId}`));
-    console.log('ðŸ›ï¸  === REALM CHANGE END ===');
+    // console.log('=== REALM CHANGE END ===');
   };
 
   const handleDomainChange = (domainId: string, available?: boolean) => {
-    console.log('Domain change - domainId:', domainId, 'available:', available, 'current selectedDomainId:', selectedDomainId);
+    // console.log('Domain change - domainId:', domainId, 'available:', available, 'current selectedDomainId:', selectedDomainId);
     
     // For municipalities with loaded domains, check availability
     if (selectedEntityId && available !== undefined && !available) return;
     
     // If clicking the same domain, unselect it
     if (selectedDomainId === domainId) {
-      console.log('Unselecting domain:', domainId);
+      // console.log('Unselecting domain:', domainId);
       setSelectedDomainId("");
       setShowSidebarAnalysis(false);
       updateURL(selectedEntityId, "");
     } else {
       // Select new domain
-      console.log('Selecting new domain:', domainId);
+      // console.log('Selecting new domain:', domainId);
       setSelectedDomainId(domainId);
       
       // Show results in sidebar if both municipality and domain are selected
       if (selectedEntityId) {
-        console.log('Entity already selected, showing sidebar analysis');
+        // console.log('Entity already selected, showing sidebar analysis');
         setShowSidebarAnalysis(true);
         setShowResults(false); // Ensure we stay in the main selection interface
         updateURL(selectedEntityId, domainId);
       } else {
         // If no municipality selected, navigate to domain-only path
-        console.log('No municipality selected, navigating to domain path');
+        // console.log('No municipality selected, navigating to domain path');
         navigate(buildPath(`/realm/${selectedRealmId}/${domainId}`));
       }
     }
@@ -414,7 +414,7 @@ export default function Home() {
 
   // Map click handler - clean state updates without timeout issues
   const handleMapEntityClick = useCallback((municipalityId: string) => {
-    console.log('Map click - municipality:', municipalityId);
+    // console.log('Map click - municipality:', municipalityId);
     
     // Always set the municipality
     setSelectedEntityId(municipalityId);
@@ -422,7 +422,7 @@ export default function Home() {
     // Check current domain state and update sidebar accordingly
     setSelectedDomainId(currentDomainId => {
       if (currentDomainId) {
-        console.log('Domain is selected, showing analysis in sidebar for domain:', currentDomainId);
+        // console.log('Domain is selected, showing analysis in sidebar for domain:', currentDomainId);
         
         // Show sidebar when domain is selected
         setShowSidebarAnalysis(true);
@@ -434,7 +434,7 @@ export default function Home() {
           updateURL(municipalityId, currentDomainId);
         }
       } else {
-        console.log('No domain selected, staying in selection mode');
+        // console.log('No domain selected, staying in selection mode');
         
         // Hide sidebar when no domain is selected
         setShowSidebarAnalysis(false);
@@ -449,8 +449,9 @@ export default function Home() {
     setShowResults(false); // Always stay in selection interface
   }, [municipalities, createEntitySlug, updateURL]);
 
-  return (
-    <div className="min-h-screen bg-civic-bg">
+  
+  return (  
+    <div className="bg-civic-bg" style={{ minHeight: 'calc(100vh - 52px)' }}>
       <AppHeader
         selectedRealmId={selectedRealmId}
         realms={realms}
