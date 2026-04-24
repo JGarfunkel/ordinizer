@@ -6,6 +6,7 @@
     "composite": true,
     "declaration": true,
     "declarationMap": true,
+    "emitDeclarationOnly": false,
     "baseUrl": ".",
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM"],
