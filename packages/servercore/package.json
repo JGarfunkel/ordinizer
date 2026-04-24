@@ -18,6 +18,7 @@
     "dist"
   ],
   "scripts": {
+    "prepare": "tsc --build",
     "build": "tsc --project tsconfig.json",
     "dev": "tsc --watch --project tsconfig.json",
     "typecheck": "tsc --noEmit --project tsconfig.json",
