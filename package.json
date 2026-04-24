@@ -14,7 +14,8 @@
     "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/servercore",
     "build:workspaces": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "clean": "npm run clean --workspaces --if-present"
+    "clean": "npm run clean --workspaces --if-present",
+    "prepare": "npm run prepare --workspace=packages/core && npm run prepare --workspace=packages/servercore"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
