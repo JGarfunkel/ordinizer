@@ -1,13 +1,14 @@
 {
   "name": "ordinizer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Ordinizer monorepo workspace",
   "type": "module",
   "workspaces": [
     "app",
     "app/*",
-    "packages/*"
+    "packages/core",
+    "packages/servercore"
   ],
   "scripts": {
     "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/servercore",
