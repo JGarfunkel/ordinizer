@@ -7,8 +7,7 @@
   "workspaces": [
     "app",
     "app/*",
-    "packages/core",
-    "packages/servercore"
+    "packages/*"
   ],
   "scripts": {
     "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/servercore",
