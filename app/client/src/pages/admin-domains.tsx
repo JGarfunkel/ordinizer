@@ -6,7 +6,7 @@ import { Button } from "../ui";
 import { apiPath } from "../lib/apiConfig";
 import { ArrowLeft, ExternalLink, Database } from 'lucide-react';
 import { useBasePath } from '../contexts/BasePathContext';
-import type { Question, DomainWithQuestions, DataSource, Realm } from '@ordinizer/core';
+import type { Question, DomainWithQuestions, DataSource, Realm } from '@civillyengaged/ordinizer-core';
 import { useRealms } from '../hooks/useRealms';
 
 export default function AdminDomains() {

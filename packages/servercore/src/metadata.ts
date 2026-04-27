@@ -6,7 +6,7 @@
  * `Ruleset` / `RulesetSource` types defined in @ordinizer/core.
  */
 
-import type { Ruleset, RulesetSource } from '@ordinizer/core';
+import type { Ruleset, RulesetSource } from '@civillyengaged/ordinizer-core';
 import type { IStorageReadOnly } from './storage.js';
 
 

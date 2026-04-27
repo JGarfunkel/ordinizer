@@ -4,7 +4,7 @@ import { Card, CardContent } from "../../ui";
 import { Button } from "../../ui";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "../../ui/collapsible";
 import EntityMap from "../../components/EntityMap";
-import type { Realm } from "@ordinizer/core";
+import type { Realm } from "@civillyengaged/ordinizer-core";
 
 interface MapPanelProps {
   selectedDomainId: string;

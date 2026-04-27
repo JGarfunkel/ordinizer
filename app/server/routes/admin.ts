@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { getReadOnlyStorage } from "../storage";
-import { Question } from "@ordinizer/core";
+import { Question } from "@civillyengaged/ordinizer-core";
 
 export function registerAdminRoutes(app: Express, apiPrefix: string = "/api") {
   // NOTE: No current client consumer. The client uses /realms/:realmId/domains/questions instead.

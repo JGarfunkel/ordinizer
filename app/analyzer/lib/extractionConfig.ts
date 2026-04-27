@@ -1,6 +1,6 @@
 import fs from "fs-extra";
 import path from "path";
-import { type Realm } from "@ordinizer/core";
+import { type Realm } from "@civillyengaged/ordinizer-core";
 import { loadSpreadsheetExtractionProperties } from "./spreadsheetParser.js";
 
 export type { Realm };

@@ -1,7 +1,7 @@
 import { Grid } from "lucide-react";
 import { Button } from "../../ui";
 import { Skeleton } from "../../ui";
-import type { EntityDomain } from "@ordinizer/core";
+import type { EntityDomain } from "@civillyengaged/ordinizer-core";
 import type { DomainItem } from "./types";
 
 interface DomainSelectorProps {

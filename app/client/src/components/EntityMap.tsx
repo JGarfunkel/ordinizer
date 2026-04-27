@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { ChevronUp, ChevronDown, X, Map, MapPin } from "lucide-react";
-import { Entity, EntityDomain, Realm } from "@ordinizer/core";
+import { Entity, EntityDomain, Realm } from "@civillyengaged/ordinizer-core";
 import { getEnvironmentalScoreLegend } from '../lib/scoreColors';
 import { apiPath } from '../lib/apiConfig';
 import { useRealmEntities } from '../hooks/useRealmEntities';

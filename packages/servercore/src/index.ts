@@ -21,7 +21,7 @@ export type { IStorage, IStorageReadOnly, FileStat } from './storage';
 export { getSourceForRealm } from './metadata';
 
 // Re-export commonly used types from @ordinizer/core for convenience
-export type { Analysis, MetaAnalysis, Ruleset, RulesetSource, Realm } from '@ordinizer/core';
+export type { Analysis, MetaAnalysis, Ruleset, RulesetSource, Realm } from '@civillyengaged/ordinizer-core';
 export { 
   getEntityId, 
   getDomainId, 

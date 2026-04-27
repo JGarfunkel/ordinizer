@@ -1,7 +1,7 @@
 import { AlertCircle, Ban, ExternalLink } from "lucide-react";
 import { Link } from "wouter";
 import { Card, CardContent } from "../../ui";
-import type { Entity, EntityDomain } from "@ordinizer/core";
+import type { Entity, EntityDomain } from "@civillyengaged/ordinizer-core";
 import type { DomainItem } from "./types";
 
 interface DomainOverviewCardProps {

@@ -15,7 +15,7 @@ import {
   indexDocumentInPinecone, answerQuestionWithVector,
   setVerbose as setVectorVerbose,
 } from "../services/vectorService.js";
-import { Analysis, MetaAnalysis, JsonFileStorage, type FileStat } from "@ordinizer/servercore";
+import { Analysis, MetaAnalysis, JsonFileStorage, type FileStat } from "@civillyengaged/ordinizer-servercore";
 
 
 // Storage singleton — initialized lazily with the correct data directory.

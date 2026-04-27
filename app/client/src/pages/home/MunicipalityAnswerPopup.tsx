@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import type { Entity } from "@ordinizer/core";
+import type { Entity } from "@civillyengaged/ordinizer-core";
 
 interface MunicipalityAnswerPopupData {
   questionId: number;

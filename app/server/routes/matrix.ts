@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { getReadOnlyStorage } from "../storage";
-import { getOrdinizer } from "@ordinizer/servercore";
-import { MatrixData } from "@ordinizer/core";
+import { getOrdinizer } from "@civillyengaged/ordinizer-servercore";
+import { MatrixData } from "@civillyengaged/ordinizer-core";
 
 export function registerMatrixRoutes(app: Express, apiPrefix: string = "/api") {
   // Matrix view endpoint for domain analysis (realm-aware)

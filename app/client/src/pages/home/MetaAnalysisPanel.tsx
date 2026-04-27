@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Card, CardContent } from "../../ui";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import type { MetaAnalysis } from "@ordinizer/core";
+import type { MetaAnalysis } from "@civillyengaged/ordinizer-core";
 
 interface MetaAnalysisPanelProps {
   metaAnalysisData: MetaAnalysis | undefined;

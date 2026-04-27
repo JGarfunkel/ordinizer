@@ -1,6 +1,6 @@
 import { Scale, AlertCircle, Grid } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui";
-import type { Realm } from "@ordinizer/core";
+import type { Realm } from "@civillyengaged/ordinizer-core";
 
 const contextPath = import.meta.env.BASE_URL;
 

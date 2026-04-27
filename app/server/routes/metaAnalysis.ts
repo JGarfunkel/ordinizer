@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { getReadOnlyStorage } from "../storage"
-import type { MetaAnalysis } from "@ordinizer/core";
+import type { MetaAnalysis } from "@civillyengaged/ordinizer-core";
 
 export function registerMetaAnalysisRoutes(app: Express, apiPrefix: string = "/api") {
   

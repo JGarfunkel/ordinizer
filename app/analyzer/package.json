@@ -1,16 +1,18 @@
 {
   "name": "@civillyengaged/ordinizer-analyzer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Analysis and offline data preparation tools for Ordinizer.",
   "main": "lib/createMetaAnalysis.ts",
   "types": "lib/createMetaAnalysis.d.ts",
+  "publishConfig": { "access": "public" },
   "scripts": {
+    "build": "tsc",
     "meta-analysis": "tsx lib/createMetaAnalysis.ts",
     "smoke-test": "tsx lib/smokeTest.ts",
     "test": "npx --node-options=--experimental-vm-modules jest"
   },
   "dependencies": {
-    "@civillyengaged/ordinizer-core": "file:../../packages/core",
+    "@civillyengaged/ordinizer-core": "1.0.1",
     "@pinecone-database/pinecone": "^6.1.2",
     "@types/jsdom": "^28.0.1",
     "@types/node": "^20.19.39",

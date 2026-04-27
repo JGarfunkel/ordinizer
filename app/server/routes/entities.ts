@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { getReadOnlyStorage } from "../storage";
-import { Entity } from "@ordinizer/core";
+import { Entity } from "@civillyengaged/ordinizer-core";
 
 
 export function registerEntityRoutes(app: Express, apiPrefix: string = "/api") {

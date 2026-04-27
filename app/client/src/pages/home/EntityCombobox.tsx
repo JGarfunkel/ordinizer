@@ -4,7 +4,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../ui";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "../../ui";
 import { queryClient } from "../../lib/queryClient";
 import { apiPath } from "../../lib/apiConfig";
-import type { Entity, Realm } from "@ordinizer/core";
+import type { Entity, Realm } from "@civillyengaged/ordinizer-core";
 
 interface EntityComboboxProps {
   selectedEntityId: string;

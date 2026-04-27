@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Ordinizer monorepo workspace",
+  "publishConfig": { "access": "public" },
   "keywords": [
     "ordinance",
     "organizer"

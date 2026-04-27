@@ -7,7 +7,7 @@ import { getDefaultRealmId } from '../lib/realmUtils';
 import { useBasePath } from "../contexts/BasePathContext";
 import { useRealms } from "../hooks/useRealms";
 import { useEntities } from "../hooks/useEntities";
-import type { Entity, EntityDomain, Realm, MetaAnalysis, Analysis } from "@ordinizer/core";
+import type { Entity, EntityDomain, Realm, MetaAnalysis, Analysis } from "@civillyengaged/ordinizer-core";
 import { AppHeader } from "./home/AppHeader";
 import { EntityCombobox } from "./home/EntityCombobox";
 import { DomainSelector } from "./home/DomainSelector";

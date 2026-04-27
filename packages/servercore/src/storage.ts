@@ -15,7 +15,7 @@ import type {
   Realm, Ruleset,
   EntityCollection, Entity,
   DomainSummaryRow, CombinedMatrixRow, SectionIndexEntry, DataSourcesConfig,
-} from "@ordinizer/core";
+} from "@civillyengaged/ordinizer-core";
 import { log } from "util";
 
 const DEFAULT_DATA_ROOT = process.env.DATA_ROOT || "data";

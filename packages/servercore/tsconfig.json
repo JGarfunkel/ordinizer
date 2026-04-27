@@ -11,9 +11,9 @@
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM"],
     "paths": {
-      "@ordinizer/core": ["../core/src/index.ts"],
+      "@civillyengaged/ordinizer-core": ["../core/src/index.ts"],
       "@ordinizer/core/*": ["../core/src/*"],
-      "@ordinizer/servercore": ["./src/index.ts"],
+      "@civillyengaged/ordinizer-servercore": ["./src/index.ts"],
       "@ordinizer/servercore/*": ["./src/*"]
     },
     "types": ["node"]

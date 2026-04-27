@@ -7,9 +7,9 @@
     "outDir": "./dist",
     "baseUrl": ".",
     "paths": {
-      "@ordinizer/core": ["../../packages/core/src"],
+      "@civillyengaged/ordinizer-core": ["../../packages/core/src"],
       "@ordinizer/core/*": ["../../packages/core/src/*"],
-      "@ordinizer/servercore": ["../../packages/servercore/src"],
+      "@civillyengaged/ordinizer-servercore": ["../../packages/servercore/src"],
       "@ordinizer/servercore/*": ["../../packages/servercore/src/*"]
     },
     "rootDir": "../..", 

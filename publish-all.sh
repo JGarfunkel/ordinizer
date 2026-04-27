@@ -16,7 +16,7 @@ for PKG in "${PACKAGES[@]}"; do
   npm run build
   
   # 3. Publish to Artifact Registry
-  npm publish
+  npm publish --otp=$1
   
   popd > /dev/null
   echo "Successfully published $PKG"

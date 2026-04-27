@@ -2,7 +2,7 @@
  * Configuration management for the Ordinizer library
  */
 
-import type { Realm } from '@ordinizer/core';
+import type { Realm } from '@civillyengaged/ordinizer-core';
 
 export class OrdinizerConfig {
   private realm: Realm;

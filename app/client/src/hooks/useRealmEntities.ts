@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiPath } from '../lib/apiConfig';
-import type { Entity } from '@ordinizer/core';
+import type { Entity } from '@civillyengaged/ordinizer-core';
 
 /**
  * Fetch and cache entities (municipalities, school districts, etc.) for a realm.

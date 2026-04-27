@@ -27,7 +27,7 @@ export function registerStatuteRoutes(app: Express, apiPrefix: string = "/api") 
       const { realm: realmId } = req.query;
       const targetRealmId = typeof realmId === 'string' ? realmId : '';
       const storage = getReadOnlyStorage(targetRealmId);
-      const ruleset = await storage.getRuleset(domainId, entityId, targetRealmId);
+      const ruleset = await storage.getRuleset(domainId, entityId);
       if (!ruleset) {
         return res.status(404).json({ error: 'Statute metadata not found' });
       }
@@ -56,7 +56,7 @@ export function registerStatuteRoutes(app: Express, apiPrefix: string = "/api") 
       }
 
       // Fallback: return sourceUrl from ruleset metadata
-      const ruleset = await storage.getRuleset(domainId, entityId, targetRealmId);
+      const ruleset = await storage.getRuleset(domainId, entityId);
       if (ruleset) {
         const sourceUrl = (ruleset as any).sourceUrl || `/api/statute/${domainId}/${entityId}`;
         return res.json({

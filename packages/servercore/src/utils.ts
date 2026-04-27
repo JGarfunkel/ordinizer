@@ -2,7 +2,7 @@
  * Utility functions for backward compatibility and data transformation
  */
 
-import type { Analysis, Question, AnalyzedQuestion } from '@ordinizer/core'
+import type { Analysis, Question, AnalyzedQuestion } from '@civillyengaged/ordinizer-core'
 
 /**
  * Get the actual entity ID from an analysis, handling both formats

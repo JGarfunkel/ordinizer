@@ -2,7 +2,7 @@ import { AlertCircle, HelpCircle, FileText } from "lucide-react";
 import { Card, CardContent } from "../../ui";
 import StatuteLink from "../../components/StatuteLink";
 import { ScoreVisualization } from "../../components/ScoreVisualization";
-import type { Analysis, Entity, Realm } from "@ordinizer/core";
+import type { Analysis, Entity, Realm } from "@civillyengaged/ordinizer-core";
 import type { ScoreData, VersionsData } from "./types";
 
 function isNotSpecified(answer: string): boolean {
@@ -55,19 +55,19 @@ export function SidebarAnalysis({
               <h3 className="text-xl font-bold text-gray-900 mb-1">
                 {usesStateCode
                   ? municipalities?.find((m) => m.id === selectedEntityId)?.displayName
-                  : analysisData.municipality.displayName}
+                  : analysisData?.municipality?.displayName}
               </h3>
               <h4 className="text-base text-civic-blue capitalize">
-                {analysisData.domain.displayName} Regulations
+                {analysisData?.domain?.displayName} Regulations
               </h4>
               {usesStateCode ? (
                 <div className="inline-flex items-center px-3 py-2 mt-2 rounded-full text-sm font-medium bg-blue-600 text-white">
                   No Local Code, Uses State Code
                 </div>
               ) : (
-                analysisData.domain.grade && (
+                analysisData?.domain?.grade && (
                   <div className="inline-flex items-center px-3 py-2 mt-2 rounded-full text-sm font-medium bg-civic-blue text-white">
-                    Grade: {String(analysisData.domain.grade).toUpperCase()}
+                    Grade: {String(analysisData?.domain?.grade).toUpperCase()}
                   </div>
                 )
               )}
@@ -126,7 +126,7 @@ export function SidebarAnalysis({
             )}
 
             {/* Questions and Answers */}
-            {analysisData.questions.length > 0 ? (
+            {analysisData?.questions?.length > 0 ? (
               <div>
                 <h5 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
                   <HelpCircle className="text-civic-blue mr-2" size={18} />
@@ -138,7 +138,7 @@ export function SidebarAnalysis({
                   )}
                 </h5>
                 <div className="space-y-4">
-                  {analysisData.questions.map((qa, index) => {
+                  {analysisData?.questions?.map((qa, index) => {
                     const scoredQuestion = scoreData?.questions.find((sq) => sq.id === qa.id);
                     const hasGap = (scoredQuestion && scoredQuestion.score < 1.0) || qa.gap;
 
@@ -159,9 +159,9 @@ export function SidebarAnalysis({
                           <div className="text-gray-600 leading-relaxed flex-1">
                             <p>{qa.answer}</p>
                             {(() => {
-                              if (!qa.analyzedAt || !analysisData.lastUpdated) return null;
+                              if (!qa.analyzedAt || !analysisData?.lastUpdated) return null;
                               const questionTime = new Date(qa.analyzedAt);
-                              const overallTime = new Date(analysisData.lastUpdated);
+                              const overallTime = new Date(analysisData?.lastUpdated);
                               const diffMinutes =
                                 Math.abs(questionTime.getTime() - overallTime.getTime()) /
                                 (1000 * 60);
@@ -176,10 +176,10 @@ export function SidebarAnalysis({
                               return null;
                             })()}
                           </div>
-                          {isNotSpecified(qa.answer) && (
+                          {isNotSpecified(qa.answer) && qa.id !== undefined && typeof analysisData?.domain?.id === "string" && (
                             <button
                               onClick={() =>
-                                onQuestionMarkClick(qa.id.toString(), analysisData.domain.id)
+                                onQuestionMarkClick(String(qa.id), String(analysisData?.domain?.id))
                               }
                               className="text-gray-400 hover:text-blue-600 transition-colors flex-shrink-0"
                               title="See municipalities that have specified this requirement"
@@ -204,36 +204,40 @@ export function SidebarAnalysis({
                             {qa.relevantSections && qa.relevantSections.length > 0 ? (
                               <span className="ml-1">
                                 {(() => {
-                                  const refs = qa.relevantSections;
+                                  const refs = qa.relevantSections as (string | { name: string; url?: string })[];
                                   const stateEntityId = usesStateCode
                                     ? `${currentRealm?.state}-State`
-                                    : analysisData.municipality.id;
-                                  if (typeof refs[0] === "string") {
-                                    return refs.map((section: string, i: number) => (
-                                      <span key={i}>
-                                        <StatuteLink
-                                          municipalityId={stateEntityId}
-                                          domainId={analysisData.domain.id}
-                                        >
-                                          {section}
-                                        </StatuteLink>
-                                        {i < refs.length - 1 && ", "}
-                                      </span>
-                                    ));
-                                  } else {
-                                    return refs.map((ref: any, i: number) => (
-                                      <span key={i}>
-                                        <StatuteLink
-                                          href={ref.url}
-                                          municipalityId={stateEntityId}
-                                          domainId={analysisData.domain.id}
-                                        >
-                                          {ref.name}
-                                        </StatuteLink>
-                                        {i < refs.length - 1 && ", "}
-                                      </span>
-                                    ));
-                                  }
+                                    : analysisData?.municipality?.id;
+                                  return refs.map((ref, i) => {
+                                    if (typeof ref === "string") {
+                                      return (
+                                        <span key={i}>
+                                          <StatuteLink
+                                            municipalityId={stateEntityId}
+                                            domainId={analysisData?.domain?.id}
+                                          >
+                                            {ref}
+                                          </StatuteLink>
+                                          {i < refs.length - 1 && ", "}
+                                        </span>
+                                      );
+                                    } else if (ref && typeof ref === "object" && "name" in ref) {
+                                      return (
+                                        <span key={i}>
+                                          <StatuteLink
+                                            href={ref.url}
+                                            municipalityId={stateEntityId}
+                                            domainId={analysisData?.domain?.id}
+                                          >
+                                            {ref.name}
+                                          </StatuteLink>
+                                          {i < refs.length - 1 && ", "}
+                                        </span>
+                                      );
+                                    } else {
+                                      return null;
+                                    }
+                                  });
                                 })()}
                               </span>
                             ) : (
@@ -241,9 +245,9 @@ export function SidebarAnalysis({
                                 municipalityId={
                                   usesStateCode
                                     ? `${currentRealm?.state}-State`
-                                    : analysisData.municipality.id
+                                    : analysisData?.municipality?.id
                                 }
-                                domainId={analysisData.domain.id}
+                                domainId={analysisData?.domain?.id}
                               >
                                 <span className="ml-1">{qa.sourceReference}</span>
                               </StatuteLink>
@@ -260,33 +264,33 @@ export function SidebarAnalysis({
                 <AlertCircle className="mx-auto mb-3" size={32} />
                 <h5 className="text-lg font-medium mb-2">Analysis Processing Required</h5>
                 <p className="text-sm">
-                  The analysis for {analysisData.municipality.displayName}'s{" "}
-                  {analysisData.domain.displayName} regulations needs to be generated. This will
+                  The analysis for {analysisData?.municipality?.displayName}'s{" "}
+                  {analysisData?.domain?.displayName} regulations needs to be generated. This will
                   provide answers to common questions about local requirements.
                 </p>
               </div>
             )}
 
             {/* Analysis & Recommendations */}
-            {analysisData.alignmentSuggestions && (
+            {analysisData?.alignmentSuggestions && (
               <div className="border-t pt-4 bg-blue-50/30 p-4 rounded-lg">
                 <h5 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
                   <FileText className="text-civic-blue mr-2" size={18} />
                   Analysis & Recommendations
                 </h5>
                 <div className="space-y-4 text-sm bg-white p-3 rounded border">
-                  {analysisData.alignmentSuggestions.strengths &&
-                    analysisData.alignmentSuggestions.strengths.length > 0 && (
+                  {analysisData?.alignmentSuggestions?.strengths &&
+                    analysisData?.alignmentSuggestions?.strengths.length > 0 && (
                       <div>
                         <p className="font-medium text-green-700 mb-1">Strengths</p>
                         <ul className="list-disc list-inside text-gray-600 space-y-1">
-                          {analysisData.alignmentSuggestions.strengths.map((strength, i) => (
+                          {analysisData?.alignmentSuggestions?.strengths.map((strength, i) => (
                             <li key={i}>{strength}</li>
                           ))}
                         </ul>
                       </div>
                     )}
-                  {analysisData.alignmentSuggestions.improvements &&
+                  {analysisData?.alignmentSuggestions?.improvements &&
                     analysisData.alignmentSuggestions.improvements.length > 0 && (
                       <div>
                         <p className="font-medium text-orange-700 mb-1">Areas for Improvement</p>

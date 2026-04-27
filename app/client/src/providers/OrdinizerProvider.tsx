@@ -7,7 +7,7 @@ export interface DataFetcher {
 
 export interface OrdinizerConfig {
   baseUrl: string;
-  fetcher: DataFetcher;
+  fetcher?: DataFetcher;
   queryClient?: QueryClient;
   /**
    * API prefix that matches the server's registered route prefix.
@@ -28,7 +28,7 @@ interface OrdinizerContextValue extends Omit<OrdinizerConfig, 'apiPrefix'> {
 
 const OrdinizerContext = createContext<OrdinizerContextValue | null>(null);
 
-const defaultFetcher: DataFetcher = async (url, options) => {
+export const defaultFetcher: DataFetcher = async (url, options) => {
   const response = await fetch(url, options);
   if (!response.ok) {
     throw new Error(`HTTP error! status: ${response.status}`);

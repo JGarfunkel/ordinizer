@@ -4,7 +4,7 @@
  */
 
 import type { Analysis, Entity, EntitySummary, DomainSummary, QuestionScore, 
-              Realm, MatrixData, RulesetSource, MatrixEntity} from '@ordinizer/core';
+              Realm, MatrixData, RulesetSource, MatrixEntity} from '@civillyengaged/ordinizer-core';
 import type { IStorageReadOnly } from './storage.js';
 
 export interface ScoreOptions {

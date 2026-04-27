@@ -14,5 +14,5 @@ export {
   getRealmsFromStorage,
   type IStorage,
   type IStorageReadOnly,
-} from "@ordinizer/servercore";
+} from "@civillyengaged/ordinizer-servercore";
 

@@ -1,7 +1,7 @@
 import fs from "fs-extra";
 import path from "path";
 import { fileURLToPath } from "url";
-import { type Realm } from "@ordinizer/core";
+import { type Realm } from "@civillyengaged/ordinizer-core";
 
 // ─── Spreadsheet parser interface (DI-ready) ────────────────────────────────
 

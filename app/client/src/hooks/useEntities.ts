@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
-import { useOrdinizer } from '../providers/OrdinizerProvider';
+import { useOrdinizer, defaultFetcher } from '../providers/OrdinizerProvider';
 import { apiPath } from '../lib/apiConfig';
-import type { Entity } from '@ordinizer/core';
+import type { Entity } from '@civillyengaged/ordinizer-core';
 
 export function useEntities(realmId?: string) {
-  const { fetcher } = useOrdinizer();
+  const { fetcher = defaultFetcher } = useOrdinizer();
 
   return useQuery<Entity[]>({
     queryKey: [apiPath(`realms/${realmId}/entities`)],

@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { getReadOnlyStorage } from "../storage";
-import { Domain } from "@ordinizer/core";
+import { Domain } from "@civillyengaged/ordinizer-core";
 
 export function registerCombinedMatrixRoutes(app: Express, apiPrefix: string = "/api") {
   // Get combined matrix data for all domains and municipalities (realm-specific)

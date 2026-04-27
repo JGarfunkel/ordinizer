@@ -1,11 +1,11 @@
 {
   "name": "@civillyengaged/ordinizer-server",
-  "version": "1.0.0",
-  "private": true,
+  "version": "1.0.1",
   "type": "module",
   "description": "Express API layer for the Ordinizer application",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "typecheck": "tsc --noEmit --project tsconfig.json",
@@ -14,8 +14,8 @@
     "test:watch": "jest --watch --config jest.config.cjs"
   },
   "dependencies": {
-    "@civillyengaged/ordinizer-core": "file:../../packages/core",
-    "@civillyengaged/ordinizer-servercore": "file:../../packages/servercore",
+    "@civillyengaged/ordinizer-core": "1.0.1",
+    "@civillyengaged/ordinizer-servercore": "1.0.1",
     "express": "^4.21.2",
     "fs-extra": "^11.3.4"
   },

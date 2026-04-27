@@ -2,7 +2,7 @@ import { AlertCircle, ArrowLeft, HelpCircle, FileText, ExternalLink } from "luci
 import { Card, CardContent } from "../../ui";
 import { Button } from "../../ui";
 import StatuteLink from "../../components/StatuteLink";
-import type { Analysis, Entity, EntityDomain } from "@ordinizer/core";
+import type { Analysis, Entity, EntityDomain } from "@civillyengaged/ordinizer-core";
 import type { ScoreData } from "./types";
 
 function isNotSpecified(answer: string): boolean {
@@ -77,10 +77,10 @@ export function FullAnalysisView({
                   <h1 className="text-2xl font-bold text-gray-900 mb-2">
                     {usesStateCode
                       ? municipalities?.find((m) => m.id === selectedEntityId)?.displayName
-                      : analysisData.municipality.displayName}
+                      : analysisData?.municipality?.displayName}
                   </h1>
                   <h2 className="text-lg text-civic-blue mb-4 capitalize">
-                    {analysisData.domain.displayName} Regulations
+                    {analysisData?.domain?.displayName} Regulations
                   </h2>
                   {usesStateCode ? (
                     <div className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-600 text-white">
@@ -88,8 +88,8 @@ export function FullAnalysisView({
                     </div>
                   ) : (
                     <div className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-civic-blue text-white">
-                      {analysisData.domain.grade
-                        ? `Grade: ${String(analysisData.domain.grade).toUpperCase()}`
+                      {analysisData?.domain?.grade
+                        ? `Grade: ${String(analysisData?.domain?.grade).toUpperCase()}`
                         : "Analysis Available"}
                     </div>
                   )}
@@ -132,7 +132,7 @@ export function FullAnalysisView({
             )}
 
             {/* Questions and Answers */}
-            {analysisData.questions.length > 0 && (
+            {analysisData?.questions?.length > 0 && (
               <Card className="shadow-sm border border-gray-200">
                 <CardContent className="p-6">
                   <div className="flex items-center mb-6">
@@ -149,7 +149,7 @@ export function FullAnalysisView({
                     </h2>
                   </div>
                   <div className="space-y-4">
-                    {analysisData.questions.map((qa, index) => {
+                    {analysisData?.questions?.map((qa, index) => {
                       const scoredQuestion = scoreData?.questions.find((sq) => sq.id === qa.id);
                       const hasGap = (scoredQuestion && scoredQuestion.score < 1.0) || qa.gap;
 
@@ -180,10 +180,10 @@ export function FullAnalysisView({
                             <p className="text-gray-700 text-sm leading-relaxed flex-1">
                               A: {qa.answer}
                             </p>
-                            {isNotSpecified(qa.answer) && (
+                            {isNotSpecified(qa.answer) && qa.id !== undefined && typeof analysisData?.domain?.id === "string" && (
                               <button
                                 onClick={() =>
-                                  onQuestionMarkClick(qa.id.toString(), analysisData.domain.id)
+                                  onQuestionMarkClick(String(qa.id), String(analysisData?.domain?.id))
                                 }
                                 className="text-gray-400 hover:text-blue-600 transition-colors flex-shrink-0"
                                 title="See municipalities that have specified this requirement"
@@ -206,8 +206,8 @@ export function FullAnalysisView({
                             <p className="text-xs text-blue-600 mt-2">
                               Reference:{" "}
                               <StatuteLink
-                                municipalityId={analysisData.municipality.id}
-                                domainId={analysisData.domain.id}
+                                municipalityId={analysisData?.municipality?.id}
+                                domainId={analysisData?.domain?.id}
                               >
                                 <span className="ml-1">
                                   {qa.relevantSections && qa.relevantSections.length > 0
@@ -226,7 +226,7 @@ export function FullAnalysisView({
             )}
 
             {/* Analysis & Recommendations */}
-            {analysisData.alignmentSuggestions && (
+            {analysisData?.alignmentSuggestions && (
               <Card className="shadow-sm border border-gray-200">
                 <CardContent className="p-6">
                   <div className="flex items-center justify-between mb-6">
@@ -239,8 +239,8 @@ export function FullAnalysisView({
                       </h2>
                     </div>
                     <StatuteLink
-                      municipalityId={analysisData.municipality.id}
-                      domainId={analysisData.domain.id}
+                      municipalityId={analysisData?.municipality?.id}
+                      domainId={analysisData?.domain?.id}
                     >
                       <Button variant="outline" size="sm" className="text-xs">
                         View Source File
@@ -249,12 +249,12 @@ export function FullAnalysisView({
                     </StatuteLink>
                   </div>
                   <div className="space-y-6">
-                    {analysisData.alignmentSuggestions.strengths &&
-                      analysisData.alignmentSuggestions.strengths.length > 0 && (
+                    {analysisData?.alignmentSuggestions?.strengths &&
+                      analysisData?.alignmentSuggestions?.strengths.length > 0 && (
                         <div>
                           <h3 className="font-semibold text-green-700 mb-3 text-lg">Strengths</h3>
                           <ul className="space-y-2">
-                            {analysisData.alignmentSuggestions.strengths.map((strength, i) => (
+                            {analysisData?.alignmentSuggestions?.strengths.map((strength, i) => (
                               <li key={i} className="flex items-start">
                                 <div className="w-2 h-2 bg-green-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
                                 <span className="text-gray-700 text-sm leading-relaxed">
@@ -265,14 +265,14 @@ export function FullAnalysisView({
                           </ul>
                         </div>
                       )}
-                    {analysisData.alignmentSuggestions.improvements &&
-                      analysisData.alignmentSuggestions.improvements.length > 0 && (
+                    {analysisData?.alignmentSuggestions?.improvements &&
+                      analysisData?.alignmentSuggestions?.improvements.length > 0 && (
                         <div>
                           <h3 className="font-semibold text-orange-700 mb-3 text-lg">
                             Areas for Improvement
                           </h3>
                           <ul className="space-y-2">
-                            {analysisData.alignmentSuggestions.improvements.map((item, i) => (
+                            {analysisData?.alignmentSuggestions?.improvements.map((item, i) => (
                               <li key={i} className="flex items-start">
                                 <div className="w-2 h-2 bg-orange-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
                                 <span className="text-gray-700 text-sm leading-relaxed">{item}</span>
@@ -281,14 +281,14 @@ export function FullAnalysisView({
                           </ul>
                         </div>
                       )}
-                    {analysisData.alignmentSuggestions.recommendations &&
-                      analysisData.alignmentSuggestions.recommendations.length > 0 && (
+                    {analysisData?.alignmentSuggestions?.recommendations &&
+                      analysisData?.alignmentSuggestions?.recommendations.length > 0 && (
                         <div>
                           <h3 className="font-semibold text-blue-700 mb-3 text-lg">
                             Recommendations
                           </h3>
                           <ul className="space-y-2">
-                            {analysisData.alignmentSuggestions.recommendations.map((rec, i) => (
+                            {analysisData?.alignmentSuggestions?.recommendations.map((rec, i) => (
                               <li key={i} className="flex items-start">
                                 <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
                                 <span className="text-gray-700 text-sm leading-relaxed">{rec}</span>
@@ -297,14 +297,14 @@ export function FullAnalysisView({
                           </ul>
                         </div>
                       )}
-                    {analysisData.alignmentSuggestions.bestPractices &&
-                      analysisData.alignmentSuggestions.bestPractices.length > 0 && (
+                    {analysisData?.alignmentSuggestions?.bestPractices &&
+                      analysisData?.alignmentSuggestions?.bestPractices.length > 0 && (
                         <div>
                           <h3 className="font-semibold text-purple-700 mb-3 text-lg">
                             Best Practices
                           </h3>
                           <ul className="space-y-2">
-                            {analysisData.alignmentSuggestions.bestPractices.map((practice, i) => (
+                            {analysisData?.alignmentSuggestions?.bestPractices.map((practice, i) => (
                               <li key={i} className="flex items-start">
                                 <div className="w-2 h-2 bg-purple-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
                                 <span className="text-gray-700 text-sm leading-relaxed">

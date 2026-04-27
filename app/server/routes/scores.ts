@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { getReadOnlyStorage } from "../storage";
-import { ScoringEngine } from "@ordinizer/servercore";
+import { ScoringEngine } from "@civillyengaged/ordinizer-servercore";
 
 export function registerScoreRoutes(app: Express, apiPrefix: string = "/api") {
   // Get environmental protection scores for a municipality and domain

@@ -23,7 +23,7 @@ import { Button } from "../ui";
 import { Badge } from "../ui";
 import { ScoreVisualization } from '../components/ScoreVisualization';
 import { getMatrixScoreColor, getEnvironmentalScoreGradient } from '../lib/scoreColors';
-import { MatrixData } from '@ordinizer/core';
+import { MatrixData } from '@civillyengaged/ordinizer-core';
 
 interface CellPopupProps {
   entity: string;
@@ -265,6 +265,7 @@ export default function MatrixPage() {
                         {entity.displayName}
                       </span>
                     </td>
+                    {/* Statute cell */}
                     <td className="sticky left-[200px] z-10 bg-background px-3 py-2 text-center border-r w-[150px]">
                       {entity.statute ? (
                         entity.statute.number === 'State Code' ? (
@@ -295,6 +296,7 @@ export default function MatrixPage() {
                         <span className="text-gray-400 text-xs">No {documentType}</span>
                       )}
                     </td>
+                    {/* Total Score cell */}
                     <td 
                       className="sticky left-[350px] z-10 px-3 py-2 text-center border-r font-medium w-[100px]"
                       style={{
@@ -311,6 +313,7 @@ export default function MatrixPage() {
                         </Link>
                       )}
                     </td>
+                    {/* Question cells */}
                     {matrixData.questions.map((question) => {
                       if (entity.referencesStateCode || !entity.statute) {
                         // Show empty cells for state code entities or when no {documentType} exists
