@@ -1,6 +1,6 @@
 {
-  "name": "@ordinizer/client",
-  "version": "0.1.0",
+  "name": "@civillyengaged/ordinizer-client",
+  "version": "1.0.0",
   "type": "module",
   "description": "Client-side components and hooks for Ordinizer - dual-delivery library (import or copy)",
   "main": "./dist/index.js",
@@ -40,7 +40,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
-    "@ordinizer/core": "file:../../packages/core",
+    "@civillyengaged/ordinizer-core": "file:../../packages/core",
     "@radix-ui/react-accordion": "^1.2.4",
     "@radix-ui/react-alert-dialog": "^1.1.7",
     "@radix-ui/react-aspect-ratio": "^1.1.3",

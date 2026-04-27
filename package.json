@@ -1,9 +1,24 @@
 {
-  "name": "ordinizer",
-  "version": "1.0.1",
+  "name": "@civillyengaged/ordinizer",
+  "version": "1.0.0",
   "private": true,
   "description": "Ordinizer monorepo workspace",
+  "keywords": [
+    "ordinance",
+    "organizer"
+  ],
+  "homepage": "https://github.com/JGarfunkel/ordinizer#readme",
+  "bugs": {
+    "url": "https://github.com/JGarfunkel/ordinizer/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JGarfunkel/ordinizer.git"
+  },
+  "license": "MIT",
+  "author": "Jon Garfunkel",
   "type": "module",
+  "main": "index.js",
   "workspaces": [
     "app",
     "app/*",
@@ -13,8 +28,10 @@
     "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/servercore",
     "build:workspaces": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "clean": "npm run clean --workspaces --if-present",
-    "prepare": "npm run prepare --workspace=packages/core && npm run prepare --workspace=packages/servercore"
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "dependencies": {
+    "wouter": "^3.9.0"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
@@ -25,9 +42,5 @@
     "ts-jest": "^29.4.9",
     "tsx": "^4.7.0",
     "typescript": "^5.9.3"
-  },
-  "license": "MIT",
-  "dependencies": {
-    "wouter": "^3.9.0"
   }
 }

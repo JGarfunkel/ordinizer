@@ -77,22 +77,23 @@ Create or update `data/realms.json` with your realm configuration (see Concepts 
 
 If using a Google Sheets data source, configure `app/analyzer/data/spreadsheetExtractionProperties.json` with the spreadsheet URL, state code, and domain mappings for your realm.
 
+
 ### 3. Extract Entity Data
 
-Extract entity and statute data from your configured data source:
+Extract entity and statute data from your configured data source using the new script locations:
 
 ```bash
 # Extract all domains with smart incremental processing
-tsx ordinizer/scripts/extractFromGoogleSheets.ts
+tsx app/analyzer/lib/extractEntityData.ts
 
 # Extract specific domain
-tsx ordinizer/scripts/extractFromGoogleSheets.ts --domain="Property Maintenance"
+tsx app/analyzer/lib/extractEntityData.ts --domain="Property Maintenance"
 
 # Extract with verbose logging
-tsx ordinizer/scripts/extractFromGoogleSheets.ts --domain=Trees --verbose
+tsx app/analyzer/lib/extractEntityData.ts --domain=Trees --verbose
 
 # Extract with entity filter
-tsx ordinizer/scripts/extractFromGoogleSheets.ts --domain=Trees --municipality-filter="Ardsley,Bedford,Bronxville"
+tsx app/analyzer/lib/extractEntityData.ts --domain=Trees --municipality-filter="Ardsley,Bedford,Bronxville"
 ```
 
 This will:
@@ -119,10 +120,10 @@ tsx ordinizer/scripts/analyzeStatutes.ts --domain trees --force
 tsx ordinizer/scripts/analyzeStatutes.ts --domain trees --verbose
 
 # Regenerate scores only (fast, no AI calls)
-tsx ordinizer/scripts/analyzeStatutes.ts --generateScoreOnly --domain trees
+tsx app/analyzer/lib/analyzeStatutes.ts --generateScoreOnly --domain trees
 
 # Generate analysis AND meta-analysis in one command
-tsx ordinizer/scripts/analyzeStatutes.ts --domain trees --generate-meta
+tsx app/analyzer/lib/analyzeStatutes.ts --domain trees --generate-meta
 ```
 
 ### 5. Run the Web Application
@@ -140,69 +141,7 @@ The application will be available at the provided URL with:
 
 The project uses a streamlined script architecture with two main production scripts.
 
-**Library-Style Usage**: All scripts are referenced as a library from the `ordinizer/` directory. Run scripts using `tsx ordinizer/scripts/<script-name>.ts` from the project root.
-
-### Main Production Scripts
-
-#### 1. `extractFromGoogleSheets.ts` - Data Extraction & Statute Download
-The primary data extraction script that handles the complete pipeline:
-
-```bash
-# Basic usage - extracts all domains
-tsx ordinizer/scripts/extractFromGoogleSheets.ts
-
-# Extract specific domain
-tsx ordinizer/scripts/extractFromGoogleSheets.ts --domain="Property Maintenance"
-
-# Filter by entities
-tsx ordinizer/scripts/extractFromGoogleSheets.ts --domain=Trees --municipality-filter="Ardsley,Bedford"
-```
-
-**Features:**
-- Smart URL extraction (prioritizes cell content over generic hyperlinks)
-- Respects server rate limits (5-second delays between downloads)
-- Creates entity and domain definition files
-- Downloads statute content with HTML preservation option
-- Handles grading system (G-, R-, Y-, X- prefixes)
-- Generates metadata with download timestamps and source URLs
-- Verbose logging mode (`--verbose` or `-v`) for HTTP debugging
-- Entity filtering (`--municipality-filter="name1,name2"`) for targeted extraction
-- **Intelligent parameter validation** with typo suggestions using Levenshtein distance algorithm
-
-#### 2. `analyzeStatutes.ts` - AI Analysis Generation
-Generates AI-powered Q&A analysis using OpenAI and optional Pinecone vector processing:
-
-```bash
-# Analyze all domains and entities
-tsx ordinizer/scripts/analyzeStatutes.ts
-
-# Process specific domain with verbose logging
-tsx ordinizer/scripts/analyzeStatutes.ts --domain property-maintenance --verbose
-
-# Force re-analysis of specific entity
-tsx ordinizer/scripts/analyzeStatutes.ts --municipality NY-Bedford-Town --force
-
-# Regenerate scores only without AI analysis (fast)
-tsx ordinizer/scripts/analyzeStatutes.ts --generateScoreOnly --domain trees
-```
-
-**Features:**
-- Generates domain-specific questions if missing
-- Creates confidence-scored Q&A analysis using OpenAI GPT-4o and Pinecone vector search
-- Implements incremental processing (only analyzes new/missing questions)
-- Quality preservation (keeps better analysis when regenerating)
-- Handles corrupted statute detection and state code references
-
-### Specialized Utility Scripts
-
-Additional scripts for specific maintenance tasks:
-
-- `reconvertHtmlToText.ts` - Re-convert statute HTML files to proper plain text
-- `cleanupDuplicateDirectories.ts` - Remove duplicate entity directories with incorrect naming
-- `removeLoginPromptFiles.ts` - Remove files containing login prompts instead of actual content
-- `clearCorruptionFlags.ts` - Remove corruption markers from analysis files
-- `redownloadCorruptedStatutes.ts` - Re-attempt downloads for failed entities
-- `testSpreadsheetExtraction.ts` - Test URL extraction logic without downloading
+**Library-Style Usage**: All scripts are referenced from `app/analyzer/lib/`. Run scripts using `tsx app/analyzer/lib/<script-name>.ts` from the project root.
 
 ## Object Types and Storage
 

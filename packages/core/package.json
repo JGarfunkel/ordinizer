@@ -1,6 +1,6 @@
 {
-  "name": "@ordinizer/core",
-  "version": "0.1.0",
+  "name": "@civillyengaged/ordinizer-core",
+  "version": "1.0.0",
   "description": "Core types and utilities for the Ordinizer library",
   "type": "module",
   "declaration": true,
@@ -22,7 +22,6 @@
     "dist"
   ],
   "scripts": {
-    "prepare": "tsc --build",
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "node -e \"['dist','tsconfig.tsbuildinfo'].forEach(f=>require('fs').rmSync(f,{recursive:true,force:true}))\""

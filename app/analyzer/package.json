@@ -1,5 +1,5 @@
 {
-  "name": "@ordinizer/analyzer",
+  "name": "@civillyengaged/ordinizer-analyzer",
   "version": "1.0.0",
   "description": "Analysis and offline data preparation tools for Ordinizer.",
   "main": "lib/createMetaAnalysis.ts",
@@ -10,7 +10,7 @@
     "test": "npx --node-options=--experimental-vm-modules jest"
   },
   "dependencies": {
-    "@ordinizer/core": "file:../../packages/core",
+    "@civillyengaged/ordinizer-core": "file:../../packages/core",
     "@pinecone-database/pinecone": "^6.1.2",
     "@types/jsdom": "^28.0.1",
     "@types/node": "^20.19.39",

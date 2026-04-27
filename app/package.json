@@ -1,5 +1,5 @@
 {
-  "name": "@ordinizer/app",
+  "name": "@civillyengaged/ordinizer-app",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,10 +9,10 @@
     "typecheck": "npm run typecheck --workspace @ordinizer/client && npm run typecheck --workspace @ordinizer/server && npm run typecheck --workspace @ordinizer/analyzer --if-present"
   },
   "dependencies": {
-    "@ordinizer/analyzer": "file:./analyzer",
-    "@ordinizer/client": "file:./client",
-    "@ordinizer/server": "file:./server",
-    "@ordinizer/core": "file:../packages/core",
-    "@ordinizer/servercore": "file:../packages/servercore"
+    "@civillyengaged/ordinizer-analyzer": "file:./analyzer",
+    "@civillyengaged/ordinizer-client": "file:./client",
+    "@civillyengaged/ordinizer-server": "file:./server",
+    "@civillyengaged/ordinizer-core": "file:../packages/core",
+    "@civillyengaged/ordinizer-servercore": "file:../packages/servercore"
   }
 }
