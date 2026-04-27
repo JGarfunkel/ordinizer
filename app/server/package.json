@@ -1,6 +1,6 @@
 {
   "name": "@civillyengaged/ordinizer-server",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "description": "Express API layer for the Ordinizer application",
   "main": "./dist/index.js",
@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@civillyengaged/ordinizer-core": "1.0.1",
-    "@civillyengaged/ordinizer-servercore": "1.0.1",
+    "@civillyengaged/ordinizer-servercore": "^1.0.2",
     "express": "^4.21.2",
     "fs-extra": "^11.3.4"
   },

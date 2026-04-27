@@ -1,6 +1,6 @@
 {
   "name": "@civillyengaged/ordinizer-servercore",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Shared server-side core utilities and scoring logic for Ordinizer",
   "publishConfig": {
     "access": "public"
@@ -27,7 +27,7 @@
     "clean": "node -e \"['dist','tsconfig.tsbuildinfo'].forEach(f=>require('fs').rmSync(f,{recursive:true,force:true}))\""
   },
   "dependencies": {
-    "@civillyengaged/ordinizer-core": "file:../core",
+    "@civillyengaged/ordinizer-core": "^1.0.1",
     "fs-extra": "^11.3.1"
   },
   "devDependencies": {
