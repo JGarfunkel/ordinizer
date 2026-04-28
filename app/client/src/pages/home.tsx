@@ -35,6 +35,8 @@ export default function Home() {
   const [questionMunicipalitiesPopup, setQuestionMunicipalitiesPopup] = useState<{questionId: string; municipalities: any[]} | null>(null);
   const [municipalityAnswerPopup, setEntityAnswerPopup] = useState<{questionId: number; municipalityId: string; answer: string; score: number; confidence: number} | null>(null);
 
+  const ORDINIZER_CONTEXT = import.meta.env.BASE_URL;
+
   // Helper function to check if answer is "Not specified"
   const isNotSpecified = (answer: string): boolean => {
     const lowerAnswer = answer.toLowerCase();
@@ -338,7 +340,7 @@ export default function Home() {
       if (municipality) {
         const slug = createEntitySlug(municipality);
         // console.log('Created slug for URL:', slug);
-        window.history.pushState({}, '', `/realm/${selectedRealmId}/${selectedDomainId}/${slug}`);
+        window.history.pushState({}, '', `${ORDINIZER_CONTEXT}/realm/${selectedRealmId}/${selectedDomainId}/${slug}`);
       }
     } else {
       setShowSidebarAnalysis(false);
