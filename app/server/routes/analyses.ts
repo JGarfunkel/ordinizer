@@ -1,6 +1,5 @@
 import type { Express } from "express";
-import { getDefaultStorage, getReadOnlyStorage } from "../storage"
-import { get } from "node:http";
+import { getReadOnlyStorage } from "../storage"
 
 export function registerAnalysisRoutes(app: Express, apiPrefix: string = "/api") {
 

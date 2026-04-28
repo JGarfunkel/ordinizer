@@ -502,41 +502,63 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     return await fs.readJson(file);
   }
 
+  /**
+   * Backwards compatible method to get all analysis versions for an entity/domain. 
+   * If no analysis.json exists, returns empty array. 
+   * If analysis.json exists, returns it as the "current" version,
+   *  plus any backup files it finds in the same directory.
+   * @param entityId 
+   * @param domainId 
+   * @returns array of analysis version references, sorted by timestamp desc (newest first), with the current version first and marked as isCurrent=true
+   */
   async getAnalysisVersionsByEntityAndDomain(entityId: string, domainId: string): Promise<AnalysisVersionRef[]> {
+    const analysis: Analysis | null = await this.getAnalysisByEntityAndDomain(entityId, domainId);
+    if (analysis)
+      return this.getAnalysisVersionsWithAnalysis(entityId, domainId, analysis);
+    return [];
+  }
+
+  /**
+   * Method to get analysis versions 
+   * when we already have the current analysis object (to avoid redundant file reads).  
+   * @param entityId 
+   * @param domainId 
+   * @param analysis 
+   * @returns array of analysis version references, sorted by timestamp desc (newest first), with the current version first and marked as isCurrent=true
+   */
+  async getAnalysisVersionsWithAnalysis(entityId: string, domainId: string, analysis: Analysis): Promise<AnalysisVersionRef[]> {
     const directoryPath = path.join(this.dataDir, domainId, entityId);
     console.debug("Checking for analysis versions in directory:", directoryPath);
     if (!await fs.pathExists(directoryPath)) return [];
     const files = await fs.readdir(directoryPath);
-      const versions: AnalysisVersionRef[] = [];
-      const currentAnalysisPath = path.join(directoryPath, 'analysis.json');
-      if (await fs.pathExists(currentAnalysisPath)) {
-        const stats = await fs.stat(currentAnalysisPath);
-        versions.push({
-          version: 'current',
-          filename: 'analysis.json',
-          displayName: 'Current',
-          timestamp: stats.mtime.toISOString(),
-          isCurrent: true
-        });
+    const versions: AnalysisVersionRef[] = [];
+    
+    versions.push(await this.createVersionedRecord('analysis.json', analysis.lastUpdated, true));
+    
+
+    const backupFiles = files.filter(file => file.startsWith('analysis-backup-') && file.endsWith('.json')).sort().reverse();
+    for (const backupFile of backupFiles) {
+      const timestampMatch = backupFile.match(/analysis-backup-(.+)\.json$/);
+      if (timestampMatch) {
+        const timestampStr = timestampMatch[1];
+        const isoTimestamp = timestampStr.replace(/T(\d{2})-(\d{2})-(\d{2})$/, 'T$1:$2:$3') + 'Z';
+        versions.push(await this.createVersionedRecord(backupFile, isoTimestamp, false));
       }
-      const backupFiles = files.filter(file => file.startsWith('analysis-backup-') && file.endsWith('.json')).sort().reverse();
-      for (const backupFile of backupFiles) {
-        const timestampMatch = backupFile.match(/analysis-backup-(.+)\.json$/);
-        if (timestampMatch) {
-          const timestampStr = timestampMatch[1];
-          const isoTimestamp = timestampStr.replace(/T(\d{2})-(\d{2})-(\d{2})$/, 'T$1:$2:$3') + 'Z';
-          const timestamp = new Date(isoTimestamp);
-          versions.push({
-            version: timestampStr,
-            filename: backupFile,
-            displayName: 'Backup',
-            timestamp: timestamp.toISOString(),
-            isCurrent: false
-          });
+    }
+    versions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    return versions;
+  }
+
+  async createVersionedRecord(filename: string, timestampStr: string | undefined, isCurrent: boolean): 
+    Promise<AnalysisVersionRef> {
+      const displayTimestamp = timestampStr ? new Date(timestampStr).toISOString().replace(/\.d{3}Z$/,'Z') : '';
+        return {
+          version: displayTimestamp,
+          filename: filename,
+          displayName: isCurrent ?  'Current' : 'Backup',
+          timestamp: displayTimestamp,
+          isCurrent: isCurrent
         }
-      }
-      versions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      return versions;
   }
 
 
