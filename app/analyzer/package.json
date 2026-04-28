@@ -4,7 +4,9 @@
   "description": "Analysis and offline data preparation tools for Ordinizer.",
   "main": "lib/createMetaAnalysis.ts",
   "types": "lib/createMetaAnalysis.d.ts",
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "meta-analysis": "tsx lib/createMetaAnalysis.ts",

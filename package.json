@@ -26,7 +26,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/servercore",
+    "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/servercore && npm run build --workspace=app/client && npm run build --workspace=app/analyzer && npm run build --workspace=app/server",
     "build:workspaces": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present"

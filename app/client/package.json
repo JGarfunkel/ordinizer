@@ -1,6 +1,6 @@
 {
   "name": "@civillyengaged/ordinizer-client",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "module",
   "description": "Client-side components and hooks for Ordinizer - dual-delivery library (import or copy)",
   "main": "./dist/index.js",
