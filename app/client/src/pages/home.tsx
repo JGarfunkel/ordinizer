@@ -37,16 +37,6 @@ export default function Home() {
 
   const ORDINIZER_CONTEXT = import.meta.env.BASE_URL;
 
-  // Helper function to check if answer is "Not specified"
-  const isNotSpecified = (answer: string): boolean => {
-    const lowerAnswer = answer.toLowerCase();
-    return lowerAnswer.includes('not specified') || 
-           lowerAnswer.includes('no specific') || 
-           lowerAnswer.includes('does not specify');
-  };
-
-
-
   // Function to handle question mark click
   const handleQuestionMarkClick = async (questionId: string, domainId: string) => {
     try {
@@ -88,10 +78,7 @@ export default function Home() {
 
   // Get current realm info for terminology
   const currentRealm = realms?.find(r => r.id === selectedRealmId);
-  const isPolicy = currentRealm?.ruleType === 'policy';
-  const documentType = isPolicy ? 'policy' : 'statute';
-  const documentTypeCapitalized = isPolicy ? 'Policy' : 'Statute';
-  const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
+  const documentType = currentRealm?.ruleType || 'statute';
 
   // Fetch entities for current realm (municipalities, school districts, etc.)
   const { data: entities, isLoading: entitiesLoading } = useEntities(selectedRealmId);
@@ -457,8 +444,6 @@ export default function Home() {
       <AppHeader
         selectedRealmId={selectedRealmId}
         realms={realms}
-        entityType={entityType}
-        documentTypeCapitalized={documentTypeCapitalized}
         onRealmChange={handleRealmChange}
       />
 

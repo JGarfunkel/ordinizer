@@ -9,5 +9,6 @@ export function useRealms() {
   return useQuery<Realm[]>({
     queryKey: [apiPath('realms')],
     queryFn: () => fetcher(apiPath('realms')),
+    staleTime: 30 * 60 * 1000, // 30 minutes
   });
 }

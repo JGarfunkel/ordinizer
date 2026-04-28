@@ -7,18 +7,20 @@ const contextPath = import.meta.env.BASE_URL;
 interface AppHeaderProps {
   selectedRealmId: string;
   realms: Realm[] | undefined;
-  entityType: string;
-  documentTypeCapitalized: string;
   onRealmChange: (realmId: string) => void;
 }
 
 export function AppHeader({
   selectedRealmId,
   realms,
-  entityType,
-  documentTypeCapitalized,
   onRealmChange,
 }: AppHeaderProps) {
+  const currentRealm = realms?.find(r => r.id === selectedRealmId);
+  const documentType = currentRealm?.ruleType || 'statute';
+  const entityType = currentRealm?.entityType || 'municipality';
+  const entityTypeCapitalized = entityType.charAt(0).toUpperCase() + entityType.slice(1);
+  const documentTypeCapitalized = documentType.charAt(0).toUpperCase() + documentType.slice(1);
+
   return (
     <header className="bg-white shadow-sm border-b border-gray-200">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -30,7 +32,7 @@ export function AppHeader({
             <div>
               <h1 className="text-xl font-semibold text-gray-900">Ordinizer</h1>
               <p className="text-sm text-civic-gray-light">
-                {entityType} {documentTypeCapitalized} Comparison
+                {entityTypeCapitalized} {documentTypeCapitalized} Comparison
               </p>
             </div>
           </div>
