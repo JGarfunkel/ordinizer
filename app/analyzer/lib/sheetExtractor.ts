@@ -20,7 +20,6 @@ import {
   getEntityPrefix,
 } from "./spreadsheetParser.js";
 import {
-  readMetadata,
   getSourceUrl,
 } from "./extractionUtils.js";
 
@@ -426,19 +425,19 @@ export async function getExistingMunicipalitiesFromFilesystem(realm: Realm, targ
             ""
           ];
           
-          if (hasMetadata) {
-            try {
-              const metadata = await readMetadata(metadataPath);
-              const domainIndex = getDomainColumnIndex(domain);
-              const sourceUrl = metadata ? getSourceUrl(metadata) : null;
-              if (domainIndex !== -1 && sourceUrl) {
-                row[domainIndex] = sourceUrl;
-                console.log(`    🔗 Found source URL: ${sourceUrl}`);
-              }
-            } catch (error: any) {
-              console.log(`    ⚠️  Could not read metadata: ${error.message}`);
-            }
-          }
+          // if (hasMetadata) {
+          //   try {
+          //     const ruleset = await storage.getRu
+          //     const domainIndex = getDomainColumnIndex(domain);
+          //     const sourceUrl = ruleset ? getSourceUrl(ruleset) : null;
+          //     if (domainIndex !== -1 && sourceUrl) {
+          //       row[domainIndex] = sourceUrl;
+          //       console.log(`    🔗 Found source URL: ${sourceUrl}`);
+          //     }
+          //   } catch (error: any) {
+          //     console.log(`    ⚠️  Could not read metadata: ${error.message}`);
+          //   }
+          // }
           
           rows.push(row);
           processedInDomain++;

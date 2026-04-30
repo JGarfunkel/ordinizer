@@ -1,6 +1,5 @@
-﻿#!/usr/bin/env tsx
-
-import { Pinecone } from "@pinecone-database/pinecone";
+﻿import dotenv from "dotenv";
+dotenv.config();
 import OpenAI from "openai";
 import {
   loadModelConfig, setCurrentModel, checkRateLimit, recordTokenUsage,
@@ -11,29 +10,33 @@ import {
   loadMetaAnalysis,
 } from "../services/openai.js";
 import { calculateAnswerScore, calculateNormalizedScores } from "./scoring.js";
-import {
-  indexDocumentInPinecone, answerQuestionWithVector,
-  setVerbose as setVectorVerbose,
-} from "../services/vectorService.js";
-import { Analysis, MetaAnalysis, JsonFileStorage, type FileStat } from "@civillyengaged/ordinizer-servercore";
+import { getVectorService, VectorService } from "../services/vectorService.js";
+import { Analysis, MetaAnalysis, getDefaultStorage, getRealmsFromStorage, IStorage, FileStat 
+
+} from "@civillyengaged/ordinizer-servercore";
+
+import { generateMetaAnalysis } from "./createMetaAnalysis.js";
+import { Vector } from "@pinecone-database/pinecone/dist/pinecone-generated-ts-fetch/db_data/index.js";
+
+// TODO - put this into a config file or environment variable
+const GRADING_ID = process.env.GRADING_ID || "${GRADING_ID}";
 
 
 // Storage singleton — initialized lazily with the correct data directory.
-let _storage: JsonFileStorage | null = null;
-async function getStorage(options: AnalyzeOptions): Promise<JsonFileStorage> {
+let _storage: IStorage | null = null;
+async function getStorage(options: AnalyzeOptions): Promise<IStorage> {
   if (!_storage) {
-    _storage = new JsonFileStorage(options.realm || "");
+    _storage = getDefaultStorage(options.realm || "");
   }
   return _storage;
 }
 
 // Initialize clients
-const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 interface AnalyzeOptions {
   domain?: string;
-  municipality?: string;
+  entity?: string;
   realm?: string; // Target realm for analysis
   force?: boolean;
   reindex?: boolean; // New: Re-upload statute chunks to Pinecone vector database
@@ -68,21 +71,21 @@ function errMsg(error: unknown): string {
  * Handle reindexing when analysis is skipped but --reindex flag is used
  */
 async function handleReindexOnly(
-  municipality: string,
+  entity: string,
   domain: string,
-  index: any,
+  vectorService: VectorService,
   options: AnalyzeOptions = {},
 ) {
-  console.log(`🔄 ${municipality}: Reindexing documents in vector database...`);
+  console.log(`🔄 ${entity}: Reindexing documents in vector database...`);
   const st = await getStorage(options);
-  const statute = await st.getDocumentText(domain, municipality, options.realm);
+  const statute = await st.getDocumentText(domain, entity, options.realm);
   if (statute) {
-    await indexDocumentInPinecone(statute, municipality, domain, index, "statute");
-    const additionalSources = await st.getAdditionalSources(domain, municipality, options.realm);
-    if (additionalSources.guidance) {
-      await indexDocumentInPinecone(additionalSources.guidance, municipality, domain, index, "guidance");
+    await vectorService.indexDocumentInPinecone(statute, entity, domain, "statute");
+    const additionalSources = await st.getAdditionalSources(domain, entity, options.realm);
+    if (additionalSources && additionalSources.guidance) {
+      await vectorService.indexDocumentInPinecone(additionalSources.guidance, entity, domain, "guidance");
     }
-    console.log(`✅ ${municipality}: Reindexing complete`);
+    console.log(`✅ ${entity}: Reindexing complete`);
   }
 }
 
@@ -90,7 +93,7 @@ async function handleReindexOnly(
 async function addMetaAnalysisComparison(
   analysis: Analysis,
   metaAnalysis: MetaAnalysis,
-  municipalityId: string,
+  entityId: string,
 ): Promise<Analysis> {
   const updatedQuestions = analysis.questions.map((question) => {
     // Find the corresponding best practice from meta-analysis
@@ -118,7 +121,7 @@ async function addMetaAnalysisComparison(
     return question;
   });
 
-  // Add meta-analysis summary
+  // TODO - this is unused, we'll need to add it somehow
   const metaSummary = {
     comparedAgainst: metaAnalysis.version,
     analysisDate: metaAnalysis.analysisDate,
@@ -130,7 +133,7 @@ async function addMetaAnalysisComparison(
   return {
     ...analysis,
     questions: updatedQuestions,
-    metaAnalysisSummary: metaSummary,
+//    metaAnalysisSummary: metaSummary,
     processingMethod: analysis.processingMethod + "-with-meta-comparison",
   };
 }
@@ -227,20 +230,16 @@ async function setGradesFromMetadata(options: AnalyzeOptions) {
       continue;
     }
 
-    const realmType = (realm as any)?.type ?? (realm as any)?.realmType ?? "statute";
-    const allEntityIds = await st.listEntityIds(domain, options.realm);
-    const entityIds = options.municipality
-      ? allEntityIds.filter((id) => id.toLowerCase().includes(options.municipality!.toLowerCase()))
-      : allEntityIds;
+    const entityIds = await getRequestedEntityIds(options, st, domain);
 
     for (const entityId of entityIds) {
       totalProcessed++;
-      const metadata = await st.getRegulationMetadata(domain, entityId, options.realm) as any;
+      const metadata = await st.getRuleset(domain, entityId) as any;
       if (!metadata) {
         console.log(`⚠️  No metadata.json found for ${entityId}`);
         continue;
       }
-      const analysis = await st.getAnalysisRaw(domain, entityId, options.realm);
+      const analysis = await st.getAnalysis(domain, entityId, options.realm);
       if (!analysis) {
         console.log(`⚠️  No analysis.json found for ${entityId}`);
         continue;
@@ -260,17 +259,17 @@ async function setGradesFromMetadata(options: AnalyzeOptions) {
       }
 
       if (!analysis.grades) analysis.grades = {};
-      const previousGrade = analysis.grades.WEN;
-      analysis.grades.WEN = grade;
+      const previousGrade = analysis.grades[GRADING_ID];
+      analysis.grades[GRADING_ID] = grade;
 
-      await st.writeAnalysis(domain, entityId, analysis, options.realm);
+      await st.saveAnalysis(analysis);
       console.log(`✅ Updated ${entityId}: ${previousGrade || "none"} → ${grade}`);
       totalUpdated++;
     }
   }
 
   console.log(`\n📊 Summary:`);
-  console.log(`   Processed: ${totalProcessed} municipalities`);
+  console.log(`   Processed: ${totalProcessed} entities`);
   console.log(`   Updated: ${totalUpdated} grades`);
 }
 // Fix question order in existing analysis.json files
@@ -288,15 +287,13 @@ async function fixQuestionOrder(options: AnalyzeOptions) {
     console.log(`\nProcessing domain: ${domain}`);
     const questions = await storage.getQuestionsByDomain(domain, options.realm);
 
-    const municipalities = options.municipality 
-      ? [options.municipality] 
-      : await storage.getMunicipalIds();
+    const entities: string[] = await getRequestedEntityIds(options, storage, domain);
 
-    for (const municipality of municipalities) {
-      const analysis = await storage.getAnalysisByEntityAndDomain(municipality, domain);
+    for (const entity of entities) {
+      const analysis = await storage.getAnalysis(domain, entity);
 
       if (!analysis) {
-        log(`Analysis file not found for ${municipality}, skipping`);
+        log(`Analysis file not found for ${entity}, skipping`);
         continue;
       }
       totalProcessed++;
@@ -304,7 +301,7 @@ async function fixQuestionOrder(options: AnalyzeOptions) {
       try {
         const existingQuestions = analysis.questions || [];
         if (existingQuestions.length === 0) {
-          log(`No questions in analysis for ${municipality}, skipping`);
+          log(`No questions in analysis for ${entity}, skipping`);
           continue;
         }
 
@@ -322,19 +319,18 @@ async function fixQuestionOrder(options: AnalyzeOptions) {
 
         if (orderChanged) {
           analysis.questions = reorderedQuestions;
-          analysis.lastUpdated = new Date().toISOString();
 
-          storage.writeAnalysis(domain, municipality, analysis, options.realm);
+          await storage.saveAnalysis(analysis);
           console.log(
-            `${municipality}: Fixed question order (${reorderedQuestions.length} questions)`,
+            `${entity}: Fixed question order (${reorderedQuestions.length} questions)`,
           );
           totalFixed++;
         } else {
-          log(`${municipality}: Question order already correct`);
+          log(`${entity}: Question order already correct`);
         }
       } catch (error) {
         console.error(
-          `⚠️ ${municipality}: Error fixing order - ${errMsg(error)}`,
+          `⚠️ ${entity}: Error fixing order - ${errMsg(error)}`,
         );
       }
     }
@@ -350,7 +346,7 @@ async function fixQuestionOrder(options: AnalyzeOptions) {
 function compareQuestions(
   newQuestions: any[],
   existingAnswers: any[],
-  municipality: string,
+  entity: string,
   specificQuestionId?: string,
 ): {
   questionsToAnalyze: any[];
@@ -368,7 +364,7 @@ function compareQuestions(
   );
 
   console.log(
-    `📊 ${municipality}: Comparing ${newQuestions?.length || 0} current questions with ${existingAnswers?.length || 0} existing answers`,
+    `📊 ${entity}: Comparing ${newQuestions?.length || 0} current questions with ${existingAnswers?.length || 0} existing answers`,
   );
 
   // Check each new question with safety check
@@ -383,7 +379,7 @@ function compareQuestions(
       if (existingAnswer) {
         questionsToKeep.push(existingAnswer);
         log(
-          `✅ ${municipality}: Question ${newQuestion.id} skipped (not target question), keeping existing answer`,
+          `✅ ${entity}: Question ${newQuestion.id} skipped (not target question), keeping existing answer`,
         );
       }
       continue;
@@ -394,7 +390,7 @@ function compareQuestions(
       questionsToAnalyze.push(newQuestion);
       const questionText = newQuestion.question || "No question text";
       console.log(
-        `➕ ${municipality}: New question ${newQuestion.id}: "${questionText.substring(0, 50)}..."`,
+        `➕ ${entity}: New question ${newQuestion.id}: "${questionText.substring(0, 50)}..."`,
 
       );
     } else if (
@@ -405,11 +401,11 @@ function compareQuestions(
       questionsToAnalyze.push(newQuestion);
       if (specificQuestionId) {
         console.log(
-          `🎯 ${municipality}: Targeting question ${newQuestion.id} for re-analysis`,
+          `🎯 ${entity}: Targeting question ${newQuestion.id} for re-analysis`,
         );
       } else {
         console.log(
-          `🔄 ${municipality}: Question ${newQuestion.id} wording changed, re-analyzing`,
+          `🔄 ${entity}: Question ${newQuestion.id} wording changed, re-analyzing`,
         );
         const oldText = existingAnswer.question || "No question text";
         const newText = newQuestion.question || "No question text";
@@ -420,7 +416,7 @@ function compareQuestions(
       // Question unchanged - keep existing answer
       questionsToKeep.push(existingAnswer);
       log(
-        `✅ ${municipality}: Question ${newQuestion.id} unchanged, keeping existing answer`,
+        `✅ ${entity}: Question ${newQuestion.id} unchanged, keeping existing answer`,
       );
     }
   }
@@ -431,7 +427,7 @@ function compareQuestions(
       questionsToRemove.push(existingAnswer);
       const questionText = existingAnswer.question || "No question text";
       console.log(
-        `🗑️  ${municipality}: Removing obsolete question ${existingAnswer.id}: "${questionText.substring(0, 50)}..."`,
+        `🗑️  ${entity}: Removing obsolete question ${existingAnswer.id}: "${questionText.substring(0, 50)}..."`,
       );
     }
   }
@@ -443,7 +439,7 @@ function compareQuestions(
   };
 
   console.log(
-    `📈 ${municipality}: Analysis plan - ${summary.toAnalyze} to analyze, ${summary.toKeep} to keep, ${summary.toRemove} to remove`,
+    `📈 ${entity}: Analysis plan - ${summary.toAnalyze} to analyze, ${summary.toKeep} to keep, ${summary.toRemove} to remove`,
   );
 
   return {
@@ -455,7 +451,8 @@ function compareQuestions(
 
 async function analyzeStatutes(options: AnalyzeOptions = {}) {
   VERBOSE = options.verbose || false;
-  setVectorVerbose(VERBOSE);
+  const vectorService = getVectorService();
+  vectorService.setVerbose(VERBOSE);
   setOpenaiVerbose(VERBOSE);
 
   // Load model configuration first
@@ -483,7 +480,7 @@ async function analyzeStatutes(options: AnalyzeOptions = {}) {
 
   if (options.setGrades) {
     console.log(
-      `📊 Setting WEN grades from metadata.json to analysis.json files`,
+      `📊 Setting ${GRADING_ID} grades from metadata.json to analysis.json files`,
     );
     await setGradesFromMetadata(options);
     return;
@@ -513,61 +510,29 @@ async function analyzeStatutes(options: AnalyzeOptions = {}) {
     // Generate questions if they don't exist
     await generateQuestionsIfNeeded(domain, options);
 
-    // Get municipalities to process
-    const municipalities = options.municipality
-      ? [options.municipality]
-      : await st.listEntityIds(domain, options.realm);
-
-    log(
-      `Found ${municipalities.length} municipalities in ${domain}:`,
-      municipalities,
-    );
+    // Get entities to process
+    const entities = await getRequestedEntityIds(options, st, domain);
 
     // Initialize Pinecone index
     const indexName = "ordinizer-statutes";
     log(`Initializing Pinecone index: ${indexName}`);
 
     // Check if index exists, create if it doesn't
-    const indexes = await pinecone.listIndexes();
-    const indexExists = indexes.indexes?.some((idx) => idx.name === indexName);
+    await vectorService.initializeIndex();
 
-    if (!indexExists) {
-      console.log(`📝 Creating Pinecone index: ${indexName}`);
-      await pinecone.createIndex({
-        name: indexName,
-        dimension: 1536, // OpenAI text-embedding-ada-002 dimension
-        metric: "cosine",
-        spec: {
-          serverless: {
-            cloud: "aws",
-            region: "us-east-1",
-          },
-        },
-      });
-
-      // Wait a moment for index to be ready
-      console.log(`⏳ Waiting for index to be ready...`);
-      await new Promise((resolve) => setTimeout(resolve, 10000));
-      log(`Index ${indexName} created and ready`);
-    } else {
-      log(`Index ${indexName} already exists`);
-    }
-
-    const index = pinecone.index(indexName);
-
-    for (let i = 0; i < municipalities.length; i++) {
-      const municipality = municipalities[i];
+    for (let i = 0; i < entities.length; i++) {
+      const entity = entities[i];
       const madeOpenAICalls = await processEntity(
         domain,
-        municipality,
-        index,
+        entity,
+        vectorService,
         options,
       );
 
-      // Add pause between municipalities only if OpenAI calls were made
-      if (i < municipalities.length - 1 && madeOpenAICalls) {
+      // Add pause between entities only if OpenAI calls were made
+      if (i < entities.length - 1 && madeOpenAICalls) {
         console.log(
-          `⏳ Pausing ${QUESTION_SET_PAUSE_MS}ms before next municipality...`,
+          `⏳ Pausing ${QUESTION_SET_PAUSE_MS}ms before next entity...`,
         );
         await sleep(QUESTION_SET_PAUSE_MS);
       }
@@ -586,7 +551,7 @@ async function analyzeStatutes(options: AnalyzeOptions = {}) {
     } else {
       console.log(`🔍 Generating meta-analysis for ${targetDomain} domain...`);
       try {
-        await generateMetaAnalysis(targetDomain, options.realm);
+        await generateMetaAnalysis(st, targetDomain);
         console.log(
           `🎉 Meta-analysis generated successfully for ${targetDomain}!`,
         );
@@ -598,6 +563,12 @@ async function analyzeStatutes(options: AnalyzeOptions = {}) {
       }
     }
   }
+}
+
+async function getRequestedEntityIds(options: AnalyzeOptions, st: IStorage, domain: string) {
+  return options.entity
+    ? [options.entity]
+    : await st.getEntityIds(domain);
 }
 
 async function generateQuestionsIfNeeded(domain: string, options: AnalyzeOptions = {}) {
@@ -647,12 +618,12 @@ async function generateQuestionsIfNeeded(domain: string, options: AnalyzeOptions
 
   const prompt = `You are analyzing municipal statutes for the domain "${domain}" (${description}).
 
-Based on the following sample statutes, generate a comprehensive list of plain-language questions that would help residents understand the key differences between municipalities in this domain.
+Based on the following sample statutes, generate a comprehensive list of plain-language questions that would help residents understand the key differences between entities in this domain.
 
 Sample statutes:
 ${sampleStatutes.map((statute, i) => `--- Sample ${i + 1} ---\n${statute.substring(0, 2000)}`).join("\n\n")}
 
-Generate 5-10 important questions that would reveal meaningful differences between municipalities. Focus on practical aspects that residents care about like:
+Generate 5-10 important questions that would reveal meaningful differences between entities. Focus on practical aspects that residents care about like:
 - Requirements and procedures
 - Fees and penalties
 - Restrictions and permissions
@@ -688,10 +659,57 @@ Return your response as JSON in this format:
   console.log(`✅ Generated ${generatedQuestions.length} questions for ${domain}`);
 }
 
+// Returns true if there are no questions or the array is empty
+function hasEmptyAnalysisQuestions(existingAnalysis: any): boolean {
+  return !existingAnalysis?.questions || existingAnalysis.questions.length === 0;
+}
+
+// Returns true if questions.json has changed (i.e., questions to analyze exist)
+async function questionsJsonChanged(
+  st: IStorage,
+  domain: string,
+  existingAnalysis: any,
+  entity: string,
+  options: AnalyzeOptions
+): Promise<boolean> {
+  try {
+    const questionsArray = await st.getQuestionsByDomain(domain, options.realm);
+    if (questionsArray.length === 0) return false;
+    const { questionsToAnalyze } = compareQuestions(
+      questionsArray,
+      existingAnalysis?.questions || [],
+      entity,
+      options.questionId
+    );
+    return questionsToAnalyze.length > 0;
+  } catch (error) {
+    log(`Error checking questions changes: ${errMsg(error)}`);
+    return true; // Force re-analysis if we can't check
+  }
+}
+
+// Returns true if statute file is newer than analysis file
+async function checkIfAnalysisRefreshNeeded(
+  st: IStorage,
+  domain: string,
+  entity: string,
+  analysisStat: FileStat,
+  options: AnalyzeOptions
+): Promise<boolean> {
+  const docStat = await st.getDocumentStat(domain, entity, options.realm);
+  if (docStat.exists && docStat.mtime > analysisStat.mtime) {
+    log(`Statute file is newer than analysis (statute: ${docStat.mtime.toISOString()}, analysis: ${analysisStat.mtime.toISOString()})`);
+    return true;
+  }
+  return false;
+}
+
+
+
 async function processEntity(
   domain: string,
-  municipality: string,
-  index: any,
+  entity: string,
+  vectorService: VectorService,
   options: AnalyzeOptions = {},
 ): Promise<boolean> {
   const st = await getStorage(options);
@@ -704,116 +722,58 @@ async function processEntity(
   if (
     !force &&
     skipRecent &&
-    (await shouldSkipRecentAnalysis(domain, municipality, skipRecent, options))
+    (await shouldSkipRecentAnalysis(st, domain, entity, skipRecent))
   ) {
-    const timeAgo = await getTimeAgoString(domain, municipality, options);
+    const timeAgo = await getTimeAgoString(st, domain, entity);
     console.log(
-      `⏭️  ${municipality}: Analysis is recent (${timeAgo}), skipping due to --skip-recent ${skipRecent}`,
+      `⏭️  ${entity}: Analysis is recent (${timeAgo}), skipping due to --skip-recent ${skipRecent}`,
     );
     return false; // No OpenAI calls made
   }
 
   // Check if analysis exists and is recent, and if statute is newer than analysis
-  const analysisStat = await st.getAnalysisStat(domain, municipality, options.realm);
+  const analysisStat = await st.getAnalysisStat(domain, entity);
+  const existingAnalysis = await st.getAnalysis(domain, entity);
+  
   if (!force && analysisStat.exists) {
-    const ageInDays =
-      (Date.now() - analysisStat.mtime.getTime()) / (1000 * 60 * 60 * 24);
-
-    // Check if analysis has empty questions (incomplete analysis)
+    const ageInDays = (Date.now() - analysisStat.mtime.getTime()) / (1000 * 60 * 60 * 24);
     try {
-      const existingAnalysis = await st.getAnalysisRaw(domain, municipality, options.realm);
-      const hasEmptyQuestions =
-        !existingAnalysis?.questions || existingAnalysis.questions.length === 0;
-
-      if (hasEmptyQuestions) {
-        console.log(
-          `🔄 ${municipality}: Analysis exists but has no questions, re-analyzing`,
-        );
-        log(
-          `Analysis has ${existingAnalysis?.questions?.length || 0} questions`,
-        );
+      if (hasEmptyAnalysisQuestions(existingAnalysis)) {
+        console.log(`🔄 ${entity}: Analysis exists but has no questions, re-analyzing`);
+        log(`Analysis has ${existingAnalysis?.questions?.length || 0} questions`);
         // Continue with analysis - don't return here
-      } else {
-        // Check if questions.json has changed (need to check this early)
-        let questionsChanged = false;
-        try {
-          const questionsArray = await st.getQuestionsByDomain(domain, options.realm);
-          if (questionsArray.length > 0) {
-            const { questionsToAnalyze } = compareQuestions(
-              questionsArray,
-              existingAnalysis?.questions || [],
-              municipality,
-              questionId, // Pass questionId for skip check
-            );
-            questionsChanged = questionsToAnalyze.length > 0;
-          }
-        } catch (error) {
-          log(`Error checking questions changes: ${errMsg(error)}`);
-          questionsChanged = true; // Force re-analysis if we can't check
+      } else if (await questionsJsonChanged(st, domain, existingAnalysis, entity, options)) {
+        console.log(`🔄 ${entity}: Questions have changed, re-analyzing`);
+        // Continue with analysis - don't return here
+      } else if (await checkIfAnalysisRefreshNeeded(st, domain, entity, analysisStat, options)) {
+        // Statute file is newer than analysis
+        const docStat = await st.getDocumentStat(domain, entity, options.realm);
+        console.log(`🔄 ${entity}: Statute file is newer than analysis (statute: ${docStat.mtime.toISOString()}, analysis: ${analysisStat.mtime.toISOString()}), re-analyzing`);
+        log(`Statute modified: ${docStat.mtime.toISOString()}`);
+        log(`Analysis modified: ${analysisStat.mtime.toISOString()}`);
+        // Continue with analysis - don't return here
+      } else if (!skipRecent && ageInDays < 30) {
+        console.log(`⏭️  ${entity}: Analysis is recent (${ageInDays.toFixed(1)} days old) and statute unchanged, skipping`);
+        if (options.reindex) {
+          await handleReindexOnly(entity, domain, vectorService, options);
         }
-
-        if (questionsChanged) {
-          console.log(
-            `🔄 ${municipality}: Questions have changed, re-analyzing`,
-          );
-          // Continue with analysis - don't return here
-        } else {
-          // Check if document is newer than analysis
-          const docStat = await st.getDocumentStat(domain, municipality, options.realm);
-          if (docStat.exists) {
-            const statuteNewer = docStat.mtime > analysisStat.mtime;
-
-            if (statuteNewer) {
-              console.log(
-                `🔄 ${municipality}: Statute file is newer than analysis (statute: ${docStat.mtime.toISOString()}, analysis: ${analysisStat.mtime.toISOString()}), re-analyzing`,
-              );
-              log(`Statute modified: ${docStat.mtime.toISOString()}`);
-              log(`Analysis modified: ${analysisStat.mtime.toISOString()}`);
-              // Continue with analysis - don't return here
-            } else if (!skipRecent && ageInDays < 30) {
-              console.log(
-                `⏭️  ${municipality}: Analysis is recent (${ageInDays.toFixed(1)} days old) and statute unchanged, skipping`,
-              );
-              
-              // Handle reindexing even when analysis is skipped
-              if (options.reindex) {
-                await handleReindexOnly(municipality, domain, index, options);
-              }
-              
-              return false; // No OpenAI calls made
-            }
-          } else if (!skipRecent && ageInDays < 30) {
-            console.log(
-              `⏭️  ${municipality}: Analysis is recent (${ageInDays.toFixed(1)} days old), skipping`,
-            );
-            
-            // Handle reindexing even when analysis is skipped
-            if (options.reindex) {
-              await handleReindexOnly(municipality, domain, index, options);
-            }
-            
-            return false; // No OpenAI calls made
-          }
-        }
+        return false; // No OpenAI calls made
       }
     } catch (error) {
-      console.log(
-        `🔄 ${municipality}: Analysis file is corrupted or unreadable, re-analyzing`,
-      );
+      console.log(`🔄 ${entity}: Analysis file is corrupted or unreadable, re-analyzing`);
       log(`Error reading analysis file: ${errMsg(error)}`);
       // Continue with analysis - don't return here
     }
   }
-
-  console.log(`🔍 Processing ${municipality}...`);
+  console.log(`🔍 Processing ${entity}...`);
 
   try {
     // Check if required files exist
-    const hasMetadata = await st.metadataExists(domain, municipality, options.realm);
-    const hasDocument = await st.documentExists(domain, municipality, options.realm);
+    const hasMetadata = await st.rulesetExists(domain, entity);
+    const hasDocument = await st.documentExists(domain, entity);
     if (!hasMetadata || !hasDocument) {
       console.log(
-        `⚠️  ${municipality}: Missing metadata or statute file, skipping`,
+        `⚠️  ${entity}: Missing metadata or statute file, skipping`,
       );
       log(
         `Metadata exists: ${hasMetadata}, Document exists: ${hasDocument}`,
@@ -821,9 +781,9 @@ async function processEntity(
       return false; // No OpenAI calls made
     }
 
-    const metadata = await st.getRegulationMetadata(domain, municipality, options.realm) as any;
+    const metadata = await st.getRuleset(domain, entity) as any;
     log(
-      `Loaded metadata for ${municipality}:`,
+      `Loaded metadata for ${entity}:`,
       JSON.stringify(metadata, null, 2),
     );
 
@@ -834,24 +794,99 @@ async function processEntity(
     const isStateCode = metadata?.sourceUrl?.includes(
       "up.codes/viewer/new_york/ny-property-maintenance-code-2020",
     );
-    log(`Entity ${municipality} uses state code: ${isStateCode}`);
+    log(`Entity ${entity} uses state code: ${isStateCode}`);
 
     let analysis;
 
     if (domain === "property-maintenance" && isStateCode) {
-      // Handle state code municipalities with intelligent question comparison
-      let existingAnalysis: any = null;
+      // Deprecated: State code analysis block moved to local helper for clarity
+      analysis = await handleStateCodeAnalysis({
+        st,
+        domain,
+        entity,
+        metadata,
+        questionsArray,
+        force,
+        questionId,
+      });
 
+    } else {
+      // Process with vector analysis for local ordinances
+      analysis = await generateVectorAnalysis(
+        entity,
+        domain,
+        metadata,
+        questionsArray,
+        vectorService,
+        options,
+      );
+    }
+
+    // Add meta-analysis comparison if requested
+    if (useMeta) {
+      const metaAnalysis = await loadMetaAnalysis(domain);
+      if (metaAnalysis) {
+        analysis = await addMetaAnalysisComparison(
+          analysis,
+          metaAnalysis,
+          entity,
+        );
+        console.log(`🎯 ${entity}: Added meta-analysis comparison`);
+      } else {
+        console.log(
+          `⚠️  ${entity}: No meta-analysis found for comparison`,
+        );
+      }
+    }
+
+    await st.saveAnalysis(analysis);
+    console.log(`✅ ${entity}: Analysis complete`);
+    return true; // OpenAI calls were made
+  } catch (error) {
+    if (errMsg(error).includes("HTML content")) {
+      console.error(`🚫 SKIPPED ${entity}: ${errMsg(error)}`);
+      console.error(
+        `   Please run convertHtmlToText.ts on this statute file first.`,
+      );
+    } else {
+      console.error(`❌ Failed to process ${entity}:`, errMsg(error));
+    }
+    return false; // No successful OpenAI calls made
+  }
+}
+
+  /**
+   * @deprecated This function handles state code analysis for property-maintenance entities using NY State code.
+   * It is deprecated and should be replaced with a more generic, configurable approach in the future.
+   */
+  async function handleStateCodeAnalysis({
+      st,
+      domain,
+      entity,
+      metadata,
+      questionsArray,
+      force,
+      questionId,
+    }: {
+      st: any;
+      domain: string;
+      entity: string;
+      metadata: any;
+      questionsArray: any[];
+      force: boolean;
+      questionId?: string;
+    }): Promise<any> {
+      let existingAnalysis: any = null;
       if (force) {
         console.log(
-          `🔄 ${municipality}: Force mode - clearing existing analysis and reanalyzing all questions`,
+          `🔄 ${entity}: Force mode - clearing existing analysis and reanalyzing all questions`,
         );
-        log(`Force mode enabled - ignoring existing analysis.json`);
+        if (typeof log === "function") log(`Force mode enabled - ignoring existing analysis.json`);
       } else {
         try {
-          existingAnalysis = await st.getAnalysisRaw(domain, municipality, options.realm);
+          existingAnalysis = await st.getAnalysis(domain, entity);
         } catch (error) {
-          log(`Could not load existing analysis: ${errMsg(error)}`);
+          if (typeof log === "function") log(`Could not load existing analysis: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
 
@@ -859,7 +894,7 @@ async function processEntity(
         compareQuestions(
           questionsArray,
           force && !questionId ? [] : existingAnalysis?.questions || [],
-          municipality,
+          entity,
           questionId,
         );
 
@@ -883,38 +918,39 @@ async function processEntity(
       // Log final summary for state code analysis
       if (questionsToAnalyze.length === 0 && questionsToRemove.length === 0) {
         console.log(
-          `✅ ${municipality}: No changes needed - all ${questionsToKeep.length} state code questions are up to date`,
+          `✅ ${entity}: No changes needed - all ${questionsToKeep.length} state code questions are up to date`,
         );
       } else {
         console.log(
-          `✅ ${municipality}: State code analysis updated - ${newAnswers.length} newly processed, ${questionsToKeep.length} kept, ${questionsToRemove.length} removed`,
+          `✅ ${entity}: State code analysis updated - ${newAnswers.length} newly processed, ${questionsToKeep.length} kept, ${questionsToRemove.length} removed`,
         );
       }
 
-      // Extract WEN grade from metadata for state code analysis
+      // Extract GRADING_ID grade from metadata for state code analysis
+      const GRADING_ID = process.env.GRADING_ID || "${GRADING_ID}";
       const grades: { [key: string]: string | null } = {};
 
       if (metadata.originalCellValue) {
         const gradeMatch = metadata.originalCellValue.match(/^([A-Z][+-]?)\s/);
         if (gradeMatch) {
-          grades["WEN"] = gradeMatch[1];
-          log(`Extracted WEN grade from originalCellValue: ${grades["WEN"]}`);
+          grades[GRADING_ID] = gradeMatch[1];
+          if (typeof log === "function") log(`Extracted ${GRADING_ID} grade from originalCellValue: ${grades[GRADING_ID]}`);
         }
       }
 
-      if (!grades["WEN"] && metadata.grade) {
-        grades["WEN"] = metadata.grade;
-        log(`Using metadata.grade as WEN grade: ${grades["WEN"]}`);
+      if (!grades[GRADING_ID] && metadata.grade) {
+        grades[GRADING_ID] = metadata.grade;
+        if (typeof log === "function") log(`Using metadata.grade as ${GRADING_ID} grade: ${grades[GRADING_ID]}`);
       }
 
-      analysis = {
+      return {
         municipality: {
-          id: municipality,
+          id: entity,
           displayName: `${metadata.municipalityName} - ${metadata.municipalityType}`,
         },
         domain: {
           id: domain,
-          displayName: formatDomainName(domain),
+          displayName: (typeof formatDomainName === "function" ? formatDomainName(domain) : domain),
         },
         grades,
         questions: allAnswers,
@@ -922,71 +958,28 @@ async function processEntity(
         processingMethod: "state-code-detection",
         usesStateCode: true,
       };
-    } else {
-      // Process with vector analysis for local ordinances
-      analysis = await generateVectorAnalysis(
-        municipality,
-        domain,
-        metadata,
-        questionsArray,
-        index,
-        options,
-      );
     }
-
-    // Add meta-analysis comparison if requested
-    if (useMeta) {
-      const metaAnalysis = await loadMetaAnalysis(domain);
-      if (metaAnalysis) {
-        analysis = await addMetaAnalysisComparison(
-          analysis,
-          metaAnalysis,
-          municipality,
-        );
-        console.log(`🎯 ${municipality}: Added meta-analysis comparison`);
-      } else {
-        console.log(
-          `⚠️  ${municipality}: No meta-analysis found for comparison`,
-        );
-      }
-    }
-
-    await st.writeAnalysis(domain, municipality, analysis, options.realm);
-    console.log(`✅ ${municipality}: Analysis complete`);
-    return true; // OpenAI calls were made
-  } catch (error) {
-    if (errMsg(error).includes("HTML content")) {
-      console.error(`🚫 SKIPPED ${municipality}: ${errMsg(error)}`);
-      console.error(
-        `   Please run convertHtmlToText.ts on this statute file first.`,
-      );
-    } else {
-      console.error(`❌ Failed to process ${municipality}:`, errMsg(error));
-    }
-    return false; // No successful OpenAI calls made
-  }
-}
 
 
 async function generateVectorAnalysis(
-  municipality: string,
+  entity: string,
   domain: string,
   metadata: any,
   questions: any[],
-  index: any,
+  vectorService: VectorService,
   options: AnalyzeOptions = {},
 ) {
   const st = await getStorage(options);
   const force = options.force || false;
   const questionId = options.questionId;
 
-  const statute = await st.getDocumentText(domain, municipality, options.realm);
+  const statute = await st.getDocumentText(domain, entity, options.realm);
   if (!statute) {
-    throw new Error(`No document text found for ${municipality} in domain ${domain}`);
+    throw new Error(`No document text found for ${entity} in domain ${domain}`);
   }
   
   // Load additional source files (guidance.txt, form.txt)
-  const additionalSources = await st.getAdditionalSources(domain, municipality, options.realm);
+  const additionalSources = await st.getAdditionalSources(domain, entity, options.realm);
 
   // Check if the statute file contains HTML content
   if (isHtmlContent(statute)) {
@@ -1013,10 +1006,10 @@ async function generateVectorAnalysis(
 
   // Index documents in vector database if reindex is explicitly requested
   if (options.reindex) {
-    await indexDocumentInPinecone(statute, municipality, domain, index, "statute");
+    await vectorService.indexDocumentInPinecone(statute, entity, domain, "statute");
     
     if (additionalSources.guidance) {
-      await indexDocumentInPinecone(additionalSources.guidance, municipality, domain, index, "guidance");
+      await vectorService.indexDocumentInPinecone(additionalSources.guidance, entity, domain, "guidance");
     }
   }
 
@@ -1026,10 +1019,10 @@ async function generateVectorAnalysis(
 
   if (useDirectAnalysis) {
     console.log(
-      `📝 ${municipality}: Statute is short (${wordCount} words < 1000), using direct analysis instead of vector search`,
+      `📝 ${entity}: Statute is short (${wordCount} words < 1000), using direct analysis instead of vector search`,
     );
     return await generateDirectAnalysis(
-      municipality,
+      entity,
       domain,
       metadata,
       questions,
@@ -1039,27 +1032,15 @@ async function generateVectorAnalysis(
     );
   } else {
     console.log(
-      `🔍 ${municipality}: Statute is long (${wordCount} words), using vector analysis`,
+      `🔍 ${entity}: Statute is long (${wordCount} words), using vector analysis`,
     );
   }
 
-  // Create backup of existing analysis.json if it exists
-  let existingAnalysis: any = null;
-  try {
-    const backupResult = await st.writeAnalysisBackup(domain, municipality, options.realm);
-    if (backupResult) {
-      existingAnalysis = await st.getAnalysisRaw(domain, municipality, options.realm);
-      console.log(
-        `📋 ${municipality}: Created backup: ${backupResult.backupPath} (analysis from ${backupResult.mtime.toISOString()})`,
-      );
-    }
-  } catch (error) {
-    log(`Could not create backup of existing analysis: ${errMsg(error)}`);
-  }
+  let existingAnalysis = await st.getAnalysis(domain, entity);
 
   if (force && !questionId) {
     console.log(
-      `🔄 ${municipality}: Force mode - clearing existing analysis and reanalyzing all questions`,
+      `🔄 ${entity}: Force mode - clearing existing analysis and reanalyzing all questions`,
     );
     log(
       `Force mode enabled - ignoring existing analysis.json for vector analysis`,
@@ -1067,7 +1048,7 @@ async function generateVectorAnalysis(
     existingAnalysis = null;
   } else if (force && questionId) {
     console.log(
-      `🎯 ${municipality}: Force mode with specific question - targeting question ${questionId} only`,
+      `🎯 ${entity}: Force mode with specific question - targeting question ${questionId} only`,
     );
     log(
       `Force mode enabled for specific question ${questionId} - preserving other questions`,
@@ -1079,7 +1060,7 @@ async function generateVectorAnalysis(
     compareQuestions(
       questions,
       force && !questionId ? [] : existingAnalysis?.questions || [],
-      municipality,
+      entity,
       questionId,
     );
 
@@ -1097,13 +1078,13 @@ async function generateVectorAnalysis(
 
   if (useConversationMode && questionsToAnalyze.length > 1) {
     console.log(
-      `💬 ${municipality}: Using conversation mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
+      `💬 ${entity}: Using conversation mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
     );
 
     const conversationStartTokens = getCurrentTokenUsage();
 
     const questionTexts = questionsToAnalyze.map((q) => q.question);
-    const municipalityDisplayName = municipality
+    const municipalityDisplayName = entity
       .replace("NY-", "")
       .replace("-", " ");
 
@@ -1138,7 +1119,7 @@ async function generateVectorAnalysis(
         question.question,
         result.answer,
         result.confidence,
-        municipality,
+        entity,
         domain,
         calculateAnswerScore,
         options.model,
@@ -1161,12 +1142,12 @@ async function generateVectorAnalysis(
     }
   } else {
     console.log(
-      `🔍 ${municipality}: Using vector mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
+      `🔍 ${entity}: Using vector mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
     );
 
     for (const question of questionsToAnalyze) {
       console.log(
-        `🔎 ${municipality}: Analyzing question "${question.question.substring(0, 60)}..."`,
+        `🔎 ${entity}: Analyzing question "${question.question.substring(0, 60)}..."`,
       );
 
       const existingAnswersContext =
@@ -1174,11 +1155,10 @@ async function generateVectorAnalysis(
           ? `\n\nNOTE: Other questions in this analysis have already covered these topics:\n${questionsToKeep.map((q) => `- Q${q.id}: ${q.answer.substring(0, 100)}...`).join("\n")}\n\nProvide unique information that doesn't repeat what's already been covered.`
           : "";
 
-      const answer = await answerQuestionWithVector(
+      const answer = await vectorService.answerQuestionWithVector(
         question.question,
-        municipality,
+        entity,
         domain,
-        index,
         existingAnswersContext,
         question.scoreInstructions,
       );
@@ -1192,7 +1172,7 @@ async function generateVectorAnalysis(
         question.question,
         answer.answer,
         answer.confidence,
-        municipality,
+        entity,
         domain,
         calculateAnswerScore,
         options.model,
@@ -1225,7 +1205,7 @@ async function generateVectorAnalysis(
       : "direct"
     : "vector";
   console.log(
-    `📊 ${municipality}: Token usage summary (${analysisMethod} mode):`,
+    `📊 ${entity}: Token usage summary (${analysisMethod} mode):`,
   );
   console.log(
     `   Total tokens used: ${municipalityTokensUsed.toLocaleString()}`,
@@ -1275,13 +1255,13 @@ async function generateVectorAnalysis(
 
     if (!questionId && !existingQuestion.gap && score < 1.0) {
       console.log(
-        `🔎 ${municipality}: Adding missing gap analysis for question ${existingQuestion.id} (score: ${score.toFixed(2)})`,
+        `🔎 ${entity}: Adding missing gap analysis for question ${existingQuestion.id} (score: ${score.toFixed(2)})`,
       );
       const gap = await generateGapAnalysis(
         existingQuestion.question,
         existingQuestion.answer,
         existingQuestion.confidence || 50,
-        municipality,
+        entity,
         domain,
         calculateAnswerScore,
         options.model,
@@ -1299,7 +1279,7 @@ async function generateVectorAnalysis(
       enhancedQuestionsToKeep.push(enhanced);
     } else if (!questionId && existingQuestion.gap && score >= 1.0) {
       console.log(
-        `🔎 ${municipality}: Removing gap from question ${existingQuestion.id} (perfect score: ${score.toFixed(2)})`,
+        `🔎 ${entity}: Removing gap from question ${existingQuestion.id} (perfect score: ${score.toFixed(2)})`,
       );
       const { gap, ...questionWithoutGap } = existingQuestion;
       enhancedQuestionsToKeep.push({
@@ -1322,11 +1302,11 @@ async function generateVectorAnalysis(
 
   if (questionsToAnalyze.length === 0 && questionsToRemove.length === 0) {
     console.log(
-      `✅ ${municipality}: No changes needed - all ${questionsToKeep.length} questions are up to date`,
+      `✅ ${entity}: No changes needed - all ${questionsToKeep.length} questions are up to date`,
     );
   } else {
     console.log(
-      `✅ ${municipality}: Analysis updated - ${newAnswers.length} newly analyzed, ${questionsToKeep.length} kept, ${questionsToRemove.length} removed`,
+      `✅ ${entity}: Analysis updated - ${newAnswers.length} newly analyzed, ${questionsToKeep.length} kept, ${questionsToRemove.length} removed`,
     );
   }
 
@@ -1335,22 +1315,22 @@ async function generateVectorAnalysis(
   if (metadata.originalCellValue) {
     const gradeMatch = metadata.originalCellValue.match(/^([A-Z][+-]?)\s/);
     if (gradeMatch) {
-      grades["WEN"] = gradeMatch[1];
-      log(`Extracted WEN grade from originalCellValue: ${grades["WEN"]}`);
+      grades[GRADING_ID] = gradeMatch[1];
+      log(`Extracted ${GRADING_ID} grade from originalCellValue: ${grades[GRADING_ID]}`);
     }
   }
 
-  if (!grades["WEN"] && metadata.grade) {
-    grades["WEN"] = metadata.grade;
-    log(`Using metadata.grade as WEN grade: ${grades["WEN"]}`);
+  if (!grades[GRADING_ID] && metadata.grade) {
+    grades[GRADING_ID] = metadata.grade;
+    log(`Using metadata.grade as ${GRADING_ID} grade: ${grades[GRADING_ID]}`);
   }
 
   const scores = calculateNormalizedScores(allAnswers, questions);
 
   return {
-    municipality: {
-      id: municipality,
-      displayName: `${metadata.municipality || "Unknown"} - ${metadata.municipalityType || "Entity"}`,
+    entity: {
+      id: entity,
+      displayName: `${metadata.entity || "Unknown"} - ${metadata.municipalityType || "Entity"}`,
     },
     domain: {
       id: domain,
@@ -1372,7 +1352,7 @@ async function generateVectorAnalysis(
 
 // Direct analysis for short statutes (bypasses vector search)
 async function generateDirectAnalysis(
-  municipality: string,
+  entity: string,
   domain: string,
   metadata: any,
   questions: any[],
@@ -1384,27 +1364,16 @@ async function generateDirectAnalysis(
   const force = options.force || false;
   const questionId = options.questionId;
 
-  // Track total tokens used for this municipality analysis
+  // Track total tokens used for this entity analysis
   const startTokenUsage = getCurrentTokenUsage();
   const statuteTokens = estimateTokens(statute);
 
   // Create backup of existing analysis.json if it exists
-  let existingAnalysis: any = null;
-  try {
-    const backupResult = await st.writeAnalysisBackup(domain, municipality, options.realm);
-    if (backupResult) {
-      existingAnalysis = await st.getAnalysisRaw(domain, municipality, options.realm);
-      console.log(
-        `📋 ${municipality}: Created backup: ${backupResult.backupPath} (analysis from ${backupResult.mtime.toISOString()})`,
-      );
-    }
-  } catch (error) {
-    log(`Could not create backup of existing analysis: ${errMsg(error)}`);
-  }
+  let existingAnalysis: Analysis | null = await st.getAnalysis(domain, entity);
 
   if (force && !questionId) {
     console.log(
-      `🔄 ${municipality}: Force mode - clearing existing analysis and reanalyzing all questions`,
+      `🔄 ${entity}: Force mode - clearing existing analysis and reanalyzing all questions`,
     );
     log(
       `Force mode enabled - ignoring existing analysis.json for direct analysis`,
@@ -1412,7 +1381,7 @@ async function generateDirectAnalysis(
     existingAnalysis = null;
   } else if (force && questionId) {
     console.log(
-      `🎯 ${municipality}: Force mode with specific question - targeting question ${questionId} only`,
+      `🎯 ${entity}: Force mode with specific question - targeting question ${questionId} only`,
     );
     log(
       `Force mode enabled for specific question ${questionId} - preserving other questions`,
@@ -1424,7 +1393,7 @@ async function generateDirectAnalysis(
     compareQuestions(
       questions,
       existingAnalysis?.questions || [],
-      municipality,
+      entity,
       questionId,
     );
 
@@ -1435,56 +1404,18 @@ async function generateDirectAnalysis(
     const questionText = question.question || "No question text available";
 
     console.log(
-      `📝 ${municipality}: Analyzing question "${questionText.substring(0, 50)}..." (direct analysis)`,
+      `📝 ${entity}: Analyzing question "${questionText.substring(0, 50)}..." (direct analysis)`,
     );
 
     try {
-      const result = await answerQuestionDirectly(
-        questionText,
-        statute,
-        domain,
-        municipality,
-        question.scoreInstructions,
-        options.model,
-      );
-
-      const questionScore = calculateAnswerScore(
-        result.answer,
-        result.confidence,
-      );
-
-      const answer = {
-        id: question.id,
-        question: question.question,
-        answer: result.answer,
-        confidence: result.confidence,
-        sourceRefs: result.sourceRefs,
-        score: questionScore,
-        analyzedAt: new Date().toISOString(),
-      };
-
+      const answer = await evaluateQuestion(questionText, statute, domain, entity, question, options);
       newAnswers.push(answer);
-
-      if (VERBOSE) {
-        console.log(
-          `[VERBOSE] Generated answer: ${result.answer.substring(0, 100)}... (confidence: ${result.confidence}%, ${result.sourceRefs.length} refs)`,
-        );
-      }
     } catch (error) {
       console.error(
         `❌ Error analyzing question ${question.id}:`,
         errMsg(error),
       );
-      const answer = {
-        id: question.id,
-        question: question.question,
-        answer: "Not specified in the statute.",
-        confidence: 0,
-        sourceRefs: [],
-        score: 0,
-        analyzedAt: new Date().toISOString(),
-        error: errMsg(error),
-      };
+      const answer = createEmptyAnswer(question, error);
       newAnswers.push(answer);
     }
   }
@@ -1503,13 +1434,6 @@ async function generateDirectAnalysis(
   const endTokenUsage = getCurrentTokenUsage();
   const municipalityTokensUsed = endTokenUsage - startTokenUsage;
 
-  console.log(`📊 ${municipality}: Token usage summary (direct mode):`);
-  console.log(
-    `   Total tokens used: ${municipalityTokensUsed.toLocaleString()}`,
-  );
-  console.log(`   Statute size: ${statuteTokens.toLocaleString()} tokens`);
-  console.log(`   Questions analyzed: ${questionsToAnalyze.length}`);
-
   if (VERBOSE) {
     log(
       `Entity analysis: ${municipalityTokensUsed} tokens for ${questionsToAnalyze.length} questions using direct mode`,
@@ -1521,11 +1445,11 @@ async function generateDirectAnalysis(
   const gapAnalysis = existingAnalysis?.gapAnalysis || "";
 
   console.log(
-    `✅ ${municipality}: Analysis updated - ${newAnswers.length} newly analyzed, ${questionsToKeep.length} kept, ${questionsToRemove.length} removed`,
+    `✅ ${entity}: Analysis updated - ${newAnswers.length} newly analyzed, ${questionsToKeep.length} kept, ${questionsToRemove.length} removed`,
   );
 
   const analysis = {
-    municipality: municipality,
+    entity: { id: entity, displayName: entity },
     domain: domain,
     analyzedAt: new Date().toISOString(),
     questions: orderedAnswers,
@@ -1535,13 +1459,56 @@ async function generateDirectAnalysis(
     questionsAnswered: scores.questionsAnswered,
     totalQuestions: scores.totalQuestions,
     gapAnalysis,
-    wenGrade: metadata.originalCellValue?.match(/^([A-Z][+-]?)\s/)?.[1] || null,
-    usesStateCode: false,
   };
 
   return analysis;
 }
 
+
+function createEmptyAnswer(question: any, error: unknown) {
+  return {
+    id: question.id,
+    question: question.question,
+    answer: "Not specified in the statute.",
+    confidence: 0,
+    sourceRefs: [],
+    score: 0,
+    analyzedAt: new Date().toISOString(),
+    error: errMsg(error),
+  };
+}
+
+async function evaluateQuestion(questionText: any, statute: string, domain: string, entity: string, question: any, options: AnalyzeOptions) {
+  const result = await answerQuestionDirectly(
+    questionText,
+    statute,
+    domain,
+    entity,
+    question.scoreInstructions,
+    options.model
+  );
+
+  const questionScore = calculateAnswerScore(
+    result.answer,
+    result.confidence
+  );
+
+  if (VERBOSE) {
+    console.log(
+      `[VERBOSE] Generated answer: ${result.answer.substring(0, 100)}... (confidence: ${result.confidence}%, ${result.sourceRefs.length} refs)`,
+    );
+  }
+
+  return {
+    id: question.id,
+    question: question.question,
+    answer: result.answer,
+    confidence: result.confidence,
+    sourceRefs: result.sourceRefs,
+    score: questionScore,
+    analyzedAt: new Date().toISOString(),
+  };
+}
 
 // Generate scores only for existing analysis files
 async function generateScoresOnly(options: AnalyzeOptions) {
@@ -1557,25 +1524,22 @@ async function generateScoresOnly(options: AnalyzeOptions) {
     // Load domain questions with weights
     const domainQuestions = await st.getQuestionsByDomain(domainId, options.realm);
 
-    const allEntityIds = await st.listEntityIds(domainId, options.realm);
-    const entityIds = options.municipality
-      ? allEntityIds.filter((id) => id === options.municipality)
-      : allEntityIds;
+    const entityIds = await getRequestedEntityIds(options, st, domainId);
 
-    for (const municipalityId of entityIds) {
-      const analysis = await st.getAnalysisRaw(domainId, municipalityId, options.realm);
+    for (const entityId of entityIds) {
+      const analysis = await st.getAnalysis(domainId, entityId, options.realm);
       if (!analysis) {
-        log(`⚠️  Analysis file not found for ${municipalityId}`);
+        log(`⚠️  Analysis file not found for ${entityId}`);
         continue;
       }
 
       try {
-        console.log(`🧮 ${municipalityId}: Calculating normalized scores...`);
+        console.log(`🧮 ${entityId}: Calculating normalized scores...`);
 
         // Skip if already has normalized scores (unless force)
         if (analysis.scores?.normalizedScore && !options.force) {
           console.log(
-            `✔ ${municipalityId}: Already has normalized scores (use --force to recalculate)`
+            `✔ ${entityId}: Already has normalized scores (use --force to recalculate)`
           );
           continue;
         }
@@ -1605,13 +1569,13 @@ async function generateScoresOnly(options: AnalyzeOptions) {
           scoresUpdatedAt: new Date().toISOString(),
         };
 
-        await st.writeAnalysis(domainId, municipalityId, updatedAnalysis, options.realm);
+        await st.saveAnalysis(updatedAnalysis);
 
         console.log(
-          `✅ ${municipalityId}: Normalized score: ${scores.normalizedScore.toFixed(2)}/5.0 (${scores.questionsAnswered}/${scores.totalQuestions} questions answered)`
+          `✅ ${entityId}: Normalized score: ${scores.normalizedScore.toFixed(2)}/5.0 (${scores.questionsAnswered}/${scores.totalQuestions} questions answered)`
         );
       } catch (error) {
-        console.error(`❌ Error processing ${municipalityId}:`, errMsg(error));
+        console.error(`❌ Error processing ${entityId}:`, errMsg(error));
       }
     }
   }
@@ -1642,16 +1606,22 @@ function parseTimeToMs(timeStr: string): number {
   }
 }
 
-// Check if analysis should be skipped based on --skip-recent parameter
+/**
+ * Check if we should skip doing an analysis because a recent analysis already exists and the statute hasn't changed. This helps avoid unnecessary OpenAI calls when data is still fresh.
+ * @param st 
+ * @param domain 
+ * @param entity 
+ * @param skipRecentTime 
+ * @returns true if we should skip it as it's too recent
+ */
 async function shouldSkipRecentAnalysis(
+  st: IStorage,
   domain: string,
-  municipality: string,
+  entity: string,
   skipRecentTime: string,
-  options: AnalyzeOptions,
 ): Promise<boolean> {
   try {
-    const st = await getStorage(options);
-    const stat = await st.getAnalysisStat(domain, municipality, options.realm);
+    const stat = await st.getAnalysisStat(domain, entity);
     if (!stat.exists) return false;
     const ageMs = Date.now() - stat.mtime.getTime();
     const skipThresholdMs = parseTimeToMs(skipRecentTime);
@@ -1664,13 +1634,12 @@ async function shouldSkipRecentAnalysis(
 
 // Helper function to get human-readable time ago string
 async function getTimeAgoString(
+  st: IStorage,
   domain: string,
-  municipality: string,
-  options: AnalyzeOptions,
+  entity: string,
 ): Promise<string> {
   try {
-    const st = await getStorage(options);
-    const stat = await st.getAnalysisStat(domain, municipality, options.realm);
+    const stat = await st.getAnalysisStat(domain, entity);
     const ageMs = Date.now() - stat.mtime.getTime();
     const ageMinutes = Math.floor(ageMs / (1000 * 60));
     const ageHours = Math.floor(ageMs / (1000 * 60 * 60));
@@ -1707,12 +1676,12 @@ Usage:
 
 Options:
   --domain <name>           Process specific domain only (e.g., "property-maintenance")
-  --municipality <id>       Process specific municipality only (e.g., "NY-Bedford-Town")
+  --entity <id>       Process specific entity only (e.g., "NY-Bedford-Town")
   --force                   Force re-analysis even if recent analysis exists
   --reindex                 Re-upload document chunks to Pinecone vector database
   --verbose, -v             Enable detailed logging of processing steps
   --fixorder                Fix question order in existing analysis.json files to match questions.json
-  --setgrades               Copy grades from metadata.json to analysis.json WEN grades field
+  --setgrades               Copy grades from metadata.json to analysis.json ${GRADING_ID} grades field
   --usemeta                 Compare analysis against meta-analysis best practices
   --questionId <id>         Analyze only the specified question ID (e.g., "9")
   --generate-meta           Generate meta-analysis after completing analysis
@@ -1723,17 +1692,17 @@ Options:
   --help, -h               Show this help message
 
 Examples:
-  # Analyze all domains and municipalities with verbose output
+  # Analyze all domains and entities with verbose output
   tsx scripts/analyzeStatutes.ts --verbose
 
   # Process only property-maintenance domain
   tsx scripts/analyzeStatutes.ts --domain property-maintenance
 
   # Force re-analysis of Bedford's property maintenance
-  tsx scripts/analyzeStatutes.ts --domain property-maintenance --municipality NY-Bedford-Town --force
+  tsx scripts/analyzeStatutes.ts --domain property-maintenance --entity NY-Bedford-Town --force
 
-  # Process specific municipality with verbose logging
-  tsx scripts/analyzeStatutes.ts --municipality NY-Ardsley-Village --verbose
+  # Process specific entity with verbose logging
+  tsx scripts/analyzeStatutes.ts --entity NY-Ardsley-Village --verbose
 
   # Fix question order for all analysis files
   tsx scripts/analyzeStatutes.ts --fixorder
@@ -1744,14 +1713,14 @@ Examples:
   # Fix question order for specific domain
   tsx scripts/analyzeStatutes.ts --domain property-maintenance --fixorder
 
-  # Set WEN grades from metadata for all domains
+  # Set ${GRADING_ID} grades from metadata for all domains
   tsx scripts/analyzeStatutes.ts --setgrades
 
-  # Set WEN grades for specific domain
+  # Set ${GRADING_ID} grades for specific domain
   tsx scripts/analyzeStatutes.ts --domain property-maintenance --setgrades
   
   # Analyze with meta-analysis comparison to best practices
-  tsx scripts/analyzeStatutes.ts --domain trees --municipality NY-Bedford-Town --usemeta --force
+  tsx scripts/analyzeStatutes.ts --domain trees --entity NY-Bedford-Town --usemeta --force
 
   # Skip analysis if generated within last 30 minutes
   tsx scripts/analyzeStatutes.ts --domain property-maintenance --skip-recent 30m
@@ -1765,8 +1734,8 @@ Examples:
   # Analyze only a specific question (useful when question text changes)
   tsx scripts/analyzeStatutes.ts --domain trees --questionId 9
 
-  # Re-analyze a specific question for one municipality
-  tsx scripts/analyzeStatutes.ts --domain trees --municipality NY-NewCastle-Town --questionId 9
+  # Re-analyze a specific question for one entity
+  tsx scripts/analyzeStatutes.ts --domain trees --entity NY-NewCastle-Town --questionId 9
 
 Environment Variables Required:
   OPENAI_API_KEY          OpenAI API key for GPT-4o and embeddings
@@ -1787,6 +1756,9 @@ async function parseArgs() {
   const args = process.argv.slice(2);
   const options: AnalyzeOptions = {};
 
+  // Load environment variables from .env file
+  dotenv.config();
+
   // First check CURRENT_REALM environment variable
   if (process.env.CURRENT_REALM) {
     options.realm = process.env.CURRENT_REALM;
@@ -1805,8 +1777,8 @@ async function parseArgs() {
       case "--domain":
         options.domain = args[++i];
         break;
-      case "--municipality":
-        options.municipality = args[++i];
+      case "--entity":
+        options.entity = args[++i];
         break;
       case "--realm":
         options.realm = args[++i];
@@ -1875,9 +1847,8 @@ async function parseArgs() {
   // If no realm is set, prompt user to select from available realms
   if (!options.realm) {
     try {
-      const tempStorage = new JsonFileStorage("");
-      const availableRealms = await tempStorage.getRealms();
 
+      const availableRealms = await getRealmsFromStorage();
       if (availableRealms.length === 0) {
         console.error("❌ No realms found in realms.json");
         process.exit(1);

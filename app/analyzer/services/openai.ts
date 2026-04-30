@@ -59,9 +59,11 @@ export function getModelRateLimit(): number {
 }
 
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  const base = Math.ceil(text.length / 3);
+  const punct = (text.match(/[§\(\)\[\]\.,:;]/g) || []).length * 0.1;
+  const nums = (text.match(/\d+/g) || []).length * 0.2;
+  return Math.ceil(base + punct + nums);
 }
-
 export function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -388,7 +390,9 @@ export async function analyzeQuestionsWithFullStatute(
   }
 }
 
-/** Generate a gap analysis suggestion for a single question/answer pair */
+/** Generate a gap analysis suggestion for a single question/answer pair 
+ * Called by analyseStatute.ts after analyzing each question to identify specific gaps and improvement opportunities in the statute based on the answer and confidence level.
+*/
 export async function generateGapAnalysis(
   question: string,
   answer: string,
@@ -429,12 +433,7 @@ export async function generateGapAnalysis(
     const estimatedTokens = estimateTokens(gapPrompt) + 150;
     await checkRateLimit(estimatedTokens);
 
-    const gapResponse = await openai.chat.completions.create({
-      model,
-      messages: [{ role: "user", content: gapPrompt }],
-      temperature: 0.1,
-      max_tokens: 150,
-    });
+    const gapResponse = await fetchChatResponse(model, gapPrompt);
 
     recordTokenUsage(gapResponse.usage?.total_tokens || estimatedTokens);
 
@@ -448,4 +447,13 @@ export async function generateGapAnalysis(
     log(`Error generating gap analysis: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
+}
+
+export async function fetchChatResponse(model: string, prompt: string, temperature = 0.1, maxTokens = 150) {
+  return await openai.chat.completions.create({
+    model,
+    messages: [{ role: "user", content: prompt }],
+    temperature,
+    max_tokens: maxTokens,
+  });
 }

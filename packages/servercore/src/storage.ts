@@ -17,6 +17,7 @@ import type {
   DomainSummaryRow, CombinedMatrixRow, SectionIndexEntry, DataSourcesConfig,
 } from "@civillyengaged/ordinizer-core";
 import { log } from "util";
+import { getEntityId } from "./utils";
 
 const DEFAULT_DATA_ROOT = process.env.DATA_ROOT || "data";
 
@@ -136,59 +137,98 @@ class PathResolver {
 // Public interfaces
 // ---------------------------------------------------------------------------
 
-export interface IStorageReadOnly {
-  getRealmConfig(): Promise<Realm | null>;
-  getRealm(id: string): Promise<any | undefined>;
-  getDataDir(): string;
 
+export interface IStorageReadOnly {
+  // Realm
+  getRealmConfig(): Promise<Realm>;
+  getRealm(id: string): Promise<Realm | undefined>;
+
+  loadRealmDataSource(realm: Realm): Promise<any>;
+
+  // Entities
   getEntities(): Promise<Entity[]>;
+  getEntityIds(domainId?: string): Promise<string[]>;
   getEntity(entityId: string): Promise<Entity | undefined>;
 
+  // Domains
   getDomains(): Promise<Domain[]>;
   getDomainsByRealm(realmId: string): Promise<Domain[]>;
   getDomain(id: string): Promise<Domain | undefined>;
 
+  // Statutes
+  getStatuteByEntityAndDomain(entityId: string, domainId: string, realmId?: string): Promise<Statute | undefined>;
   // getStatutes(): Promise<Statute[]>;
   // getStatute(id: string): Promise<Statute | undefined>;
 
-  getStatuteByEntityAndDomain(
-    entityId: string, domainId: string, realmId?: string
-  ): Promise<Statute | undefined>;
-
-  getBoundariesForRealm(realmId: string): Promise<any | undefined>;
-
+  // Questions
   getQuestionsByDomain(domainId: string, realmId?: string): Promise<Question[]>;
+  createQuestion(question: InsertQuestion): Promise<Question>;
 
-  getAnalysesByEntityAndDomain(entityId: string, domainId: string): Promise<Analysis[]>;
+  // Analyses
   getAnalysisByEntityAndDomain(entityId: string, domainId: string): Promise<Analysis | null>;
   getAnalysisVersionsByEntityAndDomain(entityId: string, domainId: string): Promise<AnalysisVersionRef[]>;
+  getAnalysisVersionsWithAnalysis(entityId: string, domainId: string, analysis: Analysis): Promise<AnalysisVersionRef[]>;
+  createVersionedRecord(filename: string, timestampStr: string | undefined, isCurrent: boolean): Promise<AnalysisVersionRef>;
+  getAnalysesByEntityAndDomain(entityId: string, domainId: string): Promise<Analysis[]>;
 
+  // Entity-Domain
   getEntityDomains(entityId: string): Promise<EntityDomain[]>;
 
-  getMetaAnalysisByDomain(domainId: string): Promise<any | null>;
-
-  // --- Data access methods (previously handled by raw fs in routes) ---
-
-  /** Read the ruleset (metadata.json) for an entity/domain. */
-  getRuleset(domainId: string, entityId: string): Promise<Ruleset | null>;
-
-  /** Read the statute or policy text for an entity/domain. */
-  getDocumentText(domainId: string, entityId: string, realmId?: string): Promise<string | null>;
-
-  /** Summary row per entity for a domain (grade, availability, state code). */
+  // Domain Summary
   getDomainSummary(domainId: string, realmId?: string): Promise<DomainSummaryRow[]>;
 
-  /** Bulk read for the combined matrix view: metadata + analysis for all entities × domains. */
-  getCombinedMatrixData(realmId: string): Promise<CombinedMatrixRow[]>;
+  // Ruleset/Metadata
+  getRuleset(domainId: string, entityId: string): Promise<Ruleset | null>;
+  getRulesetOrCreate(domainId: string, entityId: string): Promise<Ruleset>;
+  getRegulationMetadata(domainId: string, entityId: string): Promise<Ruleset | null>;
+  rulesetExists(domainId: string, entityId: string, realmId?: string): Promise<boolean>;
+  metadataExists(domainId: string, entityId: string, realmId?: string): Promise<boolean>;
 
-  /** Read datasources.json configuration. */
+  // Meta Analysis
+  getMetaAnalysisByDomain(domainId: string): Promise<any | null>;
+
+  // Raw Analysis
+  getAnalysis(domainId: string, entityId: string, realmId?: string): Promise<Analysis | null>;
+
+  // Document
+  getDocumentText(domainId: string, entityId: string, realmId?: string): Promise<string | null>;
+  getDocumentStat(domainId: string, entityId: string, realmId?: string): Promise<FileStat>;
+  documentExists(domainId: string, entityId: string, realmId?: string): Promise<boolean>;
+
+  // Additional Sources
+  getAdditionalSources(domainId: string, entityId: string, realmId?: string): Promise<{ guidance?: string; form?: string }>;
+
+  // Data Sources
   getDataSources(): Promise<DataSourcesConfig | null>;
-
-  /** Read a specific data source's data file (referenced from datasources.json). */
   getSourceData(sourceId: string): Promise<{ source: any; data: any } | null>;
 
-  /** Parse statuteSectionIndex.csv and return structured entries. */
+  // Section Index
   getSectionIndex(): Promise<SectionIndexEntry[]>;
+
+  // Combined Matrix
+  getCombinedMatrixData(realmId: string): Promise<CombinedMatrixRow[]>;
+
+  // Boundaries
+  getBoundariesForRealm(realmId: string): Promise<any | undefined>;
+
+  // List helpers
+  listDomainIds(realmId?: string): Promise<string[]>;
+  listEntityIds(domainId: string, realmId?: string, realmTypeOverride?: string): Promise<string[]>;
+
+  // Stat helpers
+  getAnalysisStat(domainId: string, entityId: string, realmId?: string): Promise<FileStat>;
+
+  // Existence helpers
+  analysisExists(domainId: string, entityId: string, realmId?: string): Promise<boolean>;
+  questionsExist(domainId: string, realmId?: string): Promise<boolean>;
+
+  // Data dir
+  getDataDir(): string;
+
+  getPathForDomainAndEntity(ruleset: Ruleset): Promise<string>;
+  getEntityIdForRuleset(ruleset: Ruleset): Promise<string>;
+
+  getAnalysisEntityId(analysis: Analysis): string | undefined;
 }
 
 export interface IStorage extends IStorageReadOnly {
@@ -199,8 +239,17 @@ export interface IStorage extends IStorageReadOnly {
 
   createQuestion(question: InsertQuestion): Promise<Question>;
 
-  createAnalysis(analysis: InsertAnalysis): Promise<Analysis>;
-  updateAnalysis(id: string, updates: Partial<InsertAnalysis>): Promise<Analysis | undefined>;
+  saveAnalysis(analysis: InsertAnalysis): Promise<Analysis>;
+
+    // Domain creation (should only be in IStorage, but present in base class)
+  createDomain(domain: InsertDomain): Promise<Domain>;
+
+  // Write helpers (should only be in IStorage, but present in base class)
+  writeQuestions(domainId: string, data: any, realmId?: string): Promise<void>;
+
+  // save the ruleset
+  saveRuleset(ruleset: Ruleset): Promise<Ruleset>;
+
 }
 
 export interface FileStat {
@@ -233,6 +282,29 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     // void this.ensureDataDir();
   }
 
+  /**
+   * Returns the path for a given ruleset's domain and entity.
+   * Example: /data/{realmId}/{domainId}/{entityId}/metadata.json
+   */
+  async getPathForDomainAndEntity(ruleset: Ruleset): Promise<string> {
+    return path.join(this.getDataDir(), ruleset.domainId, await this.getEntityIdForRuleset(ruleset));
+  }
+
+  /**
+   * Backwards compatibility method to get entity ID for a ruleset, which may not have been created with an entityId field. 
+   * Falls back to constructing an ID from realm and municipality if entityId is missing.
+   * @param ruleset 
+   * @returns 
+   */
+  async getEntityIdForRuleset(ruleset: Ruleset): Promise<string> {
+    // backwards compatibility if not created
+    if (!ruleset.entityId) {
+      let realm = await this.getRealmConfig();
+      ruleset.entityId = realm?.territory + "-" + ruleset.municipality + "-" + ruleset.municipalityType;
+    }
+    return ruleset.entityId;
+  }
+
   public getDataDir(): string {
     return this.dataDir;
   }
@@ -251,7 +323,14 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     await fs.ensureDir(this.dataDir);
   }
 
-
+  async loadRealmDataSource(realm: Realm): Promise<any> {
+    const dataSourcePath = realm.dataSource?.path;
+    if (dataSourcePath) {
+      const filePath = path.join(this.getDataDir(), dataSourcePath);
+      return await fs.readJson(filePath);
+    }
+    throw new Error(`No data source configured for realm ${realm.id}`);
+  }
 
   // -------------------------------------------------------------------------
   // Realm
@@ -320,6 +399,21 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
       console.error(`Error reading entity file for realm ${realmId}:`, error);
       return [];
     }
+  }
+
+  async getEntityIds(domainId?: string): Promise<string[]> {
+    if (domainId) {
+        // do a quick scan of the domain directory to find entity IDs
+        const domainDir = path.join(this.dataDir, domainId);
+        if (await fs.pathExists(domainDir)) {
+          const entries = await fs.readdir(domainDir, { withFileTypes: true });
+          const entityIds = entries.filter(e => e.isDirectory()).map(e => e.name);
+          console.debug(`Found ${entityIds.length} entity IDs in domain directory ${domainDir}`);
+          return entityIds;
+        }
+    }
+    const entities = await this.getEntities();
+    return entities.map(e => e.id);
   }
 
   async getEntity(entityId: string): Promise<any | undefined> {
@@ -433,10 +527,10 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   ): Promise<Statute | undefined> {
     const realmConfig = await this.getRealmConfig();
     const realmType = realmConfig.ruleType ?? 'statute';
-    const state = realmConfig.state ?? '';
+    const territory = realmConfig.territory ?? '';
 
     // Check for state-code redirect in metadata
-    const stateFolder = state ? `${state}-State` : "";
+    const stateFolder = territory ? `${territory}-State` : "";
     const metadataPath = path.join(this.getDataDir(), domainId, entityId, "metadata.json");
     let targetId = entityId;
     if (stateFolder && await fs.pathExists(metadataPath)) {
@@ -490,16 +584,37 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   // Analyses
   // -------------------------------------------------------------------------
 
-  async getAnalysisByEntityAndDomain(
-    entityId: string,
-    domainId: string,
-  ): Promise<Analysis | null> {
+  /**
+   * support backwards compatibility - analysis.json currently has municipality id, but we need to move to entityId
+   */
+  getAnalysisEntityId(analysis: InsertAnalysis): string | undefined {
+    return analysis.entityId || analysis.municipality?.id;
+  }
+
+  /**
+   * Get the analysis for the domain and entity
+   * @param domainId Domain (e.g. "police-transparency")
+   * @param entityId Entity ID (e.g. municipality ID)
+   * @returns Analysis object or null if not found. 
+   */
+  async getAnalysis(domainId: string, entityId: string): Promise<Analysis | null> {
     const file = path.join(this.dataDir, domainId, entityId, "analysis.json");
     if (!await fs.pathExists(file))  {
-      console.debug("No analysis for entity", entityId, "and domain", domainId, "from file:", file);
+      console.debug("Could not find analysis for domain", domainId, " applying to ", entityId, "from file:", file);
       return null;
     }
     return await fs.readJson(file);
+  }
+
+  /**
+   * @deprecated Use getAnalysis instead, which is more generically named 
+   * @param entityId 
+   * @param domainId 
+   * @returns 
+   */
+  async getAnalysisByEntityAndDomain(entityId: string, domainId: string,
+  ): Promise<Analysis | null> {
+    return this.getAnalysis(domainId, entityId);
   }
 
   /**
@@ -625,7 +740,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
   async getDomainSummary(domainId: string, realmId: string): Promise<DomainSummaryRow[]> {
     const realmConfig = await this.getRealmConfig();
-    const state = realmConfig.state ?? '';
+    const territory = realmConfig.territory ?? '';
     const municipalities = await this.getEntities();
 
     const result: DomainSummaryRow[] = [];
@@ -646,7 +761,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
             metadata.referencesStateCode
           ) {
             stateCodeApplies = true;
-            grade = state ? `${state} State` : "State";
+            grade = territory ? `${territory} State` : "State";
             gradeColor = "#3b82f6";
           }
         } catch { /* ignore */ }
@@ -672,6 +787,21 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   // Analyzer-specific methods
   // =========================================================================
 
+  async getRulesetOrCreate(domainId: string, entityId: string): Promise<Ruleset> {
+    let ruleset = await this.getRuleset(domainId, entityId);
+    if (ruleset) {
+      return ruleset;
+    }
+    return {
+              entityId,
+              domainId,
+              domain: domainId,
+              metadataCreated: new Date().toISOString(),
+              stateCodeApplies: false,
+              sources: [],
+    };
+  }
+
   /**
    * Read metadata.json for an entity/domain in the given realm.
    * Returns the data as a Ruleset or null when the file does not exist.
@@ -680,7 +810,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     const file = path.join(this.getDataDir(), domainId, entityId, "metadata.json");
     if (!await fs.pathExists(file)) {
         console.debug("No metadata found for entity", entityId, "and domain", domainId, "from file:", file);
-        return null;
+          return null;
     }
     return fs.readJson(file);
   }
@@ -697,15 +827,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     }
 
 
-  /**
-   * Read raw analysis.json for an entity/domain.
-   * Returns null when the file does not exist.
-   */
-  async getAnalysisRaw(domainId: string, entityId: string, realmId?: string): Promise<Analysis | null> {
-    const file = path.join(this.getDataDir(), domainId, entityId, "analysis.json");
-    if (!await fs.pathExists(file)) return null;
-    return fs.readJson(file);
-  }
+
 
   /**
    * Read the statute or policy text for an entity/domain.
@@ -997,30 +1119,52 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
   // }
 
   /**
-   * Write (or overwrite) analysis.json for an entity/domain.
+   * Save the analysis, takes backup first
    */
-  async writeAnalysis(domainId: string, entityId: string, data: Analysis, realmId?: string): Promise<void> {
+  async saveAnalysis(analysis: InsertAnalysis): Promise<Analysis> {
+    const newAnalysis = await this.createAnalysis(analysis); // adds id and lastUpdated
+    const domainId = newAnalysis.domainId;
+    const entityId = this.getAnalysisEntityId(newAnalysis);
+    if (!entityId) {
+      throw new Error("Cannot save analysis without entityId");
+    }
+    await this.saveAnalysisBackup(analysis.domainId, entityId);
+
     const file = path.join(this.getDataDir(), domainId, entityId, "analysis.json");
-    await fs.writeJson(file, data, { spaces: 2 });
+    await fs.writeJson(file, newAnalysis, { spaces: 2 });
+    return newAnalysis;
   }
 
   /**
    * Create a timestamped backup of the current analysis.json.
    * Returns the backup path and the original file's mtime, or null when no analysis exists.
    */
-  async writeAnalysisBackup(domainId: string, entityId: string, realmId?: string): Promise<BackupResult | null> {
+  async saveAnalysisBackup(domainId: string, entityId: string): Promise<BackupResult | null> {
     const file = path.join(this.getDataDir(), domainId, entityId, "analysis.json");
-    if (!await fs.pathExists(file)) return null;
-    const stat = await fs.stat(file);
-    const timestamp = stat.mtime.toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const backupFile = path.join(this.getDataDir(), domainId, entityId, `analysis-backup-${timestamp}.json`);
-    await fs.copy(file, backupFile);
-    return { backupPath: backupFile, mtime: stat.mtime };
+    return this.saveJsonBackup(file);
   }
 
-    async createAnalysis(analysis: InsertAnalysis): Promise<Analysis> {
+  async saveJsonBackup(fullpath: string): Promise<BackupResult | null> {
+    if (!await fs.pathExists(fullpath)) {
+      throw new Error("Cannot create backup, file does not exist: " + fullpath);
+    }
+    const stat = await fs.stat(fullpath);
+    const timestamp = stat.mtime.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+
+    // replace .json with -backup-{timestamp}.json
+    const backupPath = fullpath.replace(/\.json$/, `-backup-${timestamp}.json`);
+    console.log("Creating backup of file at path:", fullpath, "to backup path:", backupPath);
+    await fs.copy(fullpath, backupPath);
+    return { backupPath, mtime: stat.mtime };
+  }
+
+  async createAnalysis(analysis: InsertAnalysis): Promise<Analysis> {
+    let entityId = this.getAnalysisEntityId(analysis);
+    if (!entityId) {
+      throw new Error("Cannot create analysis without entityId");
+    }
     return {
-      id: `${analysis.entityId ?? ""}-${analysis.domainId}-${Date.now()}`,
+      id: `${entityId}-${analysis.domainId}-${Date.now()}`,
       ...analysis,
       lastUpdated: new Date().toISOString(),
     };
@@ -1050,7 +1194,12 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
     return entity;
   }
 
-
-
+  async saveRuleset(ruleset: Ruleset): Promise<Ruleset> {
+    const file = path.join(this.getDataDir(), ruleset.domainId, ruleset.entityId, "metadata.json");
+    this.saveJsonBackup(file);
+    await fs.writeJson(file, ruleset, { spaces: 2 });
+    console.log("saved ruleset at path:", file);
+    return ruleset;
+  }
 
 }

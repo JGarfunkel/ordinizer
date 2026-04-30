@@ -1,7 +1,6 @@
-#!/usr/bin/env tsx
-
-import fs from "fs-extra";
-import path from "path";
+import { getDefaultStorage, IStorage } from "@civillyengaged/ordinizer-servercore";
+import dotenv from "dotenv";
+dotenv.config();
 
 // ─── Re-exports for backward compatibility ───────────────────────────────────
 // These 7 symbols were previously exported from this file.
@@ -9,12 +8,7 @@ import path from "path";
 import {
   verboseLog,
   setVerboseMode,
-  getProjectDataDir,
-  getProjectRootDir,
   getSpreadsheetUrl,
-  loadRealmsConfig,
-  getRealmById,
-  getDefaultRealm,
   findSimilarFlags,
 } from "./extractionConfig.js";
 
@@ -23,7 +17,6 @@ import {
   logToFile,
   closeLogging,
   validateEntityRelevance,
-  cleanupInvalidStatute,
   pdfFormToText,
 } from "./extractionUtils.js";
 
@@ -35,10 +28,10 @@ import {
 } from "./sheetExtractor.js";
 
 import {
+  downloadAndProcessSource,
   downloadEntitySources,
-  createMissingMetadataFiles,
-  createDirectoryStructureFromJSON,
-  runCleanupMode,
+  // createDirectoryStructureFromJSON,
+  // runCleanupMode,
 } from "./sourceDownloader.js";
 
 export {
@@ -47,9 +40,17 @@ export {
   processSpreadsheetData,
   verboseLog,
   validateEntityRelevance,
-  cleanupInvalidStatute,
-  runCleanupMode,
+  // runCleanupMode,
 };
+
+let _storage: IStorage | null = null;
+async function getStorage(realm: string): Promise<IStorage> {
+  if (!_storage) {
+    _storage = getDefaultStorage(realm || "");
+  }
+  return _storage;
+}
+
 
 // ─── processSpreadsheetData (orchestrator) ───────────────────────────────────
 
@@ -58,7 +59,7 @@ async function processSpreadsheetData(
   hyperlinkData: Record<string, Record<string, string>> = {},
   realm: any,
   targetDomain?: string,
-  municipalityFilter?: string,
+  entityFilter?: string,
   forceMode: boolean = false,
   noDownloadMode: boolean = false,
   noDeleteMode: boolean = false,
@@ -72,10 +73,12 @@ async function processSpreadsheetData(
 
   if (domainsToProcess.length === 0) return;
 
+  const storage = await getStorage(realm.id);
+
   // Phase 2: Per-entity download loop
-  await downloadEntitySources(rows, realm, hyperlinkData, headers, columnMap, domainsToProcess, {
+  await downloadEntitySources(storage, rows, realm, hyperlinkData, headers, columnMap, domainsToProcess, {
     targetDomain,
-    municipalityFilter,
+    entityFilter,
     forceMode,
     noDownloadMode,
     noDeleteMode,
@@ -90,13 +93,10 @@ async function processSpreadsheetData(
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
-  // Spreadsheet URL from domainConf.json
-  const spreadsheetUrl = getSpreadsheetUrl();
-
   // Define valid flags for validation
   const validFlags = [
     "--domain",
-    "--municipality-filter",
+    "--entity",
     "--realm",
     "--verbose",
     "-v",
@@ -143,7 +143,7 @@ async function main(): Promise<void> {
 
   // Parse arguments
   let targetDomain: string | undefined;
-  let municipalityFilter: string | undefined;
+  let entityFilter: string | undefined;
   let forceMode = false;
   let noDownloadMode = false;
   let noDeleteMode = false;
@@ -203,13 +203,13 @@ async function main(): Promise<void> {
     targetDomain = domainArg.split("=")[1];
   }
 
-  const municipalityFilterArg = args.find((arg) =>
-    arg.startsWith("--municipality-filter="),
+  const entityArg = args.find((arg) =>
+    arg.startsWith("--entity="),
   );
-  if (municipalityFilterArg) {
-    municipalityFilter = municipalityFilterArg.split("=")[1];
+  if (entityArg) {
+    entityFilter = entityArg.split("=")[1];
     if (VERBOSE_MODE) {
-      console.log(`Entity filter enabled: ${municipalityFilter}`);
+      console.log(`Entity filter enabled: ${entityFilter}`);
     }
   }
 
@@ -244,16 +244,12 @@ async function main(): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`
 Usage:
-  tsx scripts/extractEntityData.ts [google-sheets-url|csv-file-path] [options]
-
-Parameters:
-  google-sheets-url    Google Sheets URL to extract from
-  csv-file-path        Local CSV file path
+  tsx scripts/extractEntityData.ts [options]
 
 Options:
   --realm=<realm-id>             Target realm (use realm IDs from realms.json)
   --domain=<domain>              Extract only specified domain (Trees, GLB, 'Wetland Protection', 'Dark Sky')
-  --municipality-filter=<names>  Filter by entity names (comma-separated)
+  --entity=<names>               Filter by entity names (comma-separated)
   --verbose, -v                  Enable verbose logging (shows HTTP requests and responses)
   --force                        Force redownload files even if they exist and are recent
   --nodownload                   Skip downloads, only validate existing statute files
@@ -267,13 +263,12 @@ If no URL is provided, the script uses the URL configured in spreadsheetExtracti
 The script automatically checks for and creates missing metadata.json files for existing statute files.
 
 Examples:
-  tsx scripts/extractEntityData.ts '${spreadsheetUrl}' --verbose
+  tsx scripts/extractEntityData.ts --verbose
   tsx scripts/extractEntityData.ts --domain=Trees -v
   tsx scripts/extractEntityData.ts --domain=GLB
   tsx scripts/extractEntityData.ts --realm=<realm-id> --domain=overall -v
-  tsx scripts/extractEntityData.ts '${spreadsheetUrl}' --domain='Wetland Protection' --verbose
-  tsx scripts/extractEntityData.ts --domain='Property Maintenance' --municipality-filter='<name1>,<name2>' -v
-  tsx scripts/extractEntityData.ts ./data/source/municipalities.csv --domain=Trees -v
+  tsx scripts/extractEntityData.ts --domain='Wetland Protection' --verbose
+  tsx scripts/extractEntityData.ts --domain='Property Maintenance' --entity='<name1>,<name2>' -v
   tsx scripts/extractEntityData.ts --force --domain=Trees
   tsx scripts/extractEntityData.ts --nodownload --domain=Trees
   tsx scripts/extractEntityData.ts --nodelete --domain=Trees
@@ -285,29 +280,18 @@ Examples:
     process.exit(0);
   }
 
-  // Load realms configuration
-  const realmsConfig = await loadRealmsConfig();
-  let selectedRealm = targetRealm
-    ? getRealmById(targetRealm, realmsConfig)
-    : getDefaultRealm(realmsConfig);
-
-  if (!selectedRealm) {
-    if (targetRealm) {
-      console.error(`Error: Realm '${targetRealm}' not found.`);
-      console.log('Available realms:');
-      realmsConfig.realms.forEach((realm: any) => {
-        console.log(`  • ${realm.id}: ${realm.displayName}`);
-      });
-    } else {
-      console.error('Error: No default realm found and no realm specified.');
-    }
+  if (!targetRealm) {
+    console.error("Error: No realm specified. Use --realm=<realm-id> or set CURRENT_REALM environment variable.");
     process.exit(1);
   }
 
+  const storage = getDefaultStorage(targetRealm);
+  const selectedRealm = await storage.getRealmConfig();
+
   // Parse entity filter if provided
-  if (municipalityFilter) {
+  if (entityFilter) {
     entitiesToInclude = new Set(
-      municipalityFilter.split(",").map((m) => m.trim().toLowerCase()),
+      entityFilter.split(",").map((m) => m.trim().toLowerCase()),
     );
     console.log(
       `${selectedRealm.entityType} filter active: ${Array.from(entitiesToInclude).join(", ")}`,
@@ -316,68 +300,72 @@ Examples:
 
   console.log(`Using realm: ${selectedRealm.displayName} (${selectedRealm.id})`);
   console.log(`Data path: data/${selectedRealm.datapath}`);
-  console.log(`File type: ${selectedRealm.type}`);
+  console.log(`File type: ${selectedRealm.ruleType}`);
 
   // Initialize logging
   initializeLogging();
 
   try {
     if (cleanupMode) {
-      await runCleanupMode(selectedRealm, targetDomain, municipalityFilter, forceMode);
+      // TODO restore this
+      // await runCleanupMode(selectedRealm, targetDomain, entityFilter, forceMode);
     } else {
       let csvData: string;
       let hyperlinkData: Record<string, Record<string, string>> = {};
 
-      if (selectedRealm.dataSource.type === 'google-sheets') {
-        if (!selectedRealm.dataSource.url) {
-          throw new Error(`Google Sheets URL not configured for realm ${selectedRealm.id}`);
+      if (!reloadMode) {
+          console.log("📂 Working with existing directories instead of downloading fresh spreadsheet data");
+          csvData = "SKIP_SPREADSHEET_DOWNLOAD";
+          hyperlinkData = {};
+      } if (entityFilter && entitiesToInclude && targetDomain) {
+        // shortcut to direct function, ignoring spreadsheet
+        for (let entity of entitiesToInclude) {
+          await downloadAndProcessSource(selectedRealm.id, targetDomain, entity);
         }
-        if (reloadMode) {
-          console.log("🔄 Reload mode: Fetching fresh spreadsheet data from source");
+      } else {
+        console.log("🔄 Reload mode: Fetching fresh spreadsheet data from source");
+        if (selectedRealm.dataSource.type === 'google-sheets') {
+          if (!selectedRealm.dataSource.url) {
+            throw new Error(`Google Sheets URL not configured for realm ${selectedRealm.id}`);
+          }
           const { csvData: extractedCsvData, hyperlinkData: extractedHyperlinks } =
             await extractGoogleSheetsWithHyperlinks(selectedRealm.dataSource.url, VERBOSE_MODE);
           csvData = extractedCsvData;
           hyperlinkData = extractedHyperlinks;
+        } else if (selectedRealm.dataSource.type === 'json-file') {
+          if (!selectedRealm.dataSource.path) {
+            throw new Error(`JSON file path not configured for realm ${selectedRealm.id}`);
+          }
+          const jsonData = await storage.loadRealmDataSource(selectedRealm);
+          csvData = convertSchoolDistrictJsonToCsv(jsonData);
         } else {
-          console.log("📂 Working with existing directories instead of downloading fresh spreadsheet data");
-          csvData = "SKIP_SPREADSHEET_DOWNLOAD";
-          hyperlinkData = {};
+          throw new Error(`Unsupported data source type: ${selectedRealm.dataSource.type}`);
         }
-      } else if (selectedRealm.dataSource.type === 'json-file') {
-        if (!selectedRealm.dataSource.path) {
-          throw new Error(`JSON file path not configured for realm ${selectedRealm.id}`);
-        }
-        const filePath = path.join(getProjectRootDir(), selectedRealm.dataSource.path);
-        if (!(await fs.pathExists(filePath))) {
-          throw new Error(`File not found: ${filePath}`);
-        }
-        const jsonData = await fs.readJson(filePath);
-        csvData = convertSchoolDistrictJsonToCsv(jsonData);
-      } else {
-        throw new Error(`Unsupported data source type: ${selectedRealm.dataSource.type}`);
       }
-
-      await processSpreadsheetData(
-        csvData,
-        hyperlinkData,
-        selectedRealm,
-        targetDomain,
-        municipalityFilter,
-        forceMode,
-        noDownloadMode,
-        noDeleteMode,
-        VERBOSE_MODE,
-        entitiesToInclude,
-        reloadMode,
-      );
+      // TODO - reenable this
+      // await processSpreadsheetData(
+      //   csvData,
+      //   hyperlinkData,
+      //   selectedRealm,
+      //   targetDomain,
+      //   entityFilter,
+      //   forceMode,
+      //   noDownloadMode,
+      //   noDeleteMode,
+      //   VERBOSE_MODE,
+      //   entitiesToInclude,
+      //   reloadMode,
+      // );
 
       // Create missing metadata files for existing statute files
-      await createMissingMetadataFiles(selectedRealm, reloadMode, entitiesToInclude);
+      // TODO - review whether we need this
+      // await createMissingMetadataFiles(selectedRealm, reloadMode, entitiesToInclude);
       
       // For JSON-based realms, create directory structure and policy files
-      if (selectedRealm.dataSource.type === 'json-file') {
-        await createDirectoryStructureFromJSON(selectedRealm, targetDomain, entitiesToInclude);
-      }
+      // TODO - review whether we need the below, this was more experimental
+      // if (selectedRealm.dataSource.type === 'json-file') {
+      //   await createDirectoryStructureFromJSON(selectedRealm, targetDomain, entitiesToInclude);
+      // }
     }
 
     console.log("All tasks completed successfully!");
@@ -390,39 +378,22 @@ Examples:
   }
 }
 
-// Run if called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch(console.error);
-}
+main();
 
-// Command-line testing function for pdfFormToText
-if (process.argv[2] === "test-pdf-form" && process.argv[3]) {
-  const pdfPath = process.argv[3];
-  const title = process.argv[4] || "Test PDF Form";
-  
-  (async () => {
-    try {
-      console.log(`🧪 Testing PDF form processing on: ${pdfPath}`);
-      console.log(`📋 Form title: ${title}`);
-      console.log(`${"=".repeat(50)}`);
-      
-      if (!await fs.pathExists(pdfPath)) {
-        console.error(`❌ PDF file not found: ${pdfPath}`);
-        process.exit(1);
-      }
-      
-      const pdfBuffer = await fs.readFile(pdfPath);
-      const result = await pdfFormToText(pdfBuffer, title);
-      
-      console.log("\n📋 FORM ANALYSIS RESULT:");
-      console.log(`${"=".repeat(50)}`);
-      console.log(result);
-      console.log(`${"=".repeat(50)}`);
-      console.log(`✅ Form processing completed successfully!`);
-      
-    } catch (error: any) {
-      console.error(`❌ Error testing PDF form: ${error.message}`);
-      process.exit(1);
-    }
-  })();
-}
+// // Command-line testing function for pdfFormToText
+// if (process.argv[2] === "test-pdf-form" && process.argv[3]) {
+//   const pdfPath = process.argv[3];
+//   const title = process.argv[4] || "Test PDF Form";
+//   (async () => {
+//     try {
+//       console.log(`🧪 Testing PDF form processing on: ${pdfPath}`);
+//       console.log(`📋 Form title: ${title}`);
+//       console.log(`${"=".repeat(50)}`);
+//       // Use storage abstraction for all data access; prefer high-level IStorage methods
+//       throw new Error("Direct file access for PDF is deprecated. Use a high-level IStorage method instead.");
+//     } catch (error: any) {
+//       console.error(`❌ Error testing PDF form: ${error.message}`);
+//       process.exit(1);
+//     }
+//   })();
+// }

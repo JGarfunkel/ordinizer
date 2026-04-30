@@ -206,7 +206,7 @@ export function SidebarAnalysis({
                                 {(() => {
                                   const refs = qa.relevantSections as (string | { name: string; url?: string })[];
                                   const stateEntityId = usesStateCode
-                                    ? `${currentRealm?.state}-State`
+                                    ? `${currentRealm?.territory}-State`
                                     : analysisData?.municipality?.id;
                                   return refs.map((ref, i) => {
                                     if (typeof ref === "string") {
@@ -244,7 +244,7 @@ export function SidebarAnalysis({
                               <StatuteLink
                                 municipalityId={
                                   usesStateCode
-                                    ? `${currentRealm?.state}-State`
+                                    ? `${currentRealm?.territory}-State`
                                     : analysisData?.municipality?.id
                                 }
                                 domainId={analysisData?.domain?.id}

@@ -1,4 +1,4 @@
-import { vectorService } from "../../analyzer/services/vectorService.js";
+import { getVectorService } from "../../analyzer/services/vectorService.js";
 import type { Express } from "express";
 import { getReadOnlyStorage } from "../storage";
 
@@ -15,6 +15,7 @@ export function registerVectorRoutes(app: Express, apiPrefix: string = "/api") {
       if (!statuteContent) {
         return res.status(404).json({ error: "Statute file not found" });
       }
+      const vectorService = getVectorService();
       await vectorService.indexStatute(municipalityId, domainId, statuteContent);
       res.json({ 
         message: "Statute indexed successfully", 
@@ -36,6 +37,7 @@ export function registerVectorRoutes(app: Express, apiPrefix: string = "/api") {
       if (!question) {
         return res.status(400).json({ error: "Question is required" });
       }
+      const vectorService = getVectorService();
       const results = await vectorService.searchRelevantSections(
         municipalityId, 
         domainId, 
@@ -52,6 +54,7 @@ export function registerVectorRoutes(app: Express, apiPrefix: string = "/api") {
   // Get vector database statistics
   app.get(`${apiPrefix}/vector/stats`, async (req, res) => {
     try {
+      const vectorService = getVectorService();
       const stats = await vectorService.getIndexStats();
       res.json(stats);
     } catch (error) {

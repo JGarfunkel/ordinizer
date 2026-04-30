@@ -1,16 +1,39 @@
 import { Pinecone } from '@pinecone-database/pinecone';
 import OpenAI from 'openai';
+import {
+  checkRateLimit,
+  recordTokenUsage,
+  estimateTokens,
+  sleep,
+  QUESTION_PAUSE_MS,
+  currentModel,
+  extractSectionReferences,
+  openai,
+} from "./openai.js";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+let vectorServiceInstance: VectorService | null = null;
+
+export function getVectorService() {
+	if (!vectorServiceInstance) {
+		vectorServiceInstance = new VectorService();
+	}
+	return vectorServiceInstance;
+}
 
 export class VectorService {
 	private pinecone: Pinecone;
 	private indexName = 'ordinizer-statutes';
+	private openai;
   
 	constructor() {
+		this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 		this.pinecone = new Pinecone({
 			apiKey: process.env.PINECONE_API_KEY!,
 		});
+	}
+
+	setVerbose(verbose: boolean) {
+		// No-op for now, but could be used to control logging in the future
 	}
 
 	/**
@@ -56,7 +79,7 @@ export class VectorService {
     
 		while (Date.now() - startTime < maxWaitTime) {
 			try {
-				const indexStats = await this.pinecone.index(this.indexName).describeIndexStats();
+				const indexStats = await this.getIndex().describeIndexStats();
 				if (indexStats) {
 					console.log('Index is ready!');
 					return true;
@@ -69,6 +92,10 @@ export class VectorService {
 		}
     
 		throw new Error('Index did not become ready within timeout period');
+	}
+
+	private getIndex() {
+		return this.pinecone.index(this.indexName);
 	}
 
 	/**
@@ -187,7 +214,7 @@ export class VectorService {
 					console.log(`Truncating text from ${text.length} to ${processText.length} chars`);
 				}
         
-				const response = await openai.embeddings.create({
+				const response = await this.openai.embeddings.create({
 					model: 'text-embedding-ada-002',
 					input: [processText],
 				});
@@ -265,7 +292,7 @@ export class VectorService {
       
 			// Upsert in batches
 			const batchSize = 100;
-			const index = this.pinecone.index(this.indexName);
+			const index = this.getIndex();
       
 			for (let i = 0; i < vectors.length; i += batchSize) {
 				const batch = vectors.slice(i, i + batchSize);
@@ -285,7 +312,7 @@ export class VectorService {
 	 */
 	async deleteStatute(municipalityId: string, domainId: string) {
 		try {
-			const index = this.pinecone.index(this.indexName);
+			const index = this.getIndex();
       
 			// Get all vectors and delete by ID pattern
 			const listResponse = await index.listPaginated({
@@ -337,7 +364,7 @@ export class VectorService {
 			// Generate embedding for the question
 			const questionEmbedding = await this.generateEmbeddings([question]);
       
-			const index = this.pinecone.index(this.indexName);
+			const index = this.getIndex();
       
 			// Search for relevant sections with proper metadata filtering
 			const searchResponse = await index.query({
@@ -370,238 +397,208 @@ export class VectorService {
 	 */
 	async getIndexStats() {
 		try {
-			const index = this.pinecone.index(this.indexName);
+			const index = this.getIndex();
 			return await index.describeIndexStats();
 		} catch (error) {
 			console.error('Error getting index stats:', error);
 			return null;
 		}
 	}
+
+		/** Truncate text to fit within a token budget */
+	truncateToTokenLimit(text: string, maxTokens: number): string {
+	const maxChars = maxTokens * 4;
+	if (text.length <= maxChars) return text;
+	return text.substring(0, maxChars - 100) + "\n\n[Text truncated to fit context limit...]";
+	}
+
+	/** Add domain-specific keywords to a question for better vector matching */
+	enhanceQuestionForVectorSearch(question: string, domain: string): string {
+	const lq = question.toLowerCase();
+	let enhanced = question;
+	if (domain === "property-maintenance") {
+		if (lq.includes("yard") || lq.includes("landscape"))
+		enhanced += " curtilage vegetation grasses brush briars 10 inches 15 feet perimeter structure uncultivated plants flowers gardens pollinator";
+		if (lq.includes("penalty") || lq.includes("fine"))
+		enhanced += " $200 per day violation continues penalty fine";
+		if (lq.includes("timeline") || lq.includes("resolving"))
+		enhanced += " 30 days 10 days certified mail notice violation hearing";
+	}
+	if (domain === "trees" && (lq.includes("permit") || lq.includes("removal")))
+		enhanced += " tree removal permit application DBH diameter inches";
+	if ((domain === "glb" || domain === "gas-leaf-blower") && (lq.includes("hours") || lq.includes("time")))
+		enhanced += " 8 AM 9 AM 5 PM 6 PM hours operation blower leaf";
+	return enhanced;
+	}
+
+	/** Split statute text into token-safe chunks for embedding */
+	chunkText(text: string, maxChunkSize = 1000): string[] {
+	const chunks: string[] = [];
+	const maxTokens = 5000;
+	console.log(`Starting intelligent chunking: ${text.length} characters, max chunk size: ${maxChunkSize}`);
+
+	let sections: string[];
+	const doubleNL = text.split(/\.\n\n/).filter(s => s.trim())
+		.map((s, i, a) => i < a.length - 1 && !s.endsWith(".") ? s + "." : s);
+
+	if (doubleNL.length > 1 && doubleNL.every(s => s.length < maxChunkSize)) {
+		sections = doubleNL;
+		console.log(`Split into ${sections.length} sections by .\\n\\n separators`);
+	} else {
+		const singleNL = text.split(/\.\n/).filter(s => s.trim())
+		.map((s, i, a) => i < a.length - 1 && !s.endsWith(".") ? s + "." : s);
+		if (singleNL.length > 1 && singleNL.some(s => s.length < maxChunkSize * 0.8)) {
+		sections = singleNL;
+		console.log(`Split into ${sections.length} sections by .\\n separators`);
+		} else {
+		sections = text.split(/(?=§\s*\d+|Section\s+\d+|SECTION\s+\d+|Article\s+[IVXLCDM]+)/i).filter(s => s.trim());
+		console.log(`Split into ${sections.length} sections by § markers (fallback)`);
+		}
+	}
+
+	for (let i = 0; i < sections.length; i++) {
+		const section = sections[i];
+		const sectionTokens = estimateTokens(section);
+		if (section.length <= maxChunkSize && sectionTokens <= maxTokens) {
+		chunks.push(section.trim());
+		} else {
+		const sentences = section.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+		let current = "";
+		for (const sentence of sentences) {
+			const proposed = current + (current ? " " : "") + sentence;
+			if ((proposed.length > maxChunkSize || estimateTokens(proposed) > maxTokens) && current.trim()) {
+			chunks.push(current.trim());
+			current = sentence;
+			} else {
+			current = proposed;
+			}
+		}
+		if (current.trim()) chunks.push(current.trim());
+		}
+	}
+
+	const validated = chunks
+		.filter(c => c.length > 400)
+		.filter(c => {
+		const t = estimateTokens(c);
+		if (t > maxTokens) { console.warn(`⚠️ Filtering oversized chunk: ~${t} tokens`); return false; }
+		if (c.length > 12000) { console.warn(`⚠️ Filtering large character chunk: ${c.length} chars`); return false; }
+		return true;
+		});
+
+	console.log(`Chunking complete: ${chunks.length} total → ${validated.length} validated`);
+	return validated;
+	}
+
+	/** Chunk, embed, and upsert a document into Pinecone */
+	async indexDocumentInPinecone(
+	documentText: string,
+	municipalityId: string,
+	domain: string,
+	index: any,
+	documentType: "statute" | "guidance" = "statute",
+	) {
+	const chunks = this.chunkText(documentText, 2000);
+	console.log(`Indexing ${documentType} for ${municipalityId}-${domain}: ${chunks.length} chunks`);
+	const vectors: any[] = [];
+
+	for (let i = 0; i < chunks.length; i++) {
+		let chunk = chunks[i];
+		let tokenCount = estimateTokens(chunk);
+		console.log(`Chunk ${i + 1}/${chunks.length}: ${chunk.length} chars, ~${tokenCount} tokens`);
+		if (tokenCount > 8000) { console.warn(`⚠️ Skipping chunk ${i + 1}: exceeds embedding limit`); continue; }
+		if (tokenCount > 7500) {
+		chunk = chunk.substring(0, Math.floor(7500 * 3)) + "\n\n[truncated]";
+		tokenCount = estimateTokens(chunk);
+		}
+		try {
+		await checkRateLimit(estimateTokens(chunk));
+		const res = await this.openai.embeddings.create({ model: "text-embedding-3-small", input: chunk });
+		recordTokenUsage(res.usage?.total_tokens || estimateTokens(chunk));
+		vectors.push({
+			id: `${municipalityId}-${domain}-${documentType}-chunk-${i}`,
+			values: res.data[0].embedding,
+			metadata: { municipalityId, domainId: domain, documentType, chunkIndex: i, content: chunk },
+		});
+		} catch (error) {
+		console.error(`Error embedding chunk ${i}:`, error);
+		}
+	}
+
+	if (vectors.length > 0) {
+		console.log(`Upserting ${vectors.length} vectors for ${municipalityId}-${domain}`);
+		await index.upsert(vectors);
+		console.log(`Indexed ${vectors.length} chunks`);
+	}
+	}
+
+	/** Answer a question via Pinecone vector search + GPT-4o */
+	async answerQuestionWithVector(
+		question: string,
+		municipalityId: string,
+		domain: string,
+		index: any,
+		existingAnswersContext = "",
+		scoreInstructions?: string,
+		) {
+		console.log(`Vector Q&A for ${municipalityId}-${domain}: "${question.substring(0, 100)}..."`);
+		try {
+			const enhanced = this.enhanceQuestionForVectorSearch(question, domain);
+			await checkRateLimit(estimateTokens(enhanced));
+			const embedRes = await this.openai.embeddings.create({ model: "text-embedding-3-small", input: enhanced });
+			const embeddingTokens = embedRes.usage?.total_tokens || estimateTokens(enhanced);
+			recordTokenUsage(embeddingTokens);
+
+			const searchResults = await index.query({
+			vector: embedRes.data[0].embedding,
+			filter: { municipalityId, domainId: domain },
+			topK: 5,
+			includeMetadata: true,
+			});
+
+			if (!searchResults.matches?.length) {
+			return { answer: "Not specified in the statute.", confidence: 0, sourceRefs: [], vectorTokensUsed: embeddingTokens };
+			}
+
+			let relevantTexts = searchResults.matches
+			.map((m: any, idx: number) => {
+				const text = m.metadata?.content || "";
+				const refs = extractSectionReferences(text);
+				const refInfo = refs.length ? ` (${refs.join(", ")})` : "";
+				return `--- CHUNK ${idx + 1} (score: ${m.score?.toFixed(3)}, chunk: ${m.metadata?.chunkIndex}${refInfo}) ---\n${text}`;
+			})
+			.join("\n\n");
+
+			const scoreText = scoreInstructions ? `\n\nSCORING GUIDANCE: ${scoreInstructions}` : "";
+			const systemPrompt = `You are analyzing municipal statutes. Based ONLY on the provided statute text, answer the user's question. If not found, respond with "Not specified in the statute." Cite section numbers when available.\n\nFocus on unique information for this specific question.${scoreText}`;
+			const userPromptPrefix = `Question: ${question}\n\nRelevant statute text:\n`;
+			const available = 6000 - estimateTokens(systemPrompt) - estimateTokens(userPromptPrefix);
+			if (estimateTokens(relevantTexts) > available)
+			relevantTexts = this.truncateToTokenLimit(relevantTexts, available);
+
+			const userPrompt = `${userPromptPrefix}${relevantTexts}${existingAnswersContext}`;
+			await checkRateLimit(estimateTokens(systemPrompt + userPrompt) + 1000);
+
+			const answerRes = await this.openai.chat.completions.create({
+			model: currentModel || "gpt-4o",
+			messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
+			temperature: 0.1,
+			max_tokens: 1000,
+			});
+			const answerTokens = answerRes.usage?.total_tokens || 1000;
+			recordTokenUsage(answerTokens);
+			await sleep(QUESTION_PAUSE_MS);
+
+			const answer = answerRes.choices[0].message.content || "Not specified in the statute.";
+			const avgScore = searchResults.matches.reduce((s: number, m: any) => s + (m.score || 0), 0) / searchResults.matches.length;
+			const confidence = Math.max(0, Math.min(100, Math.round(avgScore * 100)));
+			const sourceRefs = extractSectionReferences(relevantTexts);
+			console.log(`Answer: ${answer.substring(0, 100)}... (confidence: ${confidence}%, ${sourceRefs.length} refs)`);
+			return { answer, confidence, sourceRefs, vectorTokensUsed: answerTokens + embeddingTokens };
+		} catch (error) {
+			console.error("Error in vector search:", error);
+			return { answer: "Not specified in the statute.", confidence: 0, sourceRefs: [], vectorTokensUsed: 0 };
+		}
+	}
 }
 
-export const vectorService = new VectorService();
-
-// ─── Standalone script-level Pinecone functions ───────────────────────────────
-// These are used by the analyzer CLI (analyzeStatutes.ts) and differ from the
-// server-side VectorService class above in that they use rate-limited embeddings,
-// intelligent chunking, and work directly on Pinecone index handles.
-
-import {
-  checkRateLimit,
-  recordTokenUsage,
-  estimateTokens,
-  sleep,
-  QUESTION_PAUSE_MS,
-  currentModel,
-  extractSectionReferences,
-} from "./openai.js";
-
-let _verbose = false;
-export function setVerbose(v: boolean) { _verbose = v; }
-function log(message: string) { if (_verbose) console.log(`[VERBOSE] ${message}`); }
-
-/** Conservative token estimate for legal text (~1 token per 3 chars with padding) */
-export function estimateTokenCount(text: string): number {
-  const base = Math.ceil(text.length / 3);
-  const punct = (text.match(/[§\(\)\[\]\.,:;]/g) || []).length * 0.1;
-  const nums = (text.match(/\d+/g) || []).length * 0.2;
-  return Math.ceil(base + punct + nums);
-}
-
-/** Truncate text to fit within a token budget */
-export function truncateToTokenLimit(text: string, maxTokens: number): string {
-  const maxChars = maxTokens * 4;
-  if (text.length <= maxChars) return text;
-  return text.substring(0, maxChars - 100) + "\n\n[Text truncated to fit context limit...]";
-}
-
-/** Add domain-specific keywords to a question for better vector matching */
-export function enhanceQuestionForVectorSearch(question: string, domain: string): string {
-  const lq = question.toLowerCase();
-  let enhanced = question;
-  if (domain === "property-maintenance") {
-    if (lq.includes("yard") || lq.includes("landscape"))
-      enhanced += " curtilage vegetation grasses brush briars 10 inches 15 feet perimeter structure uncultivated plants flowers gardens pollinator";
-    if (lq.includes("penalty") || lq.includes("fine"))
-      enhanced += " $200 per day violation continues penalty fine";
-    if (lq.includes("timeline") || lq.includes("resolving"))
-      enhanced += " 30 days 10 days certified mail notice violation hearing";
-  }
-  if (domain === "trees" && (lq.includes("permit") || lq.includes("removal")))
-    enhanced += " tree removal permit application DBH diameter inches";
-  if ((domain === "glb" || domain === "gas-leaf-blower") && (lq.includes("hours") || lq.includes("time")))
-    enhanced += " 8 AM 9 AM 5 PM 6 PM hours operation blower leaf";
-  return enhanced;
-}
-
-/** Split statute text into token-safe chunks for embedding */
-export function chunkText(text: string, maxChunkSize = 1000): string[] {
-  const chunks: string[] = [];
-  const maxTokens = 5000;
-  log(`Starting intelligent chunking: ${text.length} characters, max chunk size: ${maxChunkSize}`);
-
-  let sections: string[];
-  const doubleNL = text.split(/\.\n\n/).filter(s => s.trim())
-    .map((s, i, a) => i < a.length - 1 && !s.endsWith(".") ? s + "." : s);
-
-  if (doubleNL.length > 1 && doubleNL.every(s => s.length < maxChunkSize)) {
-    sections = doubleNL;
-    log(`Split into ${sections.length} sections by .\\n\\n separators`);
-  } else {
-    const singleNL = text.split(/\.\n/).filter(s => s.trim())
-      .map((s, i, a) => i < a.length - 1 && !s.endsWith(".") ? s + "." : s);
-    if (singleNL.length > 1 && singleNL.some(s => s.length < maxChunkSize * 0.8)) {
-      sections = singleNL;
-      log(`Split into ${sections.length} sections by .\\n separators`);
-    } else {
-      sections = text.split(/(?=§\s*\d+|Section\s+\d+|SECTION\s+\d+|Article\s+[IVXLCDM]+)/i).filter(s => s.trim());
-      log(`Split into ${sections.length} sections by § markers (fallback)`);
-    }
-  }
-
-  for (let i = 0; i < sections.length; i++) {
-    const section = sections[i];
-    const sectionTokens = estimateTokenCount(section);
-    if (section.length <= maxChunkSize && sectionTokens <= maxTokens) {
-      chunks.push(section.trim());
-    } else {
-      const sentences = section.split(/(?<=[.!?])\s+/).filter(s => s.trim());
-      let current = "";
-      for (const sentence of sentences) {
-        const proposed = current + (current ? " " : "") + sentence;
-        if ((proposed.length > maxChunkSize || estimateTokenCount(proposed) > maxTokens) && current.trim()) {
-          chunks.push(current.trim());
-          current = sentence;
-        } else {
-          current = proposed;
-        }
-      }
-      if (current.trim()) chunks.push(current.trim());
-    }
-  }
-
-  const validated = chunks
-    .filter(c => c.length > 400)
-    .filter(c => {
-      const t = estimateTokenCount(c);
-      if (t > maxTokens) { console.warn(`⚠️ Filtering oversized chunk: ~${t} tokens`); return false; }
-      if (c.length > 12000) { console.warn(`⚠️ Filtering large character chunk: ${c.length} chars`); return false; }
-      return true;
-    });
-
-  log(`Chunking complete: ${chunks.length} total → ${validated.length} validated`);
-  return validated;
-}
-
-const _scriptOpenAI = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
-
-/** Chunk, embed, and upsert a document into Pinecone */
-export async function indexDocumentInPinecone(
-  documentText: string,
-  municipalityId: string,
-  domain: string,
-  index: any,
-  documentType: "statute" | "guidance" = "statute",
-) {
-  const chunks = chunkText(documentText, 2000);
-  log(`Indexing ${documentType} for ${municipalityId}-${domain}: ${chunks.length} chunks`);
-  const vectors: any[] = [];
-
-  for (let i = 0; i < chunks.length; i++) {
-    let chunk = chunks[i];
-    let tokenCount = estimateTokenCount(chunk);
-    log(`Chunk ${i + 1}/${chunks.length}: ${chunk.length} chars, ~${tokenCount} tokens`);
-    if (tokenCount > 8000) { console.warn(`⚠️ Skipping chunk ${i + 1}: exceeds embedding limit`); continue; }
-    if (tokenCount > 7500) {
-      chunk = chunk.substring(0, Math.floor(7500 * 3)) + "\n\n[truncated]";
-      tokenCount = estimateTokenCount(chunk);
-    }
-    try {
-      await checkRateLimit(estimateTokens(chunk));
-      const res = await _scriptOpenAI.embeddings.create({ model: "text-embedding-3-small", input: chunk });
-      recordTokenUsage(res.usage?.total_tokens || estimateTokens(chunk));
-      vectors.push({
-        id: `${municipalityId}-${domain}-${documentType}-chunk-${i}`,
-        values: res.data[0].embedding,
-        metadata: { municipalityId, domainId: domain, documentType, chunkIndex: i, content: chunk },
-      });
-    } catch (error) {
-      console.error(`Error embedding chunk ${i}:`, error);
-    }
-  }
-
-  if (vectors.length > 0) {
-    log(`Upserting ${vectors.length} vectors for ${municipalityId}-${domain}`);
-    await index.upsert(vectors);
-    log(`Indexed ${vectors.length} chunks`);
-  }
-}
-
-/** Answer a question via Pinecone vector search + GPT-4o */
-export async function answerQuestionWithVector(
-  question: string,
-  municipalityId: string,
-  domain: string,
-  index: any,
-  existingAnswersContext = "",
-  scoreInstructions?: string,
-) {
-  log(`Vector Q&A for ${municipalityId}-${domain}: "${question.substring(0, 100)}..."`);
-  try {
-    const enhanced = enhanceQuestionForVectorSearch(question, domain);
-    await checkRateLimit(estimateTokens(enhanced));
-    const embedRes = await _scriptOpenAI.embeddings.create({ model: "text-embedding-3-small", input: enhanced });
-    const embeddingTokens = embedRes.usage?.total_tokens || estimateTokens(enhanced);
-    recordTokenUsage(embeddingTokens);
-
-    const searchResults = await index.query({
-      vector: embedRes.data[0].embedding,
-      filter: { municipalityId, domainId: domain },
-      topK: 5,
-      includeMetadata: true,
-    });
-
-    if (!searchResults.matches?.length) {
-      return { answer: "Not specified in the statute.", confidence: 0, sourceRefs: [], vectorTokensUsed: embeddingTokens };
-    }
-
-    let relevantTexts = searchResults.matches
-      .map((m: any, idx: number) => {
-        const text = m.metadata?.content || "";
-        const refs = extractSectionReferences(text);
-        const refInfo = refs.length ? ` (${refs.join(", ")})` : "";
-        return `--- CHUNK ${idx + 1} (score: ${m.score?.toFixed(3)}, chunk: ${m.metadata?.chunkIndex}${refInfo}) ---\n${text}`;
-      })
-      .join("\n\n");
-
-    const scoreText = scoreInstructions ? `\n\nSCORING GUIDANCE: ${scoreInstructions}` : "";
-    const systemPrompt = `You are analyzing municipal statutes. Based ONLY on the provided statute text, answer the user's question. If not found, respond with "Not specified in the statute." Cite section numbers when available.\n\nFocus on unique information for this specific question.${scoreText}`;
-    const userPromptPrefix = `Question: ${question}\n\nRelevant statute text:\n`;
-    const available = 6000 - estimateTokenCount(systemPrompt) - estimateTokenCount(userPromptPrefix);
-    if (estimateTokenCount(relevantTexts) > available)
-      relevantTexts = truncateToTokenLimit(relevantTexts, available);
-
-    const userPrompt = `${userPromptPrefix}${relevantTexts}${existingAnswersContext}`;
-    await checkRateLimit(estimateTokens(systemPrompt + userPrompt) + 1000);
-
-    const answerRes = await _scriptOpenAI.chat.completions.create({
-      model: currentModel || "gpt-4o",
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-      temperature: 0.1,
-      max_tokens: 1000,
-    });
-    const answerTokens = answerRes.usage?.total_tokens || 1000;
-    recordTokenUsage(answerTokens);
-    await sleep(QUESTION_PAUSE_MS);
-
-    const answer = answerRes.choices[0].message.content || "Not specified in the statute.";
-    const avgScore = searchResults.matches.reduce((s: number, m: any) => s + (m.score || 0), 0) / searchResults.matches.length;
-    const confidence = Math.max(0, Math.min(100, Math.round(avgScore * 100)));
-    const sourceRefs = extractSectionReferences(relevantTexts);
-    log(`Answer: ${answer.substring(0, 100)}... (confidence: ${confidence}%, ${sourceRefs.length} refs)`);
-    return { answer, confidence, sourceRefs, vectorTokensUsed: answerTokens + embeddingTokens };
-  } catch (error) {
-    console.error("Error in vector search:", error);
-    return { answer: "Not specified in the statute.", confidence: 0, sourceRefs: [], vectorTokensUsed: 0 };
-  }
-}

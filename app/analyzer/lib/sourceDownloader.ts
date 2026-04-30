@@ -4,8 +4,6 @@ import axios from "axios";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { convertHtmlToText } from "./simpleHtmlToText.js";
 import {
-  type Realm,
-  type Metadata,
   type ArticleLink,
   DOMAIN_MAPPING,
   DELAY_BETWEEN_DOWNLOADS,
@@ -25,32 +23,33 @@ import {
 import {
   logToFile,
   delay,
-  readMetadata,
-  writeMetadata,
   addOrUpdateSource,
   getSourceUrl,
   getDownloadedAt,
-  getSourceTitle,
-  getContentLength,
   getTextFromPdfFile,
   downloadFromUrl,
+  downloadFromUrlAndSave,
   getContentTypeFromUrl,
   isContentPdf,
   detectArticleBasedPage,
   downloadAndStitchArticles,
   pdfFormToText,
   validateEntityRelevance,
-  cleanupInvalidStatute,
   extractStatuteInfo,
+  extractStatuteInfoFromHTML,
   getGradeColor,
   hasBinaryData,
+  getPrimarySource,
 } from "./extractionUtils.js";
 import { PDFParse } from "pdf-parse";
 import { text } from "stream/consumers";
+import { Ruleset, Domain, Entity, Realm } from "@civillyengaged/ordinizer-core";
+import { IStorage, getDefaultStorage } from "@civillyengaged/ordinizer-servercore";
 
 // ─── Per-entity download loop ────────────────────────────────────────────────
 
 export async function downloadEntitySources(
+  storage: IStorage,
   rows: any[][],
   realm: Realm,
   hyperlinkData: Record<string, Record<string, string>>,
@@ -59,7 +58,7 @@ export async function downloadEntitySources(
   domainsToProcess: string[],
   options: {
     targetDomain?: string;
-    municipalityFilter?: string;
+    entityFilter?: string;
     forceMode?: boolean;
     noDownloadMode?: boolean;
     noDeleteMode?: boolean;
@@ -70,7 +69,7 @@ export async function downloadEntitySources(
   parser?: ISpreadsheetParser,
 ): Promise<void> {
   const {
-    municipalityFilter,
+    entityFilter,
     forceMode = false,
     noDownloadMode = false,
     noDeleteMode = false,
@@ -81,14 +80,14 @@ export async function downloadEntitySources(
 
   const sp = parser ?? new DefaultSpreadsheetParser(realm);
   let downloadCount = 0;
+  const territory = realm.territory ?? '';
 
   for (const row of rows) {
     // Parse "Name (Type)" format from first column
     const nameTypeMatch = row[0]?.match(/^(.+?)\s*\((.+?)\)$/);
     if (!nameTypeMatch) continue; // Skip rows without "Name (Type)" format
 
-    const cleanName = nameTypeMatch[1].trim();
-    const rawType = nameTypeMatch[2].trim();
+    const { name: cleanName, type: rawType } = sp.parseNames(row[0]);
     const cleanType = rawType === "Town/Village" ? "Town" : rawType;
 
     // Apply municipality filter for downloads
@@ -190,628 +189,29 @@ export async function downloadEntitySources(
       const domainDir = domain.toLowerCase().replace(/\s+/g, "-");
 
       if (usesStateCode) {
-        console.log(
-          `  ${cleanName} - ${cleanType}: Uses ${sp.getStateCode()} State code, managing shared state reference`,
-        );
-
-        // Create municipality directory for metadata only
-        const municipalityDirPath = path.join(
-          getProjectDataDir(),
-          realm.datapath,
-          domainDir,
-          `${sp.getEntityPrefix()}${cleanName.replace(/\s+/g, "")}-${cleanType.replace(/\s+/g, "")}`,
-        );
-        await fs.ensureDir(municipalityDirPath);
-        const municipalityMetadataPath = path.join(
-          municipalityDirPath,
-          "metadata.json",
-        );
-
-        // Save metadata in municipality folder (no statute files)
-        await fs.writeJson(
-          municipalityMetadataPath,
-          {
-            municipality: cleanName,
-            municipalityType: cleanType,
-            domain: getDomainDisplayName(domain),
-            domainId: domain
-              .toLowerCase()
-              .replace(/\s+/g, "-"),
-            sourceUrl: url,
-            originalCellValue: cellText || url,
-            downloadedAt: new Date().toISOString(),
-            stateCodeApplies: true,
-            referencesStateCode: true,
-            stateCodePath: `../${sp.getEntityPrefix()}State/statute.txt`,
-          },
-          { spaces: 2 },
-        );
-        console.log(
-          `  Created metadata reference for ${cleanName} - ${cleanType} (references state code)`,
-        );
-
-        // Check if we need to download the actual state statute to shared state folder
-        const stateDir = path.join(
-          getProjectDataDir(),
-          realm.datapath,
-          domainDir,
-          `${sp.getEntityPrefix()}State`,
-        );
-        const stateFilePath = path.join(stateDir, "statute.txt");
-        const stateHtmlPath = path.join(stateDir, "statute.html");
-        const stateMetadataPath = path.join(stateDir, "metadata.json");
-
-        if (!(await fs.pathExists(stateFilePath))) {
-          console.log(
-            `  ${sp.getStateCode()} State statute not found, downloading to shared location: ${stateDir}`,
-          );
-          await fs.ensureDir(stateDir);
-
-          // Add delay between downloads to be respectful
-          if (downloadCount > 0) {
-            console.log(
-              `  Waiting ${DELAY_BETWEEN_DOWNLOADS / 1000} seconds...`,
-            );
-            await delay(DELAY_BETWEEN_DOWNLOADS);
-          }
-
-          const content = await downloadFromUrl(url);
-
-          if (content) {
-            // Always save original HTML source for potential later conversion
-            await fs.writeFile(stateHtmlPath, content, "utf-8");
-            console.log(`  Saved NY State HTML source: ${stateHtmlPath}`);
-
-            // Check if this is an article-based page for state code too
-            const { isArticleBased, articles } = detectArticleBasedPage(
-              content,
-              url,
-            );
-            let plainTextContent: string;
-            let sourceUrls: ArticleLink[] | undefined;
-
-            if (isArticleBased && articles.length > 0) {
-              console.log(
-                `  📚 Processing article-based NY State statute with ${articles.length} articles`,
-              );
-              const articleResult = await downloadAndStitchArticles(articles);
-              plainTextContent = articleResult.content;
-              sourceUrls = articleResult.sourceUrls;
-
-              if (!plainTextContent || plainTextContent.length < 100) {
-                console.log(
-                  `  ⚠️  Article stitching resulted in insufficient content, falling back to main page`,
-                );
-                plainTextContent = convertHtmlToText(content);
-                sourceUrls = undefined;
-              } else {
-                console.log(
-                  `  ✅ Successfully stitched ${sourceUrls.length} articles into ${plainTextContent.length} characters`,
-                );
-              }
-            } else {
-              // Regular single-page processing
-              plainTextContent = convertHtmlToText(content);
-            }
-
-            await fs.writeFile(stateFilePath, plainTextContent, "utf-8");
-
-            // Save state metadata
-            const stateMetadata: any = {
-              municipality: "NY State",
-              municipalityType: "State",
-              domain: domain,
-              domainId: domain.toLowerCase().replace(/\s+/g, "-"),
-              sourceUrl: url,
-              originalCellValue: cellText || url,
-              downloadedAt: new Date().toISOString(),
-              contentLength: plainTextContent.length,
-              originalHtmlLength: content.length,
-              stateCodeApplies: true,
-              isStateCode: true,
-            };
-
-            // Add sourceUrls if this was an article-based page
-            if (sourceUrls && sourceUrls.length > 0) {
-              stateMetadata.sourceUrls = sourceUrls;
-              stateMetadata.isArticleBased = true;
-              console.log(
-                `  📄 Added ${sourceUrls.length} article URLs to NY State metadata`,
-              );
-            }
-
-            await fs.writeJson(stateMetadataPath, stateMetadata, { spaces: 2 });
-
-            console.log(
-              `  ${domain}: Downloaded NY State statute (${plainTextContent.length} characters plain text)`,
-            );
-            downloadCount++;
-          } else {
-            console.log(`  ${domain}: Failed to download NY State statute`);
-          }
-        } else {
-          console.log(`  NY State statute already exists: ${stateFilePath}`);
-        }
+        downloadCount = await checkStateMetadata(cleanName, 
+          cleanType, sp, realm, domainDir, domain, url, cellText, downloadCount, territory);
 
         continue; // Skip the regular download logic for state code municipalities
-      }
-
-      // Regular municipality - create full directory structure
-      const dirPath = path.join(
-        getProjectDataDir(),
-        realm.datapath,
-        domainDir,
-        `${sp.getEntityPrefix()}${cleanName.replace(/\s+/g, "")}-${cleanType.replace(/\s+/g, "")}`,
-      );
-
-      console.log(`  Creating directory: ${dirPath}`);
-      await fs.ensureDir(dirPath);
-      const filePath = path.join(dirPath, "statute.txt");
-      const htmlPath = path.join(dirPath, "statute.html");
-      const pdfPath = path.join(dirPath, "statute.pdf");
-      const metadataPath = path.join(dirPath, "metadata.json");
-
-      // Check if URL is from a supported library first
-      if (url && url.trim() !== "" && url.toLowerCase() !== "n/a") {
-        const config = await loadStatuteLibraryConfig();
-        const library = getLibraryForUrl(url, config);
-        if (library && !library.download) {
-          console.log(
-            `  ⚠️  Library not supported: ${library.name} - ${library.notes}`,
-          );
-          console.log(`      URL: ${url}`);
-          logToFile(
-            `Skipped ${cleanName}/${domain}: ${library.name} library not supported - ${url}`,
-          );
-          continue;
-        }
-      }
-
-      // Handle cases where no URL is determined (blank cell)
-      if (!url || url.trim() === "" || url.toLowerCase() === "n/a") {
-        console.log(
-          `  📝 No URL determined for ${domain} - cell is blank or invalid`,
-        );
-
-        // Check if metadata.json exists and clear sourceUrl
-        if (await fs.pathExists(metadataPath)) {
-          try {
-            const existingMetadata = await fs.readJson(metadataPath);
-            if (existingMetadata.sourceUrl) {
-              existingMetadata.sourceUrl = "";
-              await fs.writeJson(metadataPath, existingMetadata, { spaces: 2 });
-              console.log(
-                `  📝 Cleared sourceUrl in metadata.json for ${cleanName} (${domain})`,
-              );
-              logToFile(
-                `Cleared sourceUrl in metadata.json for ${cleanName} (${domain}) - no URL determined`,
-              );
-            }
-          } catch (error: any) {
-            console.warn(
-              `  ⚠️  Could not update metadata.json: ${error.message}`,
-            );
-          }
-        }
-
-        // Remove statute files if they exist
-        let filesRemoved = false;
-        if (await fs.pathExists(filePath)) {
-          if (noDeleteMode) {
-            console.log(
-              `  🚫 Would remove statute.txt (--nodelete mode: file preserved)`,
-            );
-          } else {
-            await fs.remove(filePath);
-            console.log(
-              `  🗑️  Removed statute.txt for ${cleanName} (${domain}) - no URL available`,
-            );
-            logToFile(
-              `Removed statute.txt for ${cleanName} (${domain}) - no URL available`,
-            );
-            filesRemoved = true;
-          }
-        }
-
-        if (await fs.pathExists(htmlPath)) {
-          if (noDeleteMode) {
-            console.log(
-              `  🚫 Would remove statute.html (--nodelete mode: file preserved)`,
-            );
-          } else {
-            await fs.remove(htmlPath);
-            console.log(
-              `  🗑️  Removed statute.html for ${cleanName} (${domain}) - no URL available`,
-            );
-            logToFile(
-              `Removed statute.html for ${cleanName} (${domain}) - no URL available`,
-            );
-            filesRemoved = true;
-          }
-        }
-
-        if (
-          !filesRemoved &&
-          !(await fs.pathExists(filePath)) &&
-          !(await fs.pathExists(htmlPath))
-        ) {
-          console.log(
-            `  ✅ No statute files found to remove for ${cleanName} (${domain})`,
-          );
-        }
-
-        continue;
-      }
-
-      // Compare determined URL with existing metadata
-      let shouldUpdateDueToUrlChange = false;
-      if (await fs.pathExists(metadataPath)) {
-        try {
-          const existingMetadata = await readMetadata(metadataPath);
-          const existingUrl = existingMetadata ? getSourceUrl(existingMetadata) || "" : "";
-
-          if (reloadMode) {
-            shouldUpdateDueToUrlChange = true;
-            console.log(`  🔄 Reload mode enabled - will regenerate metadata for ${cleanName} (${domain})`);
-            logToFile(
-              `Reload mode - regenerating metadata for ${cleanName} (${domain})`,
-            );
-          } else if (existingUrl !== url) {
-            shouldUpdateDueToUrlChange = true;
-            console.log(`  🔄 URL changed for ${cleanName} (${domain})`);
-            console.log(`    Old URL: ${existingUrl || "(none)"}`);
-            console.log(`    New URL: ${url}`);
-            logToFile(
-              `URL changed for ${cleanName} (${domain}) from "${existingUrl}" to "${url}"`,
-            );
-          } else {
-            console.log(
-              `  ✅ URL unchanged for ${cleanName} (${domain}): ${url}`,
-            );
-          }
-        } catch (error: any) {
-          console.warn(
-            `  ⚠️  Could not read existing metadata, treating as new: ${error.message}`,
-          );
-          shouldUpdateDueToUrlChange = true;
-        }
       } else {
-        console.log(
-          `  📝 No existing metadata found for ${cleanName} (${domain}), will create new`,
-        );
-        shouldUpdateDueToUrlChange = true;
-      }
-
-      // Check if metadata.json is missing and create it if statute.txt exists
-      console.log("checking for missing metadata.json");
-      if (
-        (await fs.pathExists(filePath)) &&
-        !(await fs.pathExists(metadataPath))
-      ) {
-        console.log(
-          `  ${domain}: Creating missing metadata.json for existing statute file`,
-        );
-        const statuteStats = await fs.stat(filePath);
-        const statuteContent = await fs.readFile(filePath, "utf-8");
-
-        // Create metadata based on available information
-        const mappedDomainForMissingMetadata = DOMAIN_MAPPING[domain] || domain;
-        const missingMetadata = {
-          municipality: cleanName,
-          municipalityType: cleanType,
-          domain: getDomainDisplayName(domain),
-          domainId: domain
-            .toLowerCase()
-            .replace(/\s+/g, "-"),
-          sourceUrl: url,
-          originalCellValue: cellText || url,
-          downloadedAt:
-            statuteStats.birthtime?.toISOString() ||
-            statuteStats.mtime.toISOString(),
-          contentLength: statuteContent.length,
-          stateCodeApplies:
-            cellText?.toLowerCase().includes("ny state") || false,
-        };
-
-        await fs.writeJson(metadataPath, missingMetadata, { spaces: 2 });
-        console.log(
-          `  Created missing metadata.json for ${cleanName} - ${cleanType} (${domain})`,
-        );
-      }
-
-      // Check if file already exists and is recent, or if metadata indicates retroactive creation
-      let shouldForceUpdate = false;
-
-      if (await fs.pathExists(filePath)) {
-        const stats = await fs.stat(filePath);
-        const daysSinceUpdate =
-          (Date.now() - stats.mtime.getTime()) / (1000 * 60 * 60 * 24);
-
-        // Check if metadata indicates retroactive creation (missing real source URL)
-        if (await fs.pathExists(metadataPath)) {
-          try {
-            const existingMetadata = await fs.readJson(metadataPath);
-            if (!existingMetadata.sourceUrl) {
-              shouldForceUpdate = true;
-              console.log(
-                `  ${domain}: Forcing update - metadata was created retroactively without real source URL`,
-              );
-            }
-          } catch (error: any) {
-            console.warn(
-              `  ${domain}: Could not read existing metadata, proceeding with normal checks`,
-            );
-          }
-        }
-
-        // Check all conditions for when to download/update
-        if (
-          !shouldForceUpdate &&
-          !shouldUpdateDueToUrlChange &&
-          !forceMode &&
-          !reloadMode &&
-          !noDownloadMode &&
-          daysSinceUpdate < 30
-        ) {
-          console.log(
-            `  ${domain}: File exists, is recent, and URL unchanged - skipping`,
-          );
-          continue;
-        }
-
-        if (shouldUpdateDueToUrlChange && reloadMode) {
-          console.log(`  ${domain}: Updating due to reload mode - regenerating from source`);
-        } else if (shouldUpdateDueToUrlChange) {
-          console.log(`  ${domain}: Updating due to URL change`);
-        } else if (shouldForceUpdate) {
-          console.log(
-            `  ${domain}: Updating statute with real source URL: ${url}`,
-          );
-        } else if (forceMode) {
-          console.log(
-            `  ${domain}: Force mode enabled, redownloading existing file`,
-          );
-        } else if (reloadMode) {
-          console.log(`  ${domain}: Reload mode enabled, redownloading from source`);
-        } else {
-          console.log(`  ${domain}: File is older than 30 days, updating`);
-        }
-      } else if (shouldUpdateDueToUrlChange) {
-        console.log(
-          `  ${domain}: Creating new statute file with determined URL`,
-        );
-      }
-
-      // Skip download if noDownloadMode is enabled
-      if (noDownloadMode) {
-        console.log(
-          `  ${domain}: Skipping download (--nodownload mode), validating existing files`,
-        );
-        logToFile(
-          `Skipping download for ${cleanName}/${domain} due to --nodownload mode`,
-        );
-
-        // Validate existing statute file if it exists
-        if (await fs.pathExists(filePath)) {
-          const validation = await validateEntityRelevance(
-            filePath,
-            cleanName,
-            cleanType,
-            domain,
-          );
-          if (!validation.isValid) {
-            if (noDeleteMode) {
-              console.log(
-                `🚫  Validation failed for ${cleanName} (${domain}): ${validation.reason} [--nodelete mode: file preserved]`,
-              );
-              logToFile(
-                `❌ Validation failed for ${cleanName} (${domain}): ${validation.reason} [--nodelete mode: file preserved]`,
-              );
-            } else {
-              await cleanupInvalidStatute(
-                dirPath,
-                cleanName,
-                domain,
-                validation.reason || "Unknown validation error",
-              );
-            }
-          }
-        } else {
-          console.log(`  ${domain}: No existing statute file to validate`);
-          logToFile(
-            `No existing statute file to validate for ${cleanName}/${domain}`,
-          );
-        }
-        continue;
-      }
-
-      // Add delay between downloads to be respectful
-      if (downloadCount > 0) {
-        console.log(`  Waiting ${DELAY_BETWEEN_DOWNLOADS / 1000} seconds...`);
-        await delay(DELAY_BETWEEN_DOWNLOADS);
-      }
-
-      const content = await downloadFromUrl(url);
-
-      if (content) {
-        // Detect content type and save with appropriate extension
-        const contentType = await getContentTypeFromUrl(url);
-        // Enhanced PDF detection with byte sniffing after content is downloaded
-        const isPdf = isContentPdf(content, contentType, url);
-        
-        let originalFilePath: string;
-        if (isPdf) {
-          originalFilePath = path.join(dirPath, "statute.pdf");
-          // For PDFs stored as base64, we need to decode and save as binary
-          const buffer = Buffer.from(content, 'base64');
-          await fs.writeFile(originalFilePath, buffer);
-          console.log(`  Saved PDF source: ${originalFilePath}`);
-        } else {
-          originalFilePath = path.join(dirPath, "statute.html");
-          await fs.writeFile(originalFilePath, content, "utf-8");
-          console.log(`  Saved HTML source: ${originalFilePath}`);
-        }
-
-        let sourceUrls: ArticleLink[] | undefined;
-        let plainTextContent: string;
-
-        if (isPdf) {
-            plainTextContent = await getTextFromPdfFile(originalFilePath);
-    
-        } else {
-          // Check if this is an article-based page that needs special processing
-          const { isArticleBased, articles } = detectArticleBasedPage(
-            content,
-            url,
-          );
-
-          if (isArticleBased && articles.length > 0) {
-            console.log(
-              `  📚 Processing article-based statute with ${articles.length} articles`,
-            );
-          const articleResult = await downloadAndStitchArticles(articles);
-          plainTextContent = articleResult.content;
-          sourceUrls = articleResult.sourceUrls;
-
-          if (!plainTextContent || plainTextContent.length < 100) {
-            console.log(
-              `  ⚠️  Article stitching resulted in insufficient content, falling back to main page`,
-            );
-            plainTextContent = convertHtmlToText(content);
-            sourceUrls = undefined;
-          } else {
-            console.log(
-              `  ✅ Successfully stitched ${sourceUrls.length} articles into ${plainTextContent.length} characters`,
-            );
-          }
-        } else {
-          // Regular single-page processing - check for anchor in URL
-          const anchorMatch = url.match(/#(.+)$/);
-          const anchorId = anchorMatch ? anchorMatch[1] : undefined;
-
-          if (anchorId) {
-            console.log(`  🎯 Processing URL with anchor: ${anchorId}`);
-          }
-
-          plainTextContent = convertHtmlToText(content, anchorId);
-        }
-        }
-
-        await fs.writeFile(filePath, plainTextContent, "utf-8");
-
-        // Extract statute number and title from HTML
-        const htmlPathForInfo = path.join(dirPath, "statute.html");
-        let statuteTitle = getDomainDisplayName(domain);
-        let statuteNumber: string | undefined;
-        
-        if (await fs.pathExists(htmlPathForInfo)) {
-          const statuteInfo = await extractStatuteInfo(htmlPathForInfo);
-          if (statuteInfo.number || statuteInfo.title) {
-            console.log(`  📋 Extracted statute info: ${statuteInfo.number || "N/A"} - ${statuteInfo.title || "N/A"}`);
-            if (statuteInfo.number) statuteNumber = statuteInfo.number;
-            if (statuteInfo.title) statuteTitle = statuteInfo.title;
-          }
-        }
-
-        // Read existing metadata first, then merge instead of overwriting
-        let metadata: Metadata = await readMetadata(metadataPath) || {
-          municipality: cleanName,
-          municipalityType: cleanType,
-          domain: getDomainDisplayName(domain),
-          domainId: domain.toLowerCase().replace(/\s+/g, "-"),
-          sources: [],
-          originalCellValue: cellText || url,
-          originalHtmlLength: content.length,
-          stateCodeApplies: false,
-        };
-
-        // Update core fields from current processing
-        metadata.municipality = cleanName;
-        metadata.municipalityType = cleanType;
-        metadata.domain = getDomainDisplayName(domain);
-        metadata.domainId = domain.toLowerCase().replace(/\s+/g, "-");
-        metadata.originalCellValue = cellText || url;
-        metadata.originalHtmlLength = content.length;
-
-        // Add or update primary source (preserves existing sources like form/guidance)
-        addOrUpdateSource(metadata, {
-          downloadedAt: new Date().toISOString(),
-          contentLength: plainTextContent.length,
-          sourceUrl: url,
-          title: statuteTitle,
-          type: "statute"
-        });
-
-        // Add additional sources if this was an article-based page
-        if (sourceUrls && sourceUrls.length > 0) {
-          for (const sourceUrlObj of sourceUrls) {
-            if (sourceUrlObj.url && sourceUrlObj.url !== url) {
-              addOrUpdateSource(metadata, {
-                downloadedAt: new Date().toISOString(),
-                contentLength: 0,
-                sourceUrl: sourceUrlObj.url,
-                title: sourceUrlObj.title || "Article",
-                type: "statute"
-              });
-            }
-          }
-          metadata.isArticleBased = true;
-          console.log(`  📄 Added ${sourceUrls.length} article URLs to sources`);
-        }
-
-        // Add statute number if extracted
-        if (statuteNumber) {
-          metadata.statuteNumber = statuteNumber;
-        }
-
-        await writeMetadata(metadataPath, metadata);
-
-        // Process any undownloaded sources in the metadata
-        await processUndownloadedSources(dirPath, metadata, cleanName, realm.ruleType);
-
-        // Create analysis.json with grade information only if it doesn't exist
-        const analysisPath = path.join(dirPath, "analysis.json");
-        
-        if (!(await fs.pathExists(analysisPath))) {
-          const analysisData = {
-            municipality: `${cleanName} - ${cleanType}`,
-            domain: getDomainDisplayName(domain),
-            grade: grade,
-            gradeColor: getGradeColor(grade),
-            lastUpdated: new Date().toISOString(),
-          };
-
-          await fs.writeJson(analysisPath, analysisData, { spaces: 2 });
-          console.log(`  Created analysis.json with grade: ${grade || "None"}`);
-        } else {
-          console.log(`  Preserved existing analysis.json (contains ${grade || "no"} grade)`);
-        }
-
-        console.log(
-          `  ${domain}: Downloaded and saved (${plainTextContent.length} characters plain text)`,
-        );
-        logToFile(
-          `Successfully downloaded ${cleanName}/${domain}: ${plainTextContent.length} characters`,
-        );
-
-        // Validate the downloaded content
-        const validation = await validateEntityRelevance(
-          filePath,
+        await checkMetadataAndDownloadSources(
+          storage,
+          realm,
+          domain,
+          territory,
           cleanName,
           cleanType,
-          domain,
+          url,
+          cellText,
+          grade,
+          {
+            noDeleteMode,
+            forceMode,
+            reloadMode,
+            noDownloadMode,
+          },
+          downloadCount
         );
-        if (!validation.isValid) {
-          await cleanupInvalidStatute(
-            dirPath,
-            cleanName,
-            domain,
-            validation.reason || "Unknown validation error",
-          );
-        }
-      } else {
-        console.log(`  ${domain}: Failed to download`);
-        logToFile(`Failed to download ${cleanName}/${domain} from ${url}`);
       }
 
       downloadCount++;
@@ -821,48 +221,526 @@ export async function downloadEntitySources(
   console.log(`Extraction complete! Downloaded ${downloadCount} statute files`);
 
   // Generate comprehensive summary file
-  if (municipalityFilter === "") 
-    await generateSummaryFile(realm);
+  // TODO - test and restire
+  // if (entityFilter === "") 
+  //   await generateSummaryFile(realm);
+}
+
+async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpreadsheetParser, realm: Realm, domainDir: string, domain: string, url: string, cellText: any, downloadCount: number, territory: string) {
+  console.log(
+    `  ${cleanName} - ${cleanType}: Uses ${sp.getStateCode()} State code, managing shared state reference`
+  );
+
+  // Create municipality directory for ruleset only
+  const municipalityDirPath = path.join(
+    getProjectDataDir(),
+    realm.datapath,
+    domainDir,
+    `${sp.getEntityPrefix()}${cleanName}`
+  );
+  await fs.ensureDir(municipalityDirPath);
+  const municipalityMetadataPath = path.join(
+    municipalityDirPath,
+    "ruleset.json"
+  );
+
+  // Save ruleset in municipality folder (no statute files)
+  await fs.writeJson(
+    municipalityMetadataPath,
+    {
+      municipality: cleanName,
+      municipalityType: cleanType,
+      domain: getDomainDisplayName(domain),
+      domainId: domain
+        .toLowerCase()
+        .replace(/\s+/g, "-"),
+      sourceUrl: url,
+      originalCellValue: cellText || url,
+      downloadedAt: new Date().toISOString(),
+      stateCodeApplies: true,
+      referencesStateCode: true,
+      stateCodePath: `../${sp.getEntityPrefix()}State/statute.txt`,
+    },
+    { spaces: 2 }
+  );
+  console.log(
+    `  Created ruleset reference for ${cleanName} - ${cleanType} (references state code)`
+  );
+
+  // Check if we need to download the actual state statute to shared state folder
+  const stateDir = path.join(
+    getProjectDataDir(),
+    realm.datapath,
+    domainDir,
+    `${sp.getEntityPrefix()}State`
+  );
+  const stateFilePath = path.join(stateDir, "statute.txt");
+  const stateHtmlPath = path.join(stateDir, "statute.html");
+  const stateMetadataPath = path.join(stateDir, "ruleset.json");
+
+  if (!(await fs.pathExists(stateFilePath))) {
+    console.log(
+      `  ${sp.getStateCode()} State statute not found, downloading to shared location: ${stateDir}`
+    );
+    await fs.ensureDir(stateDir);
+
+    // Add delay between downloads to be respectful
+    if (downloadCount > 0) {
+      console.log(
+        `  Waiting ${DELAY_BETWEEN_DOWNLOADS / 1000} seconds...`
+      );
+      await delay(DELAY_BETWEEN_DOWNLOADS);
+    }
+
+    const content = await downloadFromUrl(url);
+
+    if (content) {
+      // Always save original HTML source for potential later conversion
+      await fs.writeFile(stateHtmlPath, content, "utf-8");
+      console.log(`  Saved ${territory} State HTML source: ${stateHtmlPath}`);
+
+      // Check if this is an article-based page for state code too
+      const articles = detectArticleBasedPage(        content,        url      );
+      let plainTextContent: string;
+      let sourceUrls: ArticleLink[] | undefined;
+
+      if (articles.length > 0) {
+        console.log(
+          `  📚 Processing article-based ${territory} State statute with ${articles.length} articles`
+        );
+        const articleResult = await downloadAndStitchArticles(articles);
+        plainTextContent = articleResult.content;
+        sourceUrls = articleResult.sourceUrls;
+
+        if (!plainTextContent || plainTextContent.length < 100) {
+          console.log(
+            `  ⚠️  Article stitching resulted in insufficient content, falling back to main page`
+          );
+          plainTextContent = convertHtmlToText(content);
+          sourceUrls = undefined;
+        } else {
+          console.log(
+            `  ✅ Successfully stitched ${sourceUrls.length} articles into ${plainTextContent.length} characters`
+          );
+        }
+      } else {
+        // Regular single-page processing
+        plainTextContent = convertHtmlToText(content);
+      }
+
+      await fs.writeFile(stateFilePath, plainTextContent, "utf-8");
+
+      // Save state ruleset
+      const stateMetadata: any = {
+        municipality: `${territory} State`,
+        municipalityType: "State",
+        domain: domain,
+        domainId: domain.toLowerCase().replace(/\s+/g, "-"),
+        sourceUrl: url,
+        originalCellValue: cellText || url,
+        downloadedAt: new Date().toISOString(),
+        contentLength: plainTextContent.length,
+        originalHtmlLength: content.length,
+        stateCodeApplies: true,
+        isStateCode: true,
+      };
+
+      // Add sourceUrls if this was an article-based page
+      if (sourceUrls && sourceUrls.length > 0) {
+        stateMetadata.sourceUrls = sourceUrls;
+        stateMetadata.isArticleBased = true;
+        console.log(
+          `  📄 Added ${sourceUrls.length} article URLs to ${territory} State ruleset`
+        );
+      }
+
+      await fs.writeJson(stateMetadataPath, stateMetadata, { spaces: 2 });
+
+      console.log(
+        `  ${domain}: Downloaded ${territory} State statute (${plainTextContent.length} characters plain text)`
+      );
+      downloadCount++;
+    } else {
+      console.log(`  ${domain}: Failed to download ${territory} State statute`);
+    }
+  } else {
+    console.log(`  ${territory} State statute already exists: ${stateFilePath}`);
+  }
+  return downloadCount;
+}
+
+export async function checkIfValidUrl(url: string): Promise<boolean> {
+    if (url && url.trim() !== "" && url.toLowerCase() !== "n/a") {
+    // TODO: move this call to a higher level function
+    const config = await loadStatuteLibraryConfig();
+    const library = getLibraryForUrl(url, config);
+    if (library && !library.download) {
+      console.log(
+        `  ⚠️  Library not supported: ${library.name} - ${library.notes}`,
+      );
+      console.log(`      URL: ${url}`);
+      return false;
+    }
+  }
+  return true;
+}
+
+
+/**
+ * Read the ruleset for the entity and determine if we need to download/update statute files based on URL changes,
+ *  missing ruleset, or file age. 
+ * Then proceed to download and save files as needed, while respecting no-download and no-delete modes. 
+ */
+export async function checkMetadataAndDownloadSources(
+  storage: IStorage,
+  realm: Realm,
+  domain: string,
+  territory: string,
+  entityName: string,
+  entityType: string,
+  url: string,
+  cellText: string,
+  grade: string | null,
+  options: {
+    noDeleteMode: boolean,
+    forceMode: boolean,
+    reloadMode: boolean,
+    noDownloadMode: boolean,
+  },
+  downloadCount: number
+) {
+  // Regular municipality - create full directory structure
+  const entity = territory + "-" + entityName + (entityType ? `-${entityType}` : "");
+
+  // console.log(`  Creating directory: ${dirPath}`);
+  // await fs.ensureDir(dirPath);
+  // const filePath = path.join(dirPath, "statute.txt");
+  // const htmlPath = path.join(dirPath, "statute.html");
+  // const pdfPath = path.join(dirPath, "statute.pdf");
+  // const metadataPath = path.join(dirPath, "ruleset.json");
+
+      // Check if URL is from a supported library first
+  const { noDeleteMode, forceMode, reloadMode, noDownloadMode } = options;
+
+      // Handle cases where no URL is determined (blank cell)
+  if (await checkIfValidUrl(url) === false) 
+    return;
+
+  let downloadedTooLongAgo = false;
+  let shouldUpdateDueToUrlChange = false;
+
+  let ruleset = await storage.getRulesetOrCreate(domain, realm.id);
+  if (url.trim() === "" || url.toLowerCase() === "n/a") {
+
+    if (ruleset) {
+      const primarySource = getPrimarySource(ruleset);
+      if (primarySource) {
+
+        const lastDownloadedAt = primarySource.downloadedAt;
+        // check days since update 
+        if (lastDownloadedAt) {
+          const daysSinceUpdate = (Date.now() - new Date(lastDownloadedAt).getTime()) / (1000 * 60 * 60 * 24);
+          downloadedTooLongAgo = daysSinceUpdate > 30;
+        }
+
+        const primarySourceUrl = primarySource.sourceUrl;
+        // TODO - clear ruleset and save? under what conditions?
+
+        // Compare determined URL with existing ruleset
+        shouldUpdateDueToUrlChange = ( primarySourceUrl != null && primarySourceUrl !== url);
+
+      // TODO Check if ruleset.json is missing and create it if statute.txt exists
+
+      //  TODO Check if file already exists and is recent, or if ruleset indicates retroactive creation
+      }
+    } else {
+      // TODO get domainName
+
+      ruleset = {
+        entityId: entity,
+        domainId: domain,
+        domain: domain,
+        metadataCreated: new Date().toISOString(),
+        stateCodeApplies: false,
+        sources: [],
+      };
+      const primarySource = getPrimarySource(ruleset);
+      primarySource.sourceUrl = url;
+    }
+    // Check all conditions for when to download/update
+    if (
+      !shouldUpdateDueToUrlChange &&
+      !forceMode &&
+      !reloadMode &&
+      !noDownloadMode &&
+      !downloadedTooLongAgo
+    ) {
+      console.log(
+        `  ${domain}: File exists, is recent, and URL unchanged - skipping`,
+      );
+      return;
+    }
+
+    if (shouldUpdateDueToUrlChange && reloadMode) {
+      console.log(`  ${domain}: Updating due to reload mode - regenerating from source`);
+    } else if (shouldUpdateDueToUrlChange) {
+      console.log(`  ${domain}: Updating due to URL change`);
+    } else if (forceMode) {
+      console.log(
+        `  ${domain}: Force mode enabled, redownloading existing file`,
+      );
+    } else if (reloadMode) {
+      console.log(`  ${domain}: Reload mode enabled, redownloading from source`);
+    } else {
+      console.log(`  ${domain}: File is older than 30 days, updating`);
+    }
+  } else if (shouldUpdateDueToUrlChange) {
+    console.log(
+      `  ${domain}: Creating new statute file with determined URL`,
+    );
+  }
+
+      // Skip download if noDownloadMode is enabled
+      if (noDownloadMode) {
+        console.log(
+          `  ${domain}: Skipping download (--nodownload mode), validating existing files`,
+        );
+        logToFile(
+          `Skipping download for ${entityName}/${domain} due to --nodownload mode`,
+        );
+
+        // TODO - review this
+      //   // Validate existing statute file if it exists
+      //   if (await fs.pathExists(filePath)) {
+      //     const validation = await validateEntityRelevance(
+      //       filePath,
+      //       entityName,
+      //       entityType,
+      //       domain,
+      //     );
+      //     if (!validation.isValid) {
+      //       if (noDeleteMode) {
+      //         console.log(
+      //           `🚫  Validation failed for ${entityName} (${domain}): ${validation.reason} [--nodelete mode: file preserved]`,
+      //         );
+      //         logToFile(
+      //           `❌ Validation failed for ${entityName} (${domain}): ${validation.reason} [--nodelete mode: file preserved]`,
+      //         );
+      //       } else {
+      //         await cleanupInvalidStatute(
+      //           dirPath,
+      //           entityName,
+      //           domain,
+      //           validation.reason || "Unknown validation error",
+      //         );
+      //       }
+      //     }
+      //   } else {
+      //     console.log(`  ${domain}: No existing statute file to validate`);
+      //     logToFile(
+      //       `No existing statute file to validate for ${entityName}/${domain}`,
+      //     );
+      //   }
+      //   continue;
+      // }
+
+      // Add delay between downloads to be respectful
+      if (downloadCount > 0) {
+        console.log(`  Waiting ${DELAY_BETWEEN_DOWNLOADS / 1000} seconds...`);
+        await delay(DELAY_BETWEEN_DOWNLOADS);
+      }
+
+      await downloadAndProcessSource(realm.id, domain, entity, url);
+    }
+}
+
+export async function downloadAndProcessSource(realmId: string, domainId: string, entityId: string, url?: string) {
+  const storage = getDefaultStorage(realmId);
+
+  const currentRealm: Realm = await storage.getRealmConfig();
+  const ruleset = await storage.getRulesetOrCreate(domainId, entityId);
+  const destPath = await storage.getPathForDomainAndEntity(ruleset);
+
+  let primarySource = getPrimarySource(ruleset);
+  if (!url)
+    url = primarySource.sourceUrl || "";
+  const downloadedFilepath = await downloadFromUrlAndSave(url, destPath, currentRealm.ruleType);
+
+  let sourceUrls: ArticleLink[] | undefined;
+  let plainTextContent: string;
+
+  primarySource.downloadedAt = new Date().toISOString();
+
+  // now process the downloaded file based on its type (PDF vs HTML), and check for article-based structure if HTML
+  if (downloadedFilepath.endsWith(".pdf")) {
+    plainTextContent = await getTextFromPdfFile(downloadedFilepath);
+
+  } else {
+    // Check if this is an article-based page that needs special processing
+    const content = await fs.readFile(downloadedFilepath, "utf-8");
+    primarySource.contentLength = content.length; // Update content length in ruleset for ruleset
+    const articles = detectArticleBasedPage(content, url);
+
+    if (articles.length > 0) {
+        ({ plainTextContent, sourceUrls } = await stitchArticlesAndGenerateContent(articles, sourceUrls, content));
+    } else {
+        // Regular single-page processing - check for anchor in URL
+        const anchorMatch = url.match(/#(.+)$/);
+        const anchorId = anchorMatch ? anchorMatch[1] : undefined;
+
+        if (anchorId) {
+          console.log(`  🎯 Processing URL with anchor: ${anchorId}`);
+        }
+        plainTextContent = convertHtmlToText(content, anchorId);
+      }
+      const statuteInfo = await extractStatuteInfoFromHTML(content);
+
+      // TODO - review this mapping as it seems inconsistent
+      ruleset.statuteNumber = statuteInfo.number;
+      primarySource.title = statuteInfo.title // || getSourceTitle(url, content);  // TODO - get from the docyment title
+      
+    }
+
+    const plaintextFilename = path.join(destPath, "statute.txt");
+    await fs.writeFile(plaintextFilename, plainTextContent, "utf-8");
+
+    // Add additional sources if this was an article-based page
+    addArticleSources(sourceUrls, url, ruleset);
+
+    // Process any undownloaded sources in the ruleset
+    // await processUndownloadedSources(storage, ruleset, entityName, realm.ruleType);
+
+    // TODO - Create analysis.json with grade information only if it doesn't exist - do we need this?
+    // 
+    // const analysisPath = path.join(dirPath, "analysis.json");
+
+    // if (!(await fs.pathExists(analysisPath))) {
+    //   const analysisData = {
+    //     municipality: `${entityName} - ${entityType}`,
+    //     domain: getDomainDisplayName(domain),
+    //     grade: grade,
+    //     gradeColor: getGradeColor(grade),
+    //     lastUpdated: new Date().toISOString(),
+    //   };
+
+    //   await fs.writeJson(analysisPath, analysisData, { spaces: 2 });
+    //   console.log(`  Created analysis.json with grade: ${grade || "None"}`);
+    // } else {
+    //   console.log(`  Preserved existing analysis.json (contains ${grade || "no"} grade)`);
+    // }
+
+    console.log(
+      `  ${domainId}: Downloaded and saved (${plainTextContent.length} characters plain text)`
+    );
+    logToFile(
+      `Successfully downloaded ${entityId}/${domainId}: ${plainTextContent.length} characters`
+    );
+    storage.saveRuleset(ruleset);
+
+    // TODO - restart Validate the downloaded content
+    // const validation = await validateEntityRelevance(
+    //   filePath,
+    //   entityName,
+    //   entityType,
+    //   domain
+    // );
+    // if (!validation.isValid) {
+    //   await cleanupInvalidStatute(
+    //     dirPath,
+    //     entityName,
+    //     domain,
+    //     validation.reason || "Unknown validation error"
+    //   );
+    // }
+
+  // } else {
+  //   console.log(`  ${domain}: Failed to download`);
+  //   logToFile(`Failed to download ${entityName}/${domain} from ${url}`);
+  // }
+}
+
+function addArticleSources(sourceUrls: ArticleLink[] | undefined, url: string, ruleset: Ruleset) {
+  if (sourceUrls && sourceUrls.length > 0) {
+    for (const sourceUrlObj of sourceUrls) {
+      if (sourceUrlObj.url && sourceUrlObj.url !== url) {
+        addOrUpdateSource(ruleset, {
+          downloadedAt: new Date().toISOString(),
+          contentLength: 0,
+          sourceUrl: sourceUrlObj.url,
+          title: sourceUrlObj.title || "Article",
+          type: "statute"
+        });
+      }
+    }
+    ruleset.isArticleBased = true;
+    console.log(`  📄 Added ${sourceUrls.length} article URLs to sources`);
+  } else {
+    ruleset.isArticleBased = false;
+  }
+}
+
+async function stitchArticlesAndGenerateContent(articles: ArticleLink[], sourceUrls: ArticleLink[] | undefined, content: string) {
+  console.log(
+    `  📚 Processing article-based statute with ${articles.length} articles`
+  );
+  const articleResult = await downloadAndStitchArticles(articles);
+  let plainTextContent = articleResult.content;
+  sourceUrls = articleResult.sourceUrls;
+
+  if (!plainTextContent || plainTextContent.length < 100) {
+    console.log(
+      `  ⚠️  Article stitching resulted in insufficient content, falling back to main page`
+    );
+    plainTextContent = convertHtmlToText(content);
+    sourceUrls = undefined;
+  } else {
+    console.log(
+      `  ✅ Successfully stitched ${sourceUrls.length} articles into ${plainTextContent.length} characters`
+    );
+  }
+  return { plainTextContent, sourceUrls };
 }
 
 // ─── Process undownloaded sources ────────────────────────────────────────────
 
+// TODO: refactor this to reuse the other downloaders
 export async function processUndownloadedSources(
   entityDir: string, 
-  metadata: Metadata,
+  ruleset: Ruleset,
   entityName: string,
   realmType?: string
 ): Promise<boolean> {
   // Try to restore sources from legacy fields if sources array is empty
-  if (!metadata.sources || metadata.sources.length === 0) {
+  if (!ruleset.sources || ruleset.sources.length === 0) {
     console.log(`  🔄 Attempting to restore sources from legacy fields for ${entityName}`);
     
     // Try to extract URLs from originalCellValue or sourceUrls
     const urlsToRestore: string[] = [];
     
-    if (metadata.originalCellValue && typeof metadata.originalCellValue === 'string') {
+    if (ruleset.originalCellValue && typeof ruleset.originalCellValue === 'string') {
       // Extract URLs from originalCellValue - look for http/https patterns
-      const urlMatches = metadata.originalCellValue.match(/https?:\/\/[^\s\],;"]+/g);
+      const urlMatches = ruleset.originalCellValue.match(/https?:\/\/[^\s\],;"]+/g);
       if (urlMatches) {
         urlsToRestore.push(...urlMatches);
       }
     }
     
-    if (metadata.sourceUrls && Array.isArray(metadata.sourceUrls)) {
-      urlsToRestore.push(...metadata.sourceUrls.filter(url => typeof url === 'string' && url.startsWith('http')));
-    }
+    // TODO fix these to new datastructure
+    // if (ruleset.sourceUrls && Array.isArray(ruleset.sourceUrls)) {
+    //   urlsToRestore.push(...ruleset.sourceUrls.filter(url => typeof url === 'string' && url.startsWith('http')));
+    // }
     
     if (urlsToRestore.length > 0) {
       console.log(`  🔗 Found ${urlsToRestore.length} URLs to restore: ${urlsToRestore.join(', ')}`);
       
       // Create sources from discovered URLs
-      metadata.sources = urlsToRestore.map((url, index) => ({
+      ruleset.sources = urlsToRestore.map((url, index) => ({
         sourceUrl: url,
         type: realmType === "policy" ? "policy" : "statute", // Use actual realm type
-        title: `${entityName} ${metadata.domain} Document${urlsToRestore.length > 1 ? ` ${index + 1}` : ''}`,
+        title: `${entityName} ${ruleset.domain} Document${urlsToRestore.length > 1 ? ` ${index + 1}` : ''}`,
       }));
       
-      console.log(`  ✅ Restored ${metadata.sources.length} sources for processing`);
+      console.log(`  ✅ Restored ${ruleset.sources.length} sources for processing`);
     } else {
       console.log(`  ⏭️  No sources or legacy URLs found for ${entityName}`);
       return false;
@@ -871,15 +749,15 @@ export async function processUndownloadedSources(
 
   let downloadedAny = false;
 
-  for (let i = 0; i < metadata.sources.length; i++) {
-    const source = metadata.sources[i];
+  for (let i = 0; i < ruleset.sources.length; i++) {
+    const source = ruleset.sources[i];
     
     // Skip sources that have already been downloaded
     if (source.downloadedAt) {
       continue;
     }
 
-    console.log(`  📥 Downloading unprocessed source ${i + 1}/${metadata.sources.length}: ${source.sourceUrl}`);
+    console.log(`  📥 Downloading unprocessed source ${i + 1}/${ruleset.sources.length}: ${source.sourceUrl}`);
     
     try {
       // Get content type to determine if PDF or HTML with safe fallback
@@ -910,7 +788,7 @@ export async function processUndownloadedSources(
       const baseFileName = source.type || "statute";
       
       // Count how many sources of this type we've seen so far
-      const sameTypeCount = metadata.sources.slice(0, i).filter(s => s.type === source.type).length;
+      const sameTypeCount = ruleset.sources.slice(0, i).filter(s => s.type === source.type).length;
       const sourceIndex = sameTypeCount === 0 ? "" : `_${sameTypeCount + 1}`;
       const fileName = `${baseFileName}${sourceIndex}`;
       
@@ -970,11 +848,12 @@ export async function processUndownloadedSources(
       source.downloadedAt = new Date().toISOString();
       source.contentLength = textContent.length; // Character count for consistency
       source.title = title;
-      source.filePaths = {
-        html: isPdf ? undefined : `${fileName}.html`,
-        pdf: isPdf ? `${fileName}.pdf` : undefined,
-        txt: `${fileName}.txt`
-      };
+      // TODO - fix this
+      // source.filePaths = {
+      //   html: isPdf ? undefined : `${fileName}.html`,
+      //   pdf: isPdf ? `${fileName}.pdf` : undefined,
+      //   txt: `${fileName}.txt`
+      // };
       
       console.log(`    ✅ Updated source: ${title} (${textContent.length} chars)`);
       downloadedAny = true;
@@ -993,211 +872,211 @@ export async function processUndownloadedSources(
     }
   }
   
-  // If we downloaded any sources, persist the updated metadata
+  // If we downloaded any sources, persist the updated ruleset
   if (downloadedAny) {
-    const metadataPath = path.join(entityDir, "metadata.json");
-    await writeMetadata(metadataPath, metadata);
-    console.log(`  💾 Updated metadata with ${metadata.sources.filter(s => s.downloadedAt).length} processed sources`);
+    const metadataPath = path.join(entityDir, "ruleset.json");
+    // await writeMetadata(metadataPath, ruleset);
+    console.log(`  💾 Updated ruleset with ${ruleset.sources.filter(s => s.downloadedAt).length} processed sources`);
   }
   
   return downloadedAny;
 }
 
-// ─── Create missing metadata files ──────────────────────────────────────────
+// ─── Create missing ruleset files ──────────────────────────────────────────
 
-export async function createMissingMetadataFiles(realm: Realm, reloadMode: boolean = false, entitiesToInclude?: Set<string>): Promise<void> {
-  if (reloadMode) {
-    console.log("\n🔄 Reload mode: Regenerating metadata.json files from source data...");
-  } else {
-    console.log("\n🔍 Checking for missing metadata.json files...");
-  }
+// export async function createMissingMetadataFiles(realm: Realm, reloadMode: boolean = false, entitiesToInclude?: Set<string>): Promise<void> {
+//   if (reloadMode) {
+//     console.log("\n🔄 Reload mode: Regenerating ruleset.json files from source data...");
+//   } else {
+//     console.log("\n🔍 Checking for missing ruleset.json files...");
+//   }
 
-  const realmDir = path.join(getProjectDataDir(), realm.datapath);
-  if (!(await fs.pathExists(realmDir))) {
-    console.log(`  No realm directory found: ${realmDir}`);
-    return;
-  }
-  const domains = await fs.readdir(realmDir);
-  let missingCount = 0;
-  let createdCount = 0;
+//   const realmDir = path.join(getProjectDataDir(), realm.datapath);
+//   if (!(await fs.pathExists(realmDir))) {
+//     console.log(`  No realm directory found: ${realmDir}`);
+//     return;
+//   }
+//   const domains = await fs.readdir(realmDir);
+//   let missingCount = 0;
+//   let createdCount = 0;
 
-  for (const domain of domains) {
-    const domainPath = path.join(realmDir, domain);
-    const stat = await fs.stat(domainPath);
+//   for (const domain of domains) {
+//     const domainPath = path.join(realmDir, domain);
+//     const stat = await fs.stat(domainPath);
 
-    if (
-      !stat.isDirectory() ||
-      domain.endsWith(".json") ||
-      domain.endsWith(".csv")
-    )
-      continue;
+//     if (
+//       !stat.isDirectory() ||
+//       domain.endsWith(".json") ||
+//       domain.endsWith(".csv")
+//     )
+//       continue;
 
-    const municipalities = await fs.readdir(domainPath);
+//     const municipalities = await fs.readdir(domainPath);
 
-    for (const municipality of municipalities) {
-      if (!municipality.startsWith(getEntityPrefix())) continue;
+//     for (const municipality of municipalities) {
+//       if (!municipality.startsWith(getEntityPrefix())) continue;
 
-      // Apply municipality filter if specified
-      if (entitiesToInclude) {
-        const prefixRegex = new RegExp(`^${getEntityPrefix()}(.+)-(.+)$`);
-        const match = municipality.match(prefixRegex);
-        const municipalityName = match ? match[1].replace(/([A-Z])/g, " $1").trim() : municipality;
-        const shouldProcess = entitiesToInclude.has(municipalityName.toLowerCase());
-        if (!shouldProcess) {
-          continue; // Skip this municipality
-        }
-      }
+//       // Apply municipality filter if specified
+//       if (entitiesToInclude) {
+//         const prefixRegex = new RegExp(`^${getEntityPrefix()}(.+)-(.+)$`);
+//         const match = municipality.match(prefixRegex);
+//         const municipalityName = match ? match[1].replace(/([A-Z])/g, " $1").trim() : municipality;
+//         const shouldProcess = entitiesToInclude.has(municipalityName.toLowerCase());
+//         if (!shouldProcess) {
+//           continue; // Skip this municipality
+//         }
+//       }
 
-      const municipalityPath = path.join(domainPath, municipality);
-      const municipalityStat = await fs.stat(municipalityPath);
+//       const municipalityPath = path.join(domainPath, municipality);
+//       const municipalityStat = await fs.stat(municipalityPath);
 
-      if (!municipalityStat.isDirectory()) continue;
+//       if (!municipalityStat.isDirectory()) continue;
 
-      const statutePath = path.join(municipalityPath, "statute.txt");
-      const metadataPath = path.join(municipalityPath, "metadata.json");
+//       const statutePath = path.join(municipalityPath, "statute.txt");
+//       const metadataPath = path.join(municipalityPath, "ruleset.json");
 
-      if (
-        (await fs.pathExists(statutePath)) &&
-        (!(await fs.pathExists(metadataPath)) || reloadMode)
-      ) {
-        if (reloadMode && (await fs.pathExists(metadataPath))) {
-          console.log(`  Reload mode: Regenerating metadata.json: ${domain}/${municipality}`);
-        } else {
-          missingCount++;
-          console.log(`  Missing metadata.json: ${domain}/${municipality}`);
-        }
+//       if (
+//         (await fs.pathExists(statutePath)) &&
+//         (!(await fs.pathExists(metadataPath)) || reloadMode)
+//       ) {
+//         if (reloadMode && (await fs.pathExists(metadataPath))) {
+//           console.log(`  Reload mode: Regenerating ruleset.json: ${domain}/${municipality}`);
+//         } else {
+//           missingCount++;
+//           console.log(`  Missing ruleset.json: ${domain}/${municipality}`);
+//         }
 
-        try {
-          const statuteStats = await fs.stat(statutePath);
-          const statuteContent = await fs.readFile(statutePath, "utf-8");
+//         try {
+//           const statuteStats = await fs.stat(statutePath);
+//           const statuteContent = await fs.readFile(statutePath, "utf-8");
 
-          // Parse municipality name and type from directory name
-          const prefixRegex = new RegExp(`^${getEntityPrefix()}(.+)-(.+)$`);
-          const match = municipality.match(prefixRegex);
-          const municipalityName = match
-            ? match[1].replace(/([A-Z])/g, " $1").trim()
-            : municipality;
-          const municipalityType = match ? match[2] : "Unknown";
+//           // Parse municipality name and type from directory name
+//           const prefixRegex = new RegExp(`^${getEntityPrefix()}(.+)-(.+)$`);
+//           const match = municipality.match(prefixRegex);
+//           const municipalityName = match
+//             ? match[1].replace(/([A-Z])/g, " $1").trim()
+//             : municipality;
+//           const municipalityType = match ? match[2] : "Unknown";
 
-          // Check if metadata already exists and preserve existing data if present
-          let existingMetadata: Metadata | null = null;
-          let existingOriginalCellValue = "Not available";
-          if (await fs.pathExists(metadataPath)) {
-            try {
-              existingMetadata = await readMetadata(metadataPath);
-              if (existingMetadata?.originalCellValue) {
-                existingOriginalCellValue = existingMetadata.originalCellValue;
-              }
-            } catch (error: any) {
-              // Ignore errors reading existing metadata
-            }
-          }
+//           // Check if ruleset already exists and preserve existing data if present
+//           let existingMetadata: Ruleset | null = null;
+//           let existingOriginalCellValue = "Not available";
+//           if (await fs.pathExists(metadataPath)) {
+//             try {
+//               existingMetadata = await readMetadata(metadataPath);
+//               if (existingMetadata?.originalCellValue) {
+//                 existingOriginalCellValue = existingMetadata.originalCellValue;
+//               }
+//             } catch (error: any) {
+//               // Ignore errors reading existing ruleset
+//             }
+//           }
 
-          const downloadedAt = statuteStats.birthtime?.toISOString() || statuteStats.mtime.toISOString();
+//           const downloadedAt = statuteStats.birthtime?.toISOString() || statuteStats.mtime.toISOString();
           
-          // Extract statute number and title from HTML if available
-          let statuteTitle = domain.charAt(0).toUpperCase() + domain.slice(1).replace(/-/g, " ");
-          const htmlPath = path.join(municipalityPath, "statute.html");
-          if (await fs.pathExists(htmlPath)) {
-            const statuteInfo = await extractStatuteInfo(htmlPath);
-            if (statuteInfo.title) {
-              statuteTitle = statuteInfo.title;
-              console.log(`    📋 Extracted statute info: ${statuteInfo.number || "N/A"} - ${statuteInfo.title || "N/A"}`);
-            }
-          }
+//           // Extract statute number and title from HTML if available
+//           let statuteTitle = domain.charAt(0).toUpperCase() + domain.slice(1).replace(/-/g, " ");
+//           const htmlPath = path.join(municipalityPath, "statute.html");
+//           if (await fs.pathExists(htmlPath)) {
+//             const statuteInfo = await extractStatuteInfo(htmlPath);
+//             if (statuteInfo.title) {
+//               statuteTitle = statuteInfo.title;
+//               console.log(`    📋 Extracted statute info: ${statuteInfo.number || "N/A"} - ${statuteInfo.title || "N/A"}`);
+//             }
+//           }
 
-          // Start with existing metadata if available, otherwise create base metadata
-          const metadata: Metadata = existingMetadata || {
-            municipality: municipalityName,
-            municipalityType: municipalityType,
-            domain: domain.charAt(0).toUpperCase() + domain.slice(1).replace(/-/g, " "),
-            domainId: domain,
-            sources: [],
-            originalCellValue: existingOriginalCellValue,
-            stateCodeApplies: false,
-            metadataCreated: new Date().toISOString(),
-            note: "Metadata created retroactively for existing statute file",
-          };
+//           // Start with existing ruleset if available, otherwise create base ruleset
+//           const ruleset: Ruleset = existingMetadata || {
+//             municipality: municipalityName,
+//             municipalityType: municipalityType,
+//             domain: domain.charAt(0).toUpperCase() + domain.slice(1).replace(/-/g, " "),
+//             domainId: domain,
+//             sources: [],
+//             originalCellValue: existingOriginalCellValue,
+//             stateCodeApplies: false,
+//             metadataCreated: new Date().toISOString(),
+//             note: "Ruleset created retroactively for existing statute file",
+//           };
 
-          // Always update basic fields from current processing
-          metadata.municipality = municipalityName;
-          metadata.municipalityType = municipalityType;
-          metadata.domain = domain.charAt(0).toUpperCase() + domain.slice(1).replace(/-/g, " ");
-          metadata.domainId = domain;
-          metadata.originalCellValue = existingOriginalCellValue;
+//           // Always update basic fields from current processing
+//           ruleset.municipality = municipalityName;
+//           ruleset.municipalityType = municipalityType;
+//           ruleset.domain = domain.charAt(0).toUpperCase() + domain.slice(1).replace(/-/g, " ");
+//           ruleset.domainId = domain;
+//           ruleset.originalCellValue = existingOriginalCellValue;
 
-          // Add or update the primary statute source using merge strategy
-          if ((existingMetadata && getSourceUrl(existingMetadata)) || existingOriginalCellValue !== "Not available") {
-            const sourceUrl = (existingMetadata && getSourceUrl(existingMetadata)) || existingOriginalCellValue;
-            if (sourceUrl && sourceUrl !== "Not available" && sourceUrl !== "Unknown") {
-              addOrUpdateSource(metadata, {
-                downloadedAt: (existingMetadata && getDownloadedAt(existingMetadata)) || downloadedAt,
-                contentLength: statuteContent.length,
-                sourceUrl: sourceUrl,
-                title: statuteTitle,
-                type: "statute"
-              });
-            }
-          } else {
-            // Create placeholder source if no URL is available
-            if (!metadata.sources || metadata.sources.length === 0) {
-              metadata.sources = [{
-                downloadedAt,
-                contentLength: statuteContent.length,
-                sourceUrl: "Unknown",
-                title: statuteTitle,
-                type: "statute"
-              }];
-            }
-          }
+//           // Add or update the primary statute source using merge strategy
+//           if ((existingMetadata && getSourceUrl(existingMetadata)) || existingOriginalCellValue !== "Not available") {
+//             const sourceUrl = (existingMetadata && getSourceUrl(existingMetadata)) || existingOriginalCellValue;
+//             if (sourceUrl && sourceUrl !== "Not available" && sourceUrl !== "Unknown") {
+//               addOrUpdateSource(ruleset, {
+//                 downloadedAt: (existingMetadata && getDownloadedAt(existingMetadata)) || downloadedAt,
+//                 contentLength: statuteContent.length,
+//                 sourceUrl: sourceUrl,
+//                 title: statuteTitle,
+//                 type: "statute"
+//               });
+//             }
+//           } else {
+//             // Create placeholder source if no URL is available
+//             if (!ruleset.sources || ruleset.sources.length === 0) {
+//               ruleset.sources = [{
+//                 downloadedAt,
+//                 contentLength: statuteContent.length,
+//                 sourceUrl: "Unknown",
+//                 title: statuteTitle,
+//                 type: "statute"
+//               }];
+//             }
+//           }
 
-          // Add statute number if extracted
-          if (await fs.pathExists(htmlPath)) {
-            const statuteInfo = await extractStatuteInfo(htmlPath);
-            if (statuteInfo.number) metadata.statuteNumber = statuteInfo.number;
-          }
+//           // Add statute number if extracted
+//           if (await fs.pathExists(htmlPath)) {
+//             const statuteInfo = await extractStatuteInfo(htmlPath);
+//             if (statuteInfo.number) ruleset.statuteNumber = statuteInfo.number;
+//           }
 
-          await writeMetadata(metadataPath, metadata);
+//           await writeMetadata(metadataPath, ruleset);
           
-          // Process any additional sources (form, guidance, etc.) after saving metadata
-          try {
-            const processedSources = await processUndownloadedSources(municipalityPath, metadata, `${municipalityName} - ${municipalityType}`, realm.ruleType);
-            if (processedSources) {
-              console.log(`    🔄 Processed additional sources for ${municipalityName} - ${municipalityType}`);
-            }
-          } catch (error: any) {
-            console.warn(`    ⚠️  Failed to process additional sources for ${municipalityName} - ${municipalityType}: ${error.message}`);
-          }
+//           // Process any additional sources (form, guidance, etc.) after saving ruleset
+//           try {
+//             const processedSources = await processUndownloadedSources(municipalityPath, ruleset, `${municipalityName} - ${municipalityType}`, realm.ruleType);
+//             if (processedSources) {
+//               console.log(`    🔄 Processed additional sources for ${municipalityName} - ${municipalityType}`);
+//             }
+//           } catch (error: any) {
+//             console.warn(`    ⚠️  Failed to process additional sources for ${municipalityName} - ${municipalityType}: ${error.message}`);
+//           }
           
-          createdCount++;
-          if (reloadMode) {
-            console.log(
-              `    ✅ Regenerated metadata.json for ${municipalityName} - ${municipalityType}`,
-            );
-          } else {
-            console.log(
-              `    ✅ Created metadata.json for ${municipalityName} - ${municipalityType}`,
-            );
-          }
-        } catch (error: any) {
-          console.error(
-            `    ❌ Failed to create metadata for ${municipality}: ${error.message}`,
-          );
-        }
-      }
-    }
-  }
+//           createdCount++;
+//           if (reloadMode) {
+//             console.log(
+//               `    ✅ Regenerated ruleset.json for ${municipalityName} - ${municipalityType}`,
+//             );
+//           } else {
+//             console.log(
+//               `    ✅ Created ruleset.json for ${municipalityName} - ${municipalityType}`,
+//             );
+//           }
+//         } catch (error: any) {
+//           console.error(
+//             `    ❌ Failed to create ruleset for ${municipality}: ${error.message}`,
+//           );
+//         }
+//       }
+//     }
+//   }
 
-  if (reloadMode) {
-    console.log(
-      `\n📊 Reload complete: ${createdCount} metadata files regenerated from source data`,
-    );
-  } else {
-    console.log(
-      `\n📊 Metadata check complete: ${missingCount} missing files found, ${createdCount} created`,
-    );
-  }
-}
+//   if (reloadMode) {
+//     console.log(
+//       `\n📊 Reload complete: ${createdCount} ruleset files regenerated from source data`,
+//     );
+//   } else {
+//     console.log(
+//       `\n📊 Ruleset check complete: ${missingCount} missing files found, ${createdCount} created`,
+//     );
+//   }
+// }
 
 // ─── Generate summary file ──────────────────────────────────────────────────
 
@@ -1258,7 +1137,7 @@ export async function generateSummaryFile(realm: Realm): Promise<void> {
 
       if (await fs.pathExists(entityDir)) {
         const statutePath = path.join(entityDir, `statute${realm.ruleType}`);
-        const metadataPath = path.join(entityDir, "metadata.json");
+        const metadataPath = path.join(entityDir, "ruleset.json");
 
         if (
           (await fs.pathExists(statutePath)) ||
@@ -1266,25 +1145,26 @@ export async function generateSummaryFile(realm: Realm): Promise<void> {
         ) {
           const domainData: any = {};
 
-          // Read metadata if it exists
+          // Read ruleset if it exists
           if (await fs.pathExists(metadataPath)) {
             try {
-              const metadata = await readMetadata(metadataPath);
-              if (metadata) {
-                domainData.sourceUrl = getSourceUrl(metadata);
-                domainData.lastDownloadTime = getDownloadedAt(metadata);
-                domainData.isArticleBased = metadata.isArticleBased || false;
-                domainData.usesStateCode = metadata.stateCodeApplies || false;
+              // TODO - refactor this to read from Ruleset
+              // const ruleset = await readMetadata(metadataPath);
+              // if (ruleset) {
+              //   domainData.sourceUrl = getSourceUrl(ruleset);
+              //   domainData.lastDownloadTime = getDownloadedAt(ruleset);
+              //   domainData.isArticleBased = ruleset.isArticleBased || false;
+              //   domainData.usesStateCode = ruleset.stateCodeApplies || false;
 
-                // Count sources for article count
-                if (metadata.sources && metadata.sources.length > 1) {
-                  domainData.articleCount = metadata.sources.length;
-                  domainData.sourceUrls = metadata.sources.map(s => ({ url: s.sourceUrl, title: s.title }));
-                }
-              }
+              //   // Count sources for article count
+              //   if (ruleset.sources && ruleset.sources.length > 1) {
+              //     domainData.articleCount = ruleset.sources.length;
+              //     domainData.sourceUrls = ruleset.sources.map(s => ({ url: s.sourceUrl, title: s.title }));
+              //   }
+              // }
             } catch (error: any) {
               console.log(
-                `  Warning: Could not read metadata for ${entity.id}/${domain}: ${error.message}`,
+                `  Warning: Could not read ruleset for ${entity.id}/${domain}: ${error.message}`,
               );
             }
           }
@@ -1350,7 +1230,7 @@ export async function generateSummaryFile(realm: Realm): Promise<void> {
   // Sort entities by name for consistent output
   summary.sort((a, b) => a.name.localeCompare(b.name));
 
-  // Add metadata about the summary
+  // Add ruleset about the summary
   const summaryWithMetadata = {
     generated: new Date().toISOString(),
     [`total${realm.entityType.charAt(0).toUpperCase()}${realm.entityType.slice(1)}`]: summary.length,
@@ -1477,8 +1357,8 @@ export async function createDirectoryStructureFromJSON(
         }
       }
       
-      // Create metadata.json file with policy information
-      const metadata: any = {
+      // Create ruleset.json file with policy information
+      const ruleset: any = {
         districtName: districtName,
         entityId: entityId,
         domain: domain,
@@ -1489,7 +1369,7 @@ export async function createDirectoryStructureFromJSON(
         realm: realm.id
       };
       
-      await fs.writeJson(path.join(domainDir, "metadata.json"), metadata, { spaces: 2 });
+      await fs.writeJson(path.join(domainDir, "ruleset.json"), ruleset, { spaces: 2 });
       
       // Download policy URL if valid
       if (isValidUrl && sourceUrl) {
@@ -1559,33 +1439,33 @@ export async function createDirectoryStructureFromJSON(
           await fs.writeFile(policyTxtPath, textContent, 'utf-8');
           console.log(`        📝 Saved text content: ${policyTxtPath} (${textContent.length} characters)`);
           
-          // Update metadata with content information through sources
-          addOrUpdateSource(metadata, {
-            downloadedAt: metadata.downloadedAt || new Date().toISOString(),
+          // Update ruleset with content information through sources
+          addOrUpdateSource(ruleset, {
+            downloadedAt: ruleset.downloadedAt || new Date().toISOString(),
             contentLength: textContent.length,
             sourceUrl: sourceUrl,
-            title: metadata.statuteTitle || metadata.policyTitle || metadata.domain || (isPdf ? "PDF Document" : "HTML Document"),
+            title: ruleset.statuteTitle || ruleset.policyTitle || ruleset.domain || (isPdf ? "PDF Document" : "HTML Document"),
             type: "statute"
           });
-          metadata.lastConverted = new Date().toISOString();
+          ruleset.lastConverted = new Date().toISOString();
           
-          // If PDF, add additional metadata
+          // If PDF, add additional ruleset
           // TODO use this if needed
         //   if (isPdf && textContent.length > 0) {
         //     try {
               
         //       const pdfData = await pdfParse.default(response.data);
-        //       metadata.pdfPages = pdfData.numpages;
+        //       ruleset.pdfPages = pdfData.numpages;
         //     } catch {
-        //       // If PDF parsing failed for metadata, continue without page count
+        //       // If PDF parsing failed for ruleset, continue without page count
         //     }
         //   }
           
-          // Save updated metadata
-          await writeMetadata(path.join(domainDir, "metadata.json"), metadata);
+          // Save updated ruleset
+          await writeMetadata(path.join(domainDir, "ruleset.json"), ruleset);
           
-          // Process any undownloaded sources in the metadata  
-          await processUndownloadedSources(domainDir, metadata, districtName, realm.ruleType);
+          // Process any undownloaded sources in the ruleset  
+          await processUndownloadedSources(domainDir, ruleset, districtName, realm.ruleType);
           
           console.log(`        ✅ Downloaded and converted: ${policy.policy_title || 'Untitled'}`);
           
@@ -1599,15 +1479,15 @@ export async function createDirectoryStructureFromJSON(
             const failedUrl = `FAILED HTTP ${httpCode} ${sourceUrl}`;
             console.warn(`        ⚠️ HTTP ${httpCode} error downloading ${sourceUrl}`);
             
-            // Update metadata with failed URL through sources
-            addOrUpdateSource(metadata, {
+            // Update ruleset with failed URL through sources
+            addOrUpdateSource(ruleset, {
               downloadedAt: new Date().toISOString(),
               contentLength: 0,
               sourceUrl: failedUrl,
               title: "Failed Download",
               type: "statute"
             });
-            await writeMetadata(path.join(domainDir, "metadata.json"), metadata);
+            await writeMetadata(path.join(domainDir, "ruleset.json"), ruleset);
             
             logToFile(`HTTP ${httpCode} error downloading ${sourceUrl}`);
           } else {
@@ -1619,7 +1499,7 @@ export async function createDirectoryStructureFromJSON(
         console.log(`      Skipping download - invalid URL format: ${sourceUrl}`);
       }
       
-      console.log(`      Created policy metadata in ${domain}/${entityId}`);
+      console.log(`      Created policy ruleset in ${domain}/${entityId}`);
     }
     
     processedCount++;
@@ -1628,384 +1508,392 @@ export async function createDirectoryStructureFromJSON(
   console.log(`✅ Created directories for ${processedCount} districts across ${directoryCount} domain/entity combinations`);
 }
 
+/**
+ * @deprecated
+ */
+async function writeMetadata(path: string, content: string) {
+
+}
+
 // ─── Cleanup mode ────────────────────────────────────────────────────────────
 
+// TODO - review this and refactor
 export async function runCleanupMode(
   realm: Realm,
   targetDomain?: string,
-  municipalityFilter?: string,
+  entityFilter?: string,
   forceMode: boolean = false,
 ): Promise<void> {
   console.log("\n🧹 Starting cleanup mode...");
   logToFile("Starting cleanup mode");
 
-  const realmDir = path.join(getProjectDataDir(), realm.datapath);
-  if (!(await fs.pathExists(realmDir))) {
-    console.log(`  No realm directory found: ${realmDir}`);
-    return;
-  }
-  const domains = await fs.readdir(realmDir);
+//   const realmDir = path.join(getProjectDataDir(), realm.datapath);
+//   if (!(await fs.pathExists(realmDir))) {
+//     console.log(`  No realm directory found: ${realmDir}`);
+//     return;
+//   }
+//   const domains = await fs.readdir(realmDir);
 
-  let processedCount = 0;
-  let updatedCount = 0;
-  let binaryDetectedCount = 0;
+//   let processedCount = 0;
+//   let updatedCount = 0;
+//   let binaryDetectedCount = 0;
 
-  // Filter domains if specified
-  const domainsToProcess = targetDomain
-    ? domains.filter((d) => d.toLowerCase() === targetDomain.toLowerCase())
-    : domains;
+//   // Filter domains if specified
+//   const domainsToProcess = targetDomain
+//     ? domains.filter((d) => d.toLowerCase() === targetDomain.toLowerCase())
+//     : domains;
 
-  if (targetDomain && domainsToProcess.length === 0) {
-    console.error(
-      `Domain "${targetDomain}" not found. Available domains: ${domains.join(", ")}`,
-    );
-    return;
-  }
+//   if (targetDomain && domainsToProcess.length === 0) {
+//     console.error(
+//       `Domain "${targetDomain}" not found. Available domains: ${domains.join(", ")}`,
+//     );
+//     return;
+//   }
 
-  for (const domain of domainsToProcess) {
-    const domainPath = path.join(realmDir, domain);
-    const stat = await fs.stat(domainPath);
+//   for (const domain of domainsToProcess) {
+//     const domainPath = path.join(realmDir, domain);
+//     const stat = await fs.stat(domainPath);
 
-    if (
-      !stat.isDirectory() ||
-      domain.endsWith(".json") ||
-      domain.endsWith(".csv")
-    )
-      continue;
+//     if (
+//       !stat.isDirectory() ||
+//       domain.endsWith(".json") ||
+//       domain.endsWith(".csv")
+//     )
+//       continue;
 
-    console.log(`\n📁 Processing domain: ${domain}`);
+//     console.log(`\n📁 Processing domain: ${domain}`);
 
-    const municipalities = await fs.readdir(domainPath);
+//     const municipalities = await fs.readdir(domainPath);
 
-    for (const municipality of municipalities) {
-      if (!municipality.startsWith(getEntityPrefix())) continue;
+//     for (const municipality of municipalities) {
+//       if (!municipality.startsWith(getEntityPrefix())) continue;
 
-      // Apply municipality filter if specified
-      if (municipalityFilter) {
-        const filters = municipalityFilter
-          .split(",")
-          .map((f) => f.trim().toLowerCase());
-        const municipalityName = municipality.toLowerCase();
-        const found = filters.some((filter) =>
-          municipalityName.includes(filter),
-        );
-        if (!found) continue;
-      }
+//       // Apply municipality filter if specified
+//       if (entityFilter) {
+//         const filters = entityFilter
+//           .split(",")
+//           .map((f) => f.trim().toLowerCase());
+//         const municipalityName = municipality.toLowerCase();
+//         const found = filters.some((filter) =>
+//           municipalityName.includes(filter),
+//         );
+//         if (!found) continue;
+//       }
 
-      const municipalityPath = path.join(domainPath, municipality);
-      const municipalityStat = await fs.stat(municipalityPath);
+//       const municipalityPath = path.join(domainPath, municipality);
+//       const municipalityStat = await fs.stat(municipalityPath);
 
-      if (!municipalityStat.isDirectory()) continue;
+//       if (!municipalityStat.isDirectory()) continue;
 
-      const metadataPath = path.join(municipalityPath, "metadata.json");
-      const statutePath = path.join(municipalityPath, "statute.txt");
-      const statuteHtmlPath = path.join(municipalityPath, "statute.html");
-      const statutePdfPath = path.join(municipalityPath, "statute.pdf");
+//       const metadataPath = path.join(municipalityPath, "ruleset.json");
+//       const statutePath = path.join(municipalityPath, "statute.txt");
+//       const statuteHtmlPath = path.join(municipalityPath, "statute.html");
+//       const statutePdfPath = path.join(municipalityPath, "statute.pdf");
 
-      console.log(`  🔍 Checking ${municipality}...`);
-      processedCount++;
+//       console.log(`  🔍 Checking ${municipality}...`);
+//       processedCount++;
 
-      try {
-        // Step 1: Check metadata.json
-        if (!(await fs.pathExists(metadataPath))) {
-          console.log(`    ⏭️  Skipping - no metadata.json`);
-          continue;
-        }
+//       try {
+//         // Step 1: Check ruleset.json
+//         if (!(await fs.pathExists(metadataPath))) {
+//           console.log(`    ⏭️  Skipping - no ruleset.json`);
+//           continue;
+//         }
 
-        const metadata = await fs.readJson(metadataPath);
+//         const ruleset = await fs.readJson(metadataPath);
 
-        // Step 1: Handle referencesStateCode==true directories
-        if (metadata.referencesStateCode === true) {
-          console.log(`    🏛️  State code reference detected - cleaning up local files`);
-          let removedFiles = 0;
+//         // Step 1: Handle referencesStateCode==true directories
+//         if (ruleset.referencesStateCode === true) {
+//           console.log(`    🏛️  State code reference detected - cleaning up local files`);
+//           let removedFiles = 0;
           
-          // Remove all statute.* files
-          const statuteFiles = ['statute.txt', 'statute.html', 'statute.pdf'];
-          for (const fileName of statuteFiles) {
-            const fPath = path.join(municipalityPath, fileName);
-            if (await fs.pathExists(fPath)) {
-              await fs.remove(fPath);
-              console.log(`    🗑️  Removed ${fileName}`);
-              removedFiles++;
-              logToFile(`Removed ${municipality}/${domain}: ${fileName} (referencesStateCode=true)`);
-            }
-          }
+//           // Remove all statute.* files
+//           const statuteFiles = ['statute.txt', 'statute.html', 'statute.pdf'];
+//           for (const fileName of statuteFiles) {
+//             const fPath = path.join(municipalityPath, fileName);
+//             if (await fs.pathExists(fPath)) {
+//               await fs.remove(fPath);
+//               console.log(`    🗑️  Removed ${fileName}`);
+//               removedFiles++;
+//               logToFile(`Removed ${municipality}/${domain}: ${fileName} (referencesStateCode=true)`);
+//             }
+//           }
           
-          // Remove analysis.json file
-          const analysisPath = path.join(municipalityPath, 'analysis.json');
-          if (await fs.pathExists(analysisPath)) {
-            await fs.remove(analysisPath);
-            console.log(`    🗑️  Removed analysis.json`);
-            removedFiles++;
-            logToFile(`Removed ${municipality}/${domain}: analysis.json (referencesStateCode=true)`);
-          }
+//           // Remove analysis.json file
+//           const analysisPath = path.join(municipalityPath, 'analysis.json');
+//           if (await fs.pathExists(analysisPath)) {
+//             await fs.remove(analysisPath);
+//             console.log(`    🗑️  Removed analysis.json`);
+//             removedFiles++;
+//             logToFile(`Removed ${municipality}/${domain}: analysis.json (referencesStateCode=true)`);
+//           }
           
-          // Remove backup files (statute.*.backup-*)
-          const files = await fs.readdir(municipalityPath);
-          const backupFiles = files.filter(file => file.includes('.backup-'));
-          for (const backupFile of backupFiles) {
-            const backupPath = path.join(municipalityPath, backupFile);
-            await fs.remove(backupPath);
-            console.log(`    🗑️  Removed ${backupFile}`);
-            removedFiles++;
-            logToFile(`Removed ${municipality}/${domain}: ${backupFile} (referencesStateCode=true)`);
-          }
+//           // Remove backup files (statute.*.backup-*)
+//           const files = await fs.readdir(municipalityPath);
+//           const backupFiles = files.filter(file => file.includes('.backup-'));
+//           for (const backupFile of backupFiles) {
+//             const backupPath = path.join(municipalityPath, backupFile);
+//             await fs.remove(backupPath);
+//             console.log(`    🗑️  Removed ${backupFile}`);
+//             removedFiles++;
+//             logToFile(`Removed ${municipality}/${domain}: ${backupFile} (referencesStateCode=true)`);
+//           }
           
-          if (removedFiles > 0) {
-            console.log(`    ✅ Cleaned up ${removedFiles} files for state code reference`);
-            updatedCount++;
-          } else {
-            console.log(`    ✅ Already clean (no statute/analysis files found)`);
-          }
-          continue;
-        }
+//           if (removedFiles > 0) {
+//             console.log(`    ✅ Cleaned up ${removedFiles} files for state code reference`);
+//             updatedCount++;
+//           } else {
+//             console.log(`    ✅ Already clean (no statute/analysis files found)`);
+//           }
+//           continue;
+//         }
 
-        // Step 2: Skip if no sourceUrl or points to state code
-        const sourceUrl = getSourceUrl(metadata);
-        if (!sourceUrl) {
-          console.log(`    ⏭️  Skipping - no sourceUrl`);
-          continue;
-        }
+//         // Step 2: Skip if no sourceUrl or points to state code
+//         const sourceUrl = getSourceUrl(ruleset);
+//         if (!sourceUrl) {
+//           console.log(`    ⏭️  Skipping - no sourceUrl`);
+//           continue;
+//         }
 
-        if (
-          metadata.stateCodeApplies === true ||
-          sourceUrl.toLowerCase().includes("state") ||
-          sourceUrl.toLowerCase().includes("nys.gov")
-        ) {
-          console.log(`    ⏭️  Skipping - uses state code`);
-          continue;
-        }
+//         if (
+//           ruleset.stateCodeApplies === true ||
+//           sourceUrl.toLowerCase().includes("state") ||
+//           sourceUrl.toLowerCase().includes("nys.gov")
+//         ) {
+//           console.log(`    ⏭️  Skipping - uses state code`);
+//           continue;
+//         }
 
-        // Step 3: Re-download if original file doesn't exist (HTML or PDF)
-        const hasHtml = await fs.pathExists(statuteHtmlPath);
-        const hasPdf = await fs.pathExists(statutePdfPath);
+//         // Step 3: Re-download if original file doesn't exist (HTML or PDF)
+//         const hasHtml = await fs.pathExists(statuteHtmlPath);
+//         const hasPdf = await fs.pathExists(statutePdfPath);
         
-        if (!hasHtml && !hasPdf) {
-          console.log(`    📥 Re-downloading statute file...`);
-          try {
-            const contentType = await getContentTypeFromUrl(sourceUrl);
-            // Initial detection - will be enhanced after download
-            let isPdf = contentType.includes('application/pdf') || sourceUrl.toLowerCase().endsWith('.pdf');
+//         if (!hasHtml && !hasPdf) {
+//           console.log(`    📥 Re-downloading statute file...`);
+//           try {
+//             const contentType = await getContentTypeFromUrl(sourceUrl);
+//             // Initial detection - will be enhanced after download
+//             let isPdf = contentType.includes('application/pdf') || sourceUrl.toLowerCase().endsWith('.pdf');
             
-            const response = await axios.get(sourceUrl, {
-              timeout: 30000,
-              responseType: isPdf ? 'arraybuffer' : 'text',
-              headers: {
-                "User-Agent": "Mozilla/5.0 (compatible; OrdinanceCrawler/1.0)",
-              },
-            });
+//             const response = await axios.get(sourceUrl, {
+//               timeout: 30000,
+//               responseType: isPdf ? 'arraybuffer' : 'text',
+//               headers: {
+//                 "User-Agent": "Mozilla/5.0 (compatible; OrdinanceCrawler/1.0)",
+//               },
+//             });
 
-            if (isPdf) {
-              await fs.writeFile(statutePdfPath, Buffer.from(response.data));
-              logToFile(`Re-downloaded ${municipality}/${domain}: statute.pdf`);
-            } else {
-              await fs.writeFile(statuteHtmlPath, response.data);
-              logToFile(`Re-downloaded ${municipality}/${domain}: statute.html`);
-            }
-          } catch (downloadError: any) {
-            console.log(
-              `    ❌ Failed to re-download: ${downloadError.message}`,
-            );
-            logToFile(
-              `Failed to re-download ${municipality}/${domain}: ${downloadError.message}`,
-            );
-            continue;
-          }
-        }
+//             if (isPdf) {
+//               await fs.writeFile(statutePdfPath, Buffer.from(response.data));
+//               logToFile(`Re-downloaded ${municipality}/${domain}: statute.pdf`);
+//             } else {
+//               await fs.writeFile(statuteHtmlPath, response.data);
+//               logToFile(`Re-downloaded ${municipality}/${domain}: statute.html`);
+//             }
+//           } catch (downloadError: any) {
+//             console.log(
+//               `    ❌ Failed to re-download: ${downloadError.message}`,
+//             );
+//             logToFile(
+//               `Failed to re-download ${municipality}/${domain}: ${downloadError.message}`,
+//             );
+//             continue;
+//           }
+//         }
 
-        // Step 4: Generate new statute.txt from original file (HTML or PDF)
-        let newText: string = "";
+//         // Step 4: Generate new statute.txt from original file (HTML or PDF)
+//         let newText: string = "";
         
-        if (await fs.pathExists(statutePdfPath)) {
-          // Handle PDF files
-            newText = await getTextFromPdfFile(statutePdfPath);
-        } else if (await fs.pathExists(statuteHtmlPath)) {
-          // Handle HTML files
-          const htmlContent = await fs.readFile(statuteHtmlPath, "utf-8");
+//         if (await fs.pathExists(statutePdfPath)) {
+//           // Handle PDF files
+//             newText = await getTextFromPdfFile(statutePdfPath);
+//         } else if (await fs.pathExists(statuteHtmlPath)) {
+//           // Handle HTML files
+//           const htmlContent = await fs.readFile(statuteHtmlPath, "utf-8");
 
-          // Extract anchor from source URL if present for targeted section extraction
-          const primarySourceUrl = getSourceUrl(metadata) || "";
-          const anchorMatch = primarySourceUrl.match(/#(.+)$/);
-          const anchorId = anchorMatch ? anchorMatch[1] : undefined;
+//           // Extract anchor from source URL if present for targeted section extraction
+//           const primarySourceUrl = getSourceUrl(ruleset) || "";
+//           const anchorMatch = primarySourceUrl.match(/#(.+)$/);
+//           const anchorId = anchorMatch ? anchorMatch[1] : undefined;
 
-          // Use conversion with anchor support for targeted extraction
-          newText = convertHtmlToText(htmlContent, anchorId);
-        } else {
-          console.log(`    ⚠️  No source file found (neither HTML nor PDF)`);
-          continue;
-        }
+//           // Use conversion with anchor support for targeted extraction
+//           newText = convertHtmlToText(htmlContent, anchorId);
+//         } else {
+//           console.log(`    ⚠️  No source file found (neither HTML nor PDF)`);
+//           continue;
+//         }
 
-        if (newText) {
-          // Extract anchor info for logging
-          const primarySourceUrl = getSourceUrl(metadata) || "";
-          const anchorMatch = primarySourceUrl.match(/#(.+)$/);
-          const anchorId = anchorMatch ? anchorMatch[1] : undefined;
+//         if (newText) {
+//           // Extract anchor info for logging
+//           const primarySourceUrl = getSourceUrl(ruleset) || "";
+//           const anchorMatch = primarySourceUrl.match(/#(.+)$/);
+//           const anchorId = anchorMatch ? anchorMatch[1] : undefined;
 
-          if (forceMode) {
-            // Force mode: just compare with existing and update if different
-            const existingText = (await fs.pathExists(statutePath))
-              ? await fs.readFile(statutePath, "utf-8")
-              : "";
+//           if (forceMode) {
+//             // Force mode: just compare with existing and update if different
+//             const existingText = (await fs.pathExists(statutePath))
+//               ? await fs.readFile(statutePath, "utf-8")
+//               : "";
 
-            if (newText !== existingText) {
-              await fs.writeFile(statutePath, newText, "utf-8");
-              console.log(
-                `    🔄 Force update: statute.txt regenerated (${existingText.length} -> ${newText.length} chars)${anchorId ? ` [anchor: #${anchorId}]` : ""}`,
-              );
+//             if (newText !== existingText) {
+//               await fs.writeFile(statutePath, newText, "utf-8");
+//               console.log(
+//                 `    🔄 Force update: statute.txt regenerated (${existingText.length} -> ${newText.length} chars)${anchorId ? ` [anchor: #${anchorId}]` : ""}`,
+//               );
 
-              // Update timestamp and content length in metadata
-              const primarySrcUrl = getSourceUrl(metadata) || "";
-              metadata.lastCleanup = new Date().toISOString();
-              addOrUpdateSource(metadata, {
-                downloadedAt: getDownloadedAt(metadata) || new Date().toISOString(),
-                contentLength: newText.length,
-                sourceUrl: primarySrcUrl,
-                title: getSourceTitle(metadata),
-                type: "statute"
-              });
-              await writeMetadata(metadataPath, metadata);
+//               // Update timestamp and content length in ruleset
+//               const primarySrcUrl = getSourceUrl(ruleset) || "";
+//               ruleset.lastCleanup = new Date().toISOString();
+//               addOrUpdateSource(ruleset, {
+//                 downloadedAt: getDownloadedAt(ruleset) || new Date().toISOString(),
+//                 contentLength: newText.length,
+//                 sourceUrl: primarySrcUrl,
+//                 title: getSourceTitle(ruleset),
+//                 type: "statute"
+//               });
+//               await writeMetadata(metadataPath, ruleset);
 
-              // Process any undownloaded sources in the metadata
-              await processUndownloadedSources(municipalityPath, metadata, municipality, realm.ruleType);
+//               // Process any undownloaded sources in the ruleset
+//               await processUndownloadedSources(municipalityPath, ruleset, municipality, realm.ruleType);
 
-              updatedCount++;
-              logToFile(
-                `Force updated ${municipality}/${domain}: statute.txt regenerated from HTML`,
-              );
-            } else {
-              console.log(`    ✅ No changes needed (force mode)`);
-            }
-          } else {
-            // Normal cleanup mode: use temporary file and compare
-            const newStatutePath = path.join(
-              municipalityPath,
-              "statute_new.txt",
-            );
-            await fs.writeFile(newStatutePath, newText);
+//               updatedCount++;
+//               logToFile(
+//                 `Force updated ${municipality}/${domain}: statute.txt regenerated from HTML`,
+//               );
+//             } else {
+//               console.log(`    ✅ No changes needed (force mode)`);
+//             }
+//           } else {
+//             // Normal cleanup mode: use temporary file and compare
+//             const newStatutePath = path.join(
+//               municipalityPath,
+//               "statute_new.txt",
+//             );
+//             await fs.writeFile(newStatutePath, newText);
 
-            if (anchorId) {
-              console.log(`    🎯 Using anchor-based extraction: #${anchorId}`);
-            }
+//             if (anchorId) {
+//               console.log(`    🎯 Using anchor-based extraction: #${anchorId}`);
+//             }
 
-            // Step 5: Compare with existing statute.txt (normal cleanup mode)
-            let shouldUpdate = false;
-            let diffReason = "";
+//             // Step 5: Compare with existing statute.txt (normal cleanup mode)
+//             let shouldUpdate = false;
+//             let diffReason = "";
 
-            if (!(await fs.pathExists(statutePath))) {
-              shouldUpdate = true;
-              diffReason = "no existing statute.txt";
-            } else {
-              const existingText = await fs.readFile(statutePath, "utf-8");
-              if (newText !== existingText) {
-                shouldUpdate = true;
-                diffReason = `content differs (${existingText.length} -> ${newText.length} chars)`;
-              }
-            }
+//             if (!(await fs.pathExists(statutePath))) {
+//               shouldUpdate = true;
+//               diffReason = "no existing statute.txt";
+//             } else {
+//               const existingText = await fs.readFile(statutePath, "utf-8");
+//               if (newText !== existingText) {
+//                 shouldUpdate = true;
+//                 diffReason = `content differs (${existingText.length} -> ${newText.length} chars)`;
+//               }
+//             }
 
-            if (shouldUpdate) {
-              console.log(`    🔄 Updating statute.txt - ${diffReason}`);
+//             if (shouldUpdate) {
+//               console.log(`    🔄 Updating statute.txt - ${diffReason}`);
 
-              // Replace statute.txt
-              await fs.move(newStatutePath, statutePath, { overwrite: true });
+//               // Replace statute.txt
+//               await fs.move(newStatutePath, statutePath, { overwrite: true });
 
-              // Update timestamps and content length through sources
-              const currentTime = new Date().toISOString();
-              const primarySrcUrl = getSourceUrl(metadata) || "";
-              addOrUpdateSource(metadata, {
-                downloadedAt: currentTime,
-                contentLength: newText.length,
-                sourceUrl: primarySrcUrl,
-                title: getSourceTitle(metadata),
-                type: "statute"
-              });
-              metadata.lastCleanup = currentTime;
-              await writeMetadata(metadataPath, metadata);
+//               // Update timestamps and content length through sources
+//               const currentTime = new Date().toISOString();
+//               const primarySrcUrl = getSourceUrl(ruleset) || "";
+//               addOrUpdateSource(ruleset, {
+//                 downloadedAt: currentTime,
+//                 contentLength: newText.length,
+//                 sourceUrl: primarySrcUrl,
+//                 title: getSourceTitle(ruleset),
+//                 type: "statute"
+//               });
+//               ruleset.lastCleanup = currentTime;
+//               await writeMetadata(metadataPath, ruleset);
 
-              // Process any undownloaded sources in the metadata
-              await processUndownloadedSources(municipalityPath, metadata, municipality, realm.ruleType);
+//               // Process any undownloaded sources in the ruleset
+//               await processUndownloadedSources(municipalityPath, ruleset, municipality, realm.ruleType);
 
-              updatedCount++;
-              logToFile(
-                `Updated ${municipality}/${domain}: statute.txt (${diffReason})`,
-              );
-            } else {
-              console.log(`    ✅ No changes needed`);
-              await fs.remove(newStatutePath);
-            }
-          }
-        } else {
-          console.log(`    ⚠️  No valid text content extracted`);
-        }
+//               updatedCount++;
+//               logToFile(
+//                 `Updated ${municipality}/${domain}: statute.txt (${diffReason})`,
+//               );
+//             } else {
+//               console.log(`    ✅ No changes needed`);
+//               await fs.remove(newStatutePath);
+//             }
+//           }
+//         } else {
+//           console.log(`    ⚠️  No valid text content extracted`);
+//         }
 
-        // Step 4: Delete statute.txt.backup* files
-        const backupFiles = await fs.readdir(municipalityPath);
-        const backupFilesToDelete = backupFiles.filter((file) =>
-          file.startsWith("statute.txt.backup"),
-        );
+//         // Step 4: Delete statute.txt.backup* files
+//         const backupFiles = await fs.readdir(municipalityPath);
+//         const backupFilesToDelete = backupFiles.filter((file) =>
+//           file.startsWith("statute.txt.backup"),
+//         );
 
-        if (backupFilesToDelete.length > 0) {
-          console.log(
-            `    🗑️  Removing ${backupFilesToDelete.length} backup files`,
-          );
-          for (const backupFile of backupFilesToDelete) {
-            await fs.remove(path.join(municipalityPath, backupFile));
-            logToFile(
-              `Deleted backup: ${municipality}/${domain}/${backupFile}`,
-            );
-          }
-        }
+//         if (backupFilesToDelete.length > 0) {
+//           console.log(
+//             `    🗑️  Removing ${backupFilesToDelete.length} backup files`,
+//           );
+//           for (const backupFile of backupFilesToDelete) {
+//             await fs.remove(path.join(municipalityPath, backupFile));
+//             logToFile(
+//               `Deleted backup: ${municipality}/${domain}/${backupFile}`,
+//             );
+//           }
+//         }
 
-        // Step 5: Extract statute number and title
-        if (await fs.pathExists(statuteHtmlPath)) {
-          const statuteInfo = await extractStatuteInfo(statuteHtmlPath);
-          if (statuteInfo.number || statuteInfo.title) {
-            console.log(
-              `    📋 Statute info: ${statuteInfo.number || "N/A"} - ${statuteInfo.title || "N/A"}`,
-            );
+//         // Step 5: Extract statute number and title
+//         if (await fs.pathExists(statuteHtmlPath)) {
+//           const statuteInfo = await extractStatuteInfo(statuteHtmlPath);
+//           if (statuteInfo.number || statuteInfo.title) {
+//             console.log(
+//               `    📋 Statute info: ${statuteInfo.number || "N/A"} - ${statuteInfo.title || "N/A"}`,
+//             );
 
-            // Update metadata with statute info
-            if (statuteInfo.number) metadata.statuteNumber = statuteInfo.number;
-            if (statuteInfo.title) metadata.statuteTitle = statuteInfo.title;
+//             // Update ruleset with statute info
+//             if (statuteInfo.number) ruleset.statuteNumber = statuteInfo.number;
+//             if (statuteInfo.title) ruleset.statuteTitle = statuteInfo.title;
 
-            await fs.writeJson(metadataPath, metadata, { spaces: 2 });
-            logToFile(
-              `Extracted statute info for ${municipality}/${domain}: ${statuteInfo.number} - ${statuteInfo.title}`,
-            );
-          }
-        }
+//             await fs.writeJson(metadataPath, ruleset, { spaces: 2 });
+//             logToFile(
+//               `Extracted statute info for ${municipality}/${domain}: ${statuteInfo.number} - ${statuteInfo.title}`,
+//             );
+//           }
+//         }
 
-        // Step 6: Analyze statute.txt for binary data
-        if (await fs.pathExists(statutePath)) {
-          const statuteContent = await fs.readFile(statutePath, "utf-8");
-          if (hasBinaryData(statuteContent)) {
-            console.log(`    ⚠️  BINARY DATA DETECTED in statute.txt!`);
-            logToFile(
-              `ERROR: Binary data detected in ${municipality}/${domain}/statute.txt`,
-            );
-            binaryDetectedCount++;
-          }
-        }
-      } catch (error: any) {
-        console.log(
-          `    ❌ Error processing ${municipality}: ${error.message}`,
-        );
-        logToFile(
-          `Error processing ${municipality}/${domain}: ${error.message}`,
-        );
-      }
-    }
-  }
+//         // Step 6: Analyze statute.txt for binary data
+//         if (await fs.pathExists(statutePath)) {
+//           const statuteContent = await fs.readFile(statutePath, "utf-8");
+//           if (hasBinaryData(statuteContent)) {
+//             console.log(`    ⚠️  BINARY DATA DETECTED in statute.txt!`);
+//             logToFile(
+//               `ERROR: Binary data detected in ${municipality}/${domain}/statute.txt`,
+//             );
+//             binaryDetectedCount++;
+//           }
+//         }
+//       } catch (error: any) {
+//         console.log(
+//           `    ❌ Error processing ${municipality}: ${error.message}`,
+//         );
+//         logToFile(
+//           `Error processing ${municipality}/${domain}: ${error.message}`,
+//         );
+//       }
+//     }
+//   }
 
-  console.log(`\n✅ Cleanup completed!`);
-  console.log(`   📊 Processed: ${processedCount} municipalities`);
-  console.log(`   🔄 Updated: ${updatedCount} statute files`);
-  if (binaryDetectedCount > 0) {
-    console.log(
-      `   ⚠️  Binary data detected: ${binaryDetectedCount} files (check logs)`,
-    );
-  }
+//   console.log(`\n✅ Cleanup completed!`);
+//   console.log(`   📊 Processed: ${processedCount} municipalities`);
+//   console.log(`   🔄 Updated: ${updatedCount} statute files`);
+//   if (binaryDetectedCount > 0) {
+//     console.log(
+//       `   ⚠️  Binary data detected: ${binaryDetectedCount} files (check logs)`,
+//     );
+//   }
 
-  logToFile(
-    `Cleanup completed - Processed: ${processedCount}, Updated: ${updatedCount}, Binary detected: ${binaryDetectedCount}`,
-  );
+//   logToFile(
+//     `Cleanup completed - Processed: ${processedCount}, Updated: ${updatedCount}, Binary detected: ${binaryDetectedCount}`,
+//   );
 }

@@ -130,8 +130,8 @@ export function getProjectDataDir(): string {
 }
 
 export function getProjectRootDir(): string {
-  const scriptDir = path.dirname(new URL(import.meta.url).pathname);
-  return path.join(scriptDir, "..");
+  // return the path that we are running the script from
+  return process.cwd();
 }
 
 // ─── Domain display helpers ──────────────────────────────────────────────────
@@ -160,6 +160,7 @@ export function getDomainColumnIndex(domain: string): number {
 let statuteLibraryConfig: StatuteLibraryConfig | null = null;
 let realmsConfig: RealmsConfig | null = null;
 
+// TODO: move to storage
 export async function loadStatuteLibraryConfig(): Promise<StatuteLibraryConfig> {
   if (statuteLibraryConfig) {
     return statuteLibraryConfig;
@@ -214,14 +215,6 @@ const configPath = path.join(
 );
 realmsConfig = await fs.readJson(configPath);
 return realmsConfig!;
-}
-
-export function getRealmById(realmId: string, config: RealmsConfig): Realm | null {
-  return config.realms.find((realm) => realm.id === realmId) || null;
-}
-
-export function getDefaultRealm(config: RealmsConfig): Realm | null {
-  return config.realms.find((realm) => realm.isDefault) || config.realms[0] || null;
 }
 
 export function getLibraryForUrl(

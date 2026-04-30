@@ -5,11 +5,8 @@ import { PDFParse } from 'pdf-parse';
 import { JSDOM, VirtualConsole } from "jsdom";
 import { convertHtmlToText } from "./simpleHtmlToText.js";
 import {
-  type Metadata,
-  type Source,
-  type ArticleLink,
+ type ArticleLink,
   type StatuteLibraryConfig,
-  type Realm,
   DELAY_BETWEEN_DOWNLOADS,
   verboseLog,
   getProjectDataDir,
@@ -17,6 +14,7 @@ import {
   loadStatuteLibraryConfig,
   getLibraryForUrl,
 } from "./extractionConfig.js";
+import { Ruleset, RulesetSource } from "@civillyengaged/ordinizer-core";
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -57,159 +55,57 @@ export async function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ─── Metadata helpers ────────────────────────────────────────────────────────
+// ─── Ruleset helpers ────────────────────────────────────────────────────────
 
-export function isLegacyMetadata(metadata: any): boolean {
-  return !Array.isArray(metadata.sources);
-}
-
-export function migrateLegacyMetadata(legacyMetadata: any): Metadata {
-  const newMetadata: Metadata = {
-    ...legacyMetadata,
-    sources: []
-  };
-  
-  // Remove legacy fields
-  delete newMetadata.sourceUrl;
-  delete newMetadata.downloadedAt;
-  delete newMetadata.contentLength;
-  delete newMetadata.statuteTitle;
-  delete newMetadata.policyTitle;
-  delete newMetadata.sourceType;
-  
-  // Create sources array from legacy data
-  if (legacyMetadata.sourceUrl) {
-    const sourceType = determineSourceType(legacyMetadata);
-    const title = legacyMetadata.statuteTitle || legacyMetadata.policyTitle || legacyMetadata.domain || "Unknown Document";
-    
-    const downloadedAt = legacyMetadata.downloadedAt || 
-                        legacyMetadata.metadataCreated || 
-                        new Date().toISOString();
-    
-    newMetadata.sources.push({
-      downloadedAt,
-      contentLength: legacyMetadata.contentLength || 0,
-      sourceUrl: legacyMetadata.sourceUrl,
-      title: title,
-      type: sourceType
-    });
-  }
-  
-  // Add additional sources from sourceUrls if they exist
-  if (legacyMetadata.sourceUrls && Array.isArray(legacyMetadata.sourceUrls)) {
-    for (const sourceUrlObj of legacyMetadata.sourceUrls) {
-      if (sourceUrlObj.url) {
-        const downloadedAt = legacyMetadata.downloadedAt || 
-                            legacyMetadata.metadataCreated || 
-                            new Date().toISOString();
-                            
-        newMetadata.sources.push({
-          downloadedAt,
-          contentLength: 0,
-          sourceUrl: sourceUrlObj.url,
-          title: sourceUrlObj.title || sourceUrlObj.text || "Article",
-          type: determineSourceType(legacyMetadata)
-        });
-      }
-    }
-  }
-  
-  // Deduplicate sources by URL (keep first occurrence)
-  const seen = new Set<string>();
-  newMetadata.sources = newMetadata.sources.filter(source => {
-    if (seen.has(source.sourceUrl)) {
-      return false;
-    }
-    seen.add(source.sourceUrl);
-    return true;
-  });
-  
-  // Remove sourceUrls to prevent duplication
-  delete newMetadata.sourceUrls;
-  
-  return newMetadata;
-}
-
-export function determineSourceType(metadata: any): "statute" | "policy" {
-  if (metadata.realmType === "policy" ||
-      metadata.districtName || (metadata.entityId && metadata.entityId.includes("-CSD")) || 
-      (metadata.entityId && metadata.entityId.includes("-UFSD"))) {
+export function determineSourceType(ruleset: any): "statute" | "policy" {
+  if (ruleset.realmType === "policy" ||
+      ruleset.districtName || (ruleset.entityId && ruleset.entityId.includes("-CSD")) || 
+      (ruleset.entityId && ruleset.entityId.includes("-UFSD"))) {
     return "policy";
   }
   return "statute";
 }
 
-export function getPrimarySource(metadata: Metadata): Source | null {
-  return metadata.sources && metadata.sources.length > 0 ? metadata.sources[0] : null;
+export function getPrimarySource(ruleset: Ruleset): RulesetSource {
+  if (!ruleset.sources) 
+    ruleset.sources = [];
+  
+  if (ruleset.sources.length = 0) {
+    ruleset.sources.push({
+      sourceUrl: ""
+    });
+  }
+  return ruleset.sources[0];
+
 }
 
-export function getSourceUrl(metadata: Metadata): string | null {
-  const primarySource = getPrimarySource(metadata);
+export function getSourceUrl(ruleset: Ruleset): string | null {
+  const primarySource = getPrimarySource(ruleset);
   return primarySource?.sourceUrl || null;
 }
 
-export function getDownloadedAt(metadata: Metadata): string | null {
-  const primarySource = getPrimarySource(metadata);
+export function getDownloadedAt(ruleset: Ruleset): string | null {
+  const primarySource = getPrimarySource(ruleset);
   return primarySource?.downloadedAt || null;
 }
 
-export function getContentLength(metadata: Metadata): number {
-  const primarySource = getPrimarySource(metadata);
+export function getContentLength(ruleset: Ruleset): number {
+  const primarySource = getPrimarySource(ruleset);
   return primarySource?.contentLength || 0;
 }
 
-export function getSourceTitle(metadata: Metadata): string {
-  const primarySource = getPrimarySource(metadata);
-  if (primarySource && primarySource.title) {
-    return primarySource.title;
-  }
-  return metadata.statuteTitle || metadata.policyTitle || metadata.domain || "Document";
-}
-
-export function addOrUpdateSource(metadata: Metadata, source: Source): void {
-  if (!metadata.sources) {
-    metadata.sources = [];
+export function addOrUpdateSource(ruleset: Ruleset, source: RulesetSource): void {
+  if (!ruleset.sources) {
+    ruleset.sources = [];
   }
   
-  const existingIndex = metadata.sources.findIndex(s => s.sourceUrl === source.sourceUrl);
+  const existingIndex = ruleset.sources.findIndex(s => s.sourceUrl === source.sourceUrl);
   
   if (existingIndex >= 0) {
-    metadata.sources[existingIndex] = source;
+    ruleset.sources[existingIndex] = source;
   } else {
-    metadata.sources.unshift(source); // Add to beginning as primary source
+    ruleset.sources.unshift(source); // Add to beginning as primary source
   }
-}
-
-export async function readMetadata(metadataPath: string): Promise<Metadata | null> {
-  if (!(await fs.pathExists(metadataPath))) {
-    return null;
-  }
-  
-  try {
-    const rawMetadata = await fs.readJson(metadataPath);
-    
-    if (isLegacyMetadata(rawMetadata)) {
-      return migrateLegacyMetadata(rawMetadata);
-    }
-    
-    const cleanMetadata = { ...rawMetadata };
-    delete cleanMetadata.sourceUrl;
-    delete cleanMetadata.downloadedAt;
-    delete cleanMetadata.contentLength;
-    delete cleanMetadata.statuteTitle;
-    delete cleanMetadata.policyTitle;
-    delete cleanMetadata.sourceType;
-    delete cleanMetadata.sourceUrls;
-    
-    return cleanMetadata as Metadata;
-  } catch (error: any) {
-    console.warn(`Warning: Could not read metadata from ${metadataPath}: ${error.message}`);
-    return null;
-  }
-}
-
-export async function writeMetadata(metadataPath: string, metadata: Metadata): Promise<void> {
-  await fs.writeJson(metadataPath, metadata, { spaces: 2 });
 }
 
 // ─── PDF processing ──────────────────────────────────────────────────────────
@@ -345,8 +241,11 @@ export function interpretTextAsForm(extractedText: string, formTitle: string): s
 
 // ─── HTTP / content detection ────────────────────────────────────────────────
 
-export async function downloadFromUrl(url: string): Promise<string> {
-  try {
+
+/**
+ * Check filesource if known URL source
+ */
+export async function checkUrlSource(url: string): Promise<boolean> {
     const config = await loadStatuteLibraryConfig();
     const library = getLibraryForUrl(url, config);
 
@@ -357,15 +256,57 @@ export async function downloadFromUrl(url: string): Promise<string> {
       logToFile(
         `Skipped download from ${library.name}: ${url} - ${library.notes}`,
       );
-      return "";
+      return false;
     }
-
     console.log(`Downloading: ${url}${library ? ` (${library.name})` : ""}`);
+    return true;
+}
+
+/**
+ * Downloads content from URL and saves to the given filepath
+ * @param url 
+ * @param saveToPath 
+ * @param filename 
+ * @returns filename.ext (where ext = pdf or html), or empty string on failure
+ */
+export async function downloadFromUrlAndSave(url: string, saveToPath: string, filename: string): Promise<string> {
+
+  const response = await downloadFromUrlAnyType(url, saveToPath, filename);
+  const ext  = (response.isPdf) ? "pdf" : "html";
+  const destfilename = `${filename}.${ext}`;
+  const destfile = path.join(saveToPath, destfilename);
+  await fs.writeFile(destfile, response.data);
+  return destfile;
+}
+
+/**
+ * Downloads and returns content
+ * @use when you don't need to save the downloaded content as a file
+ * @param url 
+ * @returns 
+ */
+export async function downloadFromUrl(url: string): Promise<string> {
+    const response = await downloadFromUrlAnyType(url);
+    const encoding = response.isPdf ? 'base64' : 'utf-8';
+    return Buffer.from(response.data).toString(encoding);
+}
+
+/**
+ * Returns object
+ * @param url 
+ * @param saveToPath 
+ * @param filename 
+ * @returns object with data and isPdf
+ */
+export async function downloadFromUrlAnyType(url: string, saveToPath?: string, filename?: string): Promise<{ data: string, isPdf: boolean }> {
+    try {
+    if (!await checkUrlSource(url)) {
+      throw new Error(`Download not supported for this URL: ${url}`);
+    }
 
     verboseLog(`HTTP GET Request:`, {
       url: url,
       timeout: 30000,
-      library: library?.name || "Unknown",
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -378,7 +319,7 @@ export async function downloadFromUrl(url: string): Promise<string> {
       responseType: 'arraybuffer',
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (compatible; Ordinizer/1.0; +http://ordinizer.example.com)",
+          "Mozilla/5.0 (compatible; Ordinizer/1.0; +http://nyseeds.org/ordinizer)",
       },
     });
 
@@ -395,11 +336,8 @@ export async function downloadFromUrl(url: string): Promise<string> {
       isPdf: isPdf
     });
 
-    if (isPdf) {
-      return Buffer.from(response.data).toString('base64');
-    } else {
-      return Buffer.from(response.data).toString('utf-8');
-    }
+    return { data: response.data, isPdf: isPdf };
+
   } catch (error: any) {
     verboseLog(`HTTP Request Failed:`, {
       url: url,
@@ -407,10 +345,12 @@ export async function downloadFromUrl(url: string): Promise<string> {
       status: error.response?.status,
       statusText: error.response?.statusText,
     });
-    console.error(`Failed to download ${url}:`, error);
-    return "";
+    throw new Error("Failed to download content from URL: " + url + " - " + error.message);
   }
+
 }
+
+
 
 export async function getContentTypeFromUrl(url: string): Promise<string> {
   try {
@@ -467,10 +407,14 @@ export function isContentPdf(content: string | Buffer, contentType: string, url:
 
 // ─── Article detection & stitching ───────────────────────────────────────────
 
+/**
+ * Detect if the page links to many indididual articles/sections that may require separate downloading, 
+ * based on URL patterns and page structure.
+ */
 export function detectArticleBasedPage(
   html: string,
   currentUrl: string,
-): { isArticleBased: boolean; articles: ArticleLink[] } {
+): ArticleLink[] {
   try {
     const dom = new JSDOM(html);
     const document = dom.window.document;
@@ -542,13 +486,13 @@ export function detectArticleBasedPage(
       console.log(`  📄 Found ${titleLinks.length} article references, but all appear to be in current page`);
     }
 
-    return { isArticleBased, articles };
+    return articles;
   } catch (error: any) {
     console.log(
       "  Warning: Error detecting article-based page:",
       error.message,
     );
-    return { isArticleBased: false, articles: [] };
+    return [];
   }
 }
 
@@ -620,10 +564,7 @@ export async function validateEntityRelevance(
       `${municipalityType.toLowerCase()} of ${municipalityName.toLowerCase()}`,
       `${municipalityName.toLowerCase()} ${municipalityType.toLowerCase()}`,
       municipalityName.toLowerCase(),
-      municipalityName.replace(/[-\s]/g, "").toLowerCase(),
-      `city of ${municipalityName.toLowerCase()}`,
-      `town of ${municipalityName.toLowerCase()}`,
-      `village of ${municipalityName.toLowerCase()}`,
+      municipalityName.replace(/[-\s]/g, "").toLowerCase()
     ];
 
     const foundExpected = municipalityPatterns.some((pattern) =>
@@ -685,66 +626,53 @@ export async function validateEntityRelevance(
   }
 }
 
-export async function cleanupInvalidStatute(
-  municipalityDir: string,
-  municipalityName: string,
-  domain: string,
-  reason: string,
-): Promise<void> {
-  const statutePath = path.join(municipalityDir, "statute.txt");
-  const statuteHtmlPath = path.join(municipalityDir, "statute.html");
-  const statutePdfPath = path.join(municipalityDir, "statute.pdf");
-  const metadataPath = path.join(municipalityDir, "metadata.json");
+// export async function cleanupInvalidStatute(
+//   municipalityDir: string,
+//   municipalityName: string,
+//   domain: string,
+//   reason: string,
+// ): Promise<void> {
+//   const statutePath = path.join(municipalityDir, "statute.txt");
+//   const statuteHtmlPath = path.join(municipalityDir, "statute.html");
+//   const statutePdfPath = path.join(municipalityDir, "statute.pdf");
+//   const metadataPath = path.join(municipalityDir, "ruleset.json");
 
-  console.log(
-    `🗑️  Cleaning up invalid statute files for ${municipalityName} (${domain}): ${reason}`,
-  );
-  logToFile(
-    `Cleaning up invalid statute files: ${municipalityName}/${domain} - ${reason}`,
-  );
+//   console.log(
+//     `🗑️  Cleaning up invalid statute files for ${municipalityName} (${domain}): ${reason}`,
+//   );
+//   logToFile(
+//     `Cleaning up invalid statute files: ${municipalityName}/${domain} - ${reason}`,
+//   );
 
-  if (await fs.pathExists(statutePath)) {
-    await fs.remove(statutePath);
-    logToFile(`Deleted: ${statutePath}`);
-  }
+//   if (await fs.pathExists(statutePath)) {
+//     await fs.remove(statutePath);
+//     logToFile(`Deleted: ${statutePath}`);
+//   }
 
-  if (await fs.pathExists(statuteHtmlPath)) {
-    await fs.remove(statuteHtmlPath);
-    logToFile(`Deleted: ${statuteHtmlPath}`);
-  }
+//   if (await fs.pathExists(statuteHtmlPath)) {
+//     await fs.remove(statuteHtmlPath);
+//     logToFile(`Deleted: ${statuteHtmlPath}`);
+//   }
 
-  if (await fs.pathExists(statutePdfPath)) {
-    await fs.remove(statutePdfPath);
-    logToFile(`Deleted: ${statutePdfPath}`);
-  }
+//   if (await fs.pathExists(statutePdfPath)) {
+//     await fs.remove(statutePdfPath);
+//     logToFile(`Deleted: ${statutePdfPath}`);
+//   }
 
-  if (await fs.pathExists(metadataPath)) {
-    console.log(`  🗑️  Cleaning up metadata.json (removing source information)`);
-    try {
-      const metadata = await readMetadata(metadataPath);
-      if (metadata) {
-        metadata.sources = [];
-        
-        delete metadata.sourceUrl;
-        delete metadata.originalCellValue;
-        delete metadata.downloadedAt;
-        delete metadata.contentLength;
-        delete metadata.sourceType;
-        delete metadata.lastConverted;
-        delete metadata.sourceUrls;
-
-        await writeMetadata(metadataPath, metadata);
-        logToFile(
-          `Updated metadata.json: removed all source information (sources array and legacy fields)`,
-        );
-        console.log(`  ✅ Updated metadata.json: removed all source information`);
-      }
-    } catch (error: any) {
-      logToFile(`Error updating metadata.json: ${error.message}`);
-      console.log(`  ⚠️  Could not update metadata.json: ${error.message}`);
-    }
-  }
-}
+//   if (await fs.pathExists(metadataPath)) {
+//     console.log(`  🗑️  Cleaning up ruleset.json (removing source information)`);
+//     try {
+//         logToFile(
+//           `Updated ruleset.json: removed all source information (sources array and legacy fields)`,
+//         );
+//         console.log(`  ✅ Updated ruleset.json: removed all source information`);
+//       }
+//     } catch (error: any) {
+//       logToFile(`Error updating ruleset.json: ${error.message}`);
+//       console.log(`  ⚠️  Could not update ruleset.json: ${error.message}`);
+//     }
+//   }
+// }
 
 // ─── Utility functions ───────────────────────────────────────────────────────
 
@@ -772,11 +700,17 @@ export function hasBinaryData(content: string): boolean {
   return binaryPatterns.some((pattern) => pattern.test(content));
 }
 
-export async function extractStatuteInfo(
-  htmlPath: string,
-): Promise<{ number?: string; title?: string }> {
-  try {
+export async function extractStatuteInfo(htmlPath: string): Promise<{ number?: string; title?: string }> {
     const htmlContent = await fs.readFile(htmlPath, "utf-8");
+    return extractStatuteInfoFromHTML(htmlContent);
+}
+
+/**
+ * Extract the associated statute title & number from the document
+ * @param htmlContent 
+ * @returns 
+ */
+export async function extractStatuteInfoFromHTML(htmlContent: string,): Promise<{ number?: string; title?: string }> {
     const dom = new JSDOM(htmlContent);
     const document = dom.window.document;
 
@@ -902,15 +836,7 @@ export async function extractStatuteInfo(
         const wordCount = result.title.split(/\s+/).length;
         console.log(`   Title validation: ${wordCount} words ${wordCount <= 3 ? '✅' : wordCount <= 8 ? '⚠️' : '❌'}`);
       }
-    } else {
-      console.warn(`⚠️  No statute number or title extracted from ${htmlPath}`);
     }
 
     return result;
-  } catch (error: any) {
-    console.warn(
-      `Warning: Could not extract statute info from ${htmlPath}: ${error.message}`,
-    );
-    return {};
   }
-}

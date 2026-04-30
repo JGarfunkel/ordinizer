@@ -73,9 +73,9 @@ export interface EntityDomain {
  * These are currently stored in metdadat.json
  */
 export interface Ruleset {
-  id: string;
-  municipality: string;
-  municipalityType: string;
+  id?: string;
+  municipality?: string;
+  municipalityType?: string;
   entityId: string;
   domain: string;
   domainId: string;
@@ -84,6 +84,7 @@ export interface Ruleset {
   stateCodeApplies: boolean; // legacy field indicating if state code applies, used for scoring adjustments
   statuteNumber?: string; // Optional statute number (e.g., "Section 5.2")
   sources: RulesetSource[]; // Array of sources that inform this ruleset, with metadata about each source
+  isArticleBased?: boolean; // Indicates if the ruleset is based on multiple articles/sections
 }
 
 export interface RulesetSource {
@@ -121,6 +122,10 @@ export interface Analysis {
     id: string;
     displayName: string;
   };
+  entity?: {      // Current format (backward compatibility)
+    id: string;
+    displayName: string;
+  };
   entityId?: string;   // Library format
   domainId: string;
   domain?: {            // Current format (backward compatibility)
@@ -153,6 +158,8 @@ export interface Analysis {
     [key: string]: any;
   };
   lastUpdated?: string; // String format
+  processingMethod?: string;
+  gapAnalysis?: string; // Added: used in home.tsx for gap analysis summary
 }
 
 export interface AnalysisVersionRef {
@@ -312,7 +319,7 @@ export interface Realm {
   displayName: string;
   description: string;
   ruleType: 'statute' | 'policy';
-  state: string;
+  territory: string; // state
   county: string;
   datapath: string;
   entityType: 'municipalities' | 'school-districts';

@@ -250,7 +250,7 @@ export default function Home() {
   const usesStateCode = selectedEntitySummary?.stateCodeApplies || false;
   
   // Determine which municipality ID to use for analysis fetch
-  const analysisTargetEntityId = usesStateCode ? `${currentRealm?.state}-State` : selectedEntityId;
+  const analysisTargetEntityId = usesStateCode ? `${currentRealm?.territory}-State` : selectedEntityId;
 
   // Fetch available analysis versions
   const { data: versionsData } = useQuery<{versions: Array<{version: string; filename: string; displayName: string; timestamp: string; isCurrent: boolean}>}>({

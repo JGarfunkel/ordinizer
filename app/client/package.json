@@ -42,7 +42,7 @@
     "zod": "^3.0.0"
   },
   "dependencies": {
-    "@civillyengaged/ordinizer-core": "1.0.1",
+    "@civillyengaged/ordinizer-core": "file:../core",
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "^1.2.4",
     "@radix-ui/react-alert-dialog": "^1.1.7",
