@@ -12,9 +12,9 @@
       "@civillyengaged/ordinizer-servercore": ["../../packages/servercore/src"],
       "@ordinizer/servercore/*": ["../../packages/servercore/src/*"]
     },
-    "types": ["node"],
+    "types": ["node", "jest"],
     "isolatedModules": true
   },
-  "include": ["lib/**/*"],
+  "include": ["lib/**/*", "tests/**/*"],
   "exclude": ["node_modules", "dist"]
 }

@@ -2,24 +2,23 @@ import fs from "fs-extra";
 import path from "path";
 import axios from "axios";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { convertHtmlToText } from "./simpleHtmlToText.js";
+import { convertHtmlToText } from "./simpleHtmlToText";
 import {
   type ArticleLink,
   DOMAIN_MAPPING,
   DELAY_BETWEEN_DOWNLOADS,
   verboseLog,
-  getProjectDataDir,
   getProjectRootDir,
   getDomainDisplayName,
   loadStatuteLibraryConfig,
   getLibraryForUrl,
-} from "./extractionConfig.js";
+} from "./extractionConfig";
 import {
   type ISpreadsheetParser,
   DefaultSpreadsheetParser,
   getEntityPrefix,
   getStateCode,
-} from "./spreadsheetParser.js";
+} from "./spreadsheetParser";
 import {
   logToFile,
   delay,
@@ -40,13 +39,15 @@ import {
   getGradeColor,
   hasBinaryData,
   getPrimarySource,
-} from "./extractionUtils.js";
+} from "./extractionUtils";
 import { PDFParse } from "pdf-parse";
 import { text } from "stream/consumers";
 import { Ruleset, Domain, Entity, Realm } from "@civillyengaged/ordinizer-core";
 import { IStorage, getDefaultStorage } from "@civillyengaged/ordinizer-servercore";
 
 // ─── Per-entity download loop ────────────────────────────────────────────────
+
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 export async function downloadEntitySources(
   storage: IStorage,
@@ -232,9 +233,11 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
   );
 
   // Create municipality directory for ruleset only
+  const storage = getDefaultStorage(realm.id);
+  const realmDir = path.join(storage.getDataDir(), realm.datapath);
+  
   const municipalityDirPath = path.join(
-    getProjectDataDir(),
-    realm.datapath,
+    realmDir,
     domainDir,
     `${sp.getEntityPrefix()}${cleanName}`
   );
@@ -269,8 +272,7 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
 
   // Check if we need to download the actual state statute to shared state folder
   const stateDir = path.join(
-    getProjectDataDir(),
-    realm.datapath,
+    realmDir,
     domainDir,
     `${sp.getEntityPrefix()}State`
   );
@@ -369,10 +371,10 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
   return downloadCount;
 }
 
-export async function checkIfValidUrl(url: string): Promise<boolean> {
+export async function checkIfValidUrl(storage: IStorage, url: string): Promise<boolean> {
     if (url && url.trim() !== "" && url.toLowerCase() !== "n/a") {
     // TODO: move this call to a higher level function
-    const config = await loadStatuteLibraryConfig();
+    const config = await loadStatuteLibraryConfig(storage);
     const library = getLibraryForUrl(url, config);
     if (library && !library.download) {
       console.log(
@@ -408,151 +410,65 @@ export async function checkMetadataAndDownloadSources(
     noDownloadMode: boolean,
   },
   downloadCount: number
-) {
-  // Regular municipality - create full directory structure
-  const entity = territory + "-" + entityName + (entityType ? `-${entityType}` : "");
-
-  // console.log(`  Creating directory: ${dirPath}`);
-  // await fs.ensureDir(dirPath);
-  // const filePath = path.join(dirPath, "statute.txt");
-  // const htmlPath = path.join(dirPath, "statute.html");
-  // const pdfPath = path.join(dirPath, "statute.pdf");
-  // const metadataPath = path.join(dirPath, "ruleset.json");
-
-      // Check if URL is from a supported library first
+): Promise<void> {
+  const entityId = territory + "-" + entityName + (entityType ? `-${entityType}` : "");
   const { noDeleteMode, forceMode, reloadMode, noDownloadMode } = options;
 
-      // Handle cases where no URL is determined (blank cell)
-  if (await checkIfValidUrl(url) === false) 
+  if (!(await checkIfValidUrl(storage, url))) return;
+
+  let ruleset = await storage.getRulesetOrCreate(domain, entityId);
+  let updateReason = getRulesetUpdateReason(ruleset, url, forceMode, reloadMode);
+
+  if (!updateReason && !noDownloadMode) {
+    console.log(`  ${domain}: File exists, is recent, and URL unchanged - skipping`);
     return;
+  }
+  if (updateReason) console.log(`  ${domain}: ${updateReason}`);
 
-  let downloadedTooLongAgo = false;
-  let shouldUpdateDueToUrlChange = false;
-
-  let ruleset = await storage.getRulesetOrCreate(domain, realm.id);
-  if (url.trim() === "" || url.toLowerCase() === "n/a") {
-
-    if (ruleset) {
-      const primarySource = getPrimarySource(ruleset);
-      if (primarySource) {
-
-        const lastDownloadedAt = primarySource.downloadedAt;
-        // check days since update 
-        if (lastDownloadedAt) {
-          const daysSinceUpdate = (Date.now() - new Date(lastDownloadedAt).getTime()) / (1000 * 60 * 60 * 24);
-          downloadedTooLongAgo = daysSinceUpdate > 30;
-        }
-
-        const primarySourceUrl = primarySource.sourceUrl;
-        // TODO - clear ruleset and save? under what conditions?
-
-        // Compare determined URL with existing ruleset
-        shouldUpdateDueToUrlChange = ( primarySourceUrl != null && primarySourceUrl !== url);
-
-      // TODO Check if ruleset.json is missing and create it if statute.txt exists
-
-      //  TODO Check if file already exists and is recent, or if ruleset indicates retroactive creation
-      }
-    } else {
-      // TODO get domainName
-
-      ruleset = {
-        entityId: entity,
-        domainId: domain,
-        domain: domain,
-        metadataCreated: new Date().toISOString(),
-        stateCodeApplies: false,
-        sources: [],
-      };
-      const primarySource = getPrimarySource(ruleset);
-      primarySource.sourceUrl = url;
-    }
-    // Check all conditions for when to download/update
-    if (
-      !shouldUpdateDueToUrlChange &&
-      !forceMode &&
-      !reloadMode &&
-      !noDownloadMode &&
-      !downloadedTooLongAgo
-    ) {
-      console.log(
-        `  ${domain}: File exists, is recent, and URL unchanged - skipping`,
-      );
-      return;
-    }
-
-    if (shouldUpdateDueToUrlChange && reloadMode) {
-      console.log(`  ${domain}: Updating due to reload mode - regenerating from source`);
-    } else if (shouldUpdateDueToUrlChange) {
-      console.log(`  ${domain}: Updating due to URL change`);
-    } else if (forceMode) {
-      console.log(
-        `  ${domain}: Force mode enabled, redownloading existing file`,
-      );
-    } else if (reloadMode) {
-      console.log(`  ${domain}: Reload mode enabled, redownloading from source`);
-    } else {
-      console.log(`  ${domain}: File is older than 30 days, updating`);
-    }
-  } else if (shouldUpdateDueToUrlChange) {
-    console.log(
-      `  ${domain}: Creating new statute file with determined URL`,
-    );
+  if (noDownloadMode) {
+    // Optionally validate or clean up here using helpers
+    logToFile(`Skipping download for ${entityName}/${domain} due to --nodownload mode`);
+    // validateOrCleanupStatute(storage, ruleset, entityName, entityType, domain, noDeleteMode);
+    return;
   }
 
-      // Skip download if noDownloadMode is enabled
-      if (noDownloadMode) {
-        console.log(
-          `  ${domain}: Skipping download (--nodownload mode), validating existing files`,
-        );
-        logToFile(
-          `Skipping download for ${entityName}/${domain} due to --nodownload mode`,
-        );
+  if (downloadCount > 0) await delay(DELAY_BETWEEN_DOWNLOADS);
 
-        // TODO - review this
-      //   // Validate existing statute file if it exists
-      //   if (await fs.pathExists(filePath)) {
-      //     const validation = await validateEntityRelevance(
-      //       filePath,
-      //       entityName,
-      //       entityType,
-      //       domain,
-      //     );
-      //     if (!validation.isValid) {
-      //       if (noDeleteMode) {
-      //         console.log(
-      //           `🚫  Validation failed for ${entityName} (${domain}): ${validation.reason} [--nodelete mode: file preserved]`,
-      //         );
-      //         logToFile(
-      //           `❌ Validation failed for ${entityName} (${domain}): ${validation.reason} [--nodelete mode: file preserved]`,
-      //         );
-      //       } else {
-      //         await cleanupInvalidStatute(
-      //           dirPath,
-      //           entityName,
-      //           domain,
-      //           validation.reason || "Unknown validation error",
-      //         );
-      //       }
-      //     }
+  await downloadAndProcessSource(realm.id, domain, entityId, url);
+  await storage.saveRuleset(ruleset);
+}
       //   } else {
       //     console.log(`  ${domain}: No existing statute file to validate`);
+function getRulesetUpdateReason(ruleset: any, url: string, forceMode: boolean, reloadMode: boolean): string | null {
+  if (!ruleset) return "No ruleset found, creating new.";
+  const primarySource = getPrimarySource(ruleset);
+  if (!primarySource) return "No primary source in ruleset.";
+  const lastDownloadedAt = primarySource.downloadedAt;
+  let downloadedTooLongAgo = false;
+  if (lastDownloadedAt) {
+    const daysSinceUpdate = (Date.now() - new Date(lastDownloadedAt).getTime()) / (1000 * 60 * 60 * 24);
+    downloadedTooLongAgo = daysSinceUpdate > 30;
+  }
+  const primarySourceUrl = primarySource.sourceUrl;
+  const shouldUpdateDueToUrlChange = (primarySourceUrl != null && primarySourceUrl !== url);
+  if (shouldUpdateDueToUrlChange && reloadMode) return "Updating due to reload mode - regenerating from source";
+  if (shouldUpdateDueToUrlChange) return "Updating due to URL change";
+  if (forceMode) return "Force mode enabled, redownloading existing file";
+  if (reloadMode) return "Reload mode enabled, redownloading from source";
+  if (downloadedTooLongAgo) return "File is older than 30 days, updating";
+  return null;
+}
       //     logToFile(
       //       `No existing statute file to validate for ${entityName}/${domain}`,
+// function validateOrCleanupStatute(storage: IStorage, ruleset: any, entityName: string, entityType: string, domain: string, noDeleteMode: boolean) {
+//   // ...migrate legacy validation/cleanup logic here...
+// }
       //     );
       //   }
       //   continue;
       // }
 
-      // Add delay between downloads to be respectful
-      if (downloadCount > 0) {
-        console.log(`  Waiting ${DELAY_BETWEEN_DOWNLOADS / 1000} seconds...`);
-        await delay(DELAY_BETWEEN_DOWNLOADS);
-      }
-
-      await downloadAndProcessSource(realm.id, domain, entity, url);
-    }
-}
+// ...existing code...
 
 export async function downloadAndProcessSource(realmId: string, domainId: string, entityId: string, url?: string) {
   const storage = getDefaultStorage(realmId);
@@ -705,43 +621,15 @@ async function stitchArticlesAndGenerateContent(articles: ArticleLink[], sourceU
 
 // TODO: refactor this to reuse the other downloaders
 export async function processUndownloadedSources(
-  entityDir: string, 
-  ruleset: Ruleset,
+  entityDir: string,
+  ruleset: any,
   entityName: string,
   realmType?: string
 ): Promise<boolean> {
-  // Try to restore sources from legacy fields if sources array is empty
+  // Refactored: restore sources from legacy if needed, use modular helpers
   if (!ruleset.sources || ruleset.sources.length === 0) {
-    console.log(`  🔄 Attempting to restore sources from legacy fields for ${entityName}`);
-    
-    // Try to extract URLs from originalCellValue or sourceUrls
-    const urlsToRestore: string[] = [];
-    
-    if (ruleset.originalCellValue && typeof ruleset.originalCellValue === 'string') {
-      // Extract URLs from originalCellValue - look for http/https patterns
-      const urlMatches = ruleset.originalCellValue.match(/https?:\/\/[^\s\],;"]+/g);
-      if (urlMatches) {
-        urlsToRestore.push(...urlMatches);
-      }
-    }
-    
-    // TODO fix these to new datastructure
-    // if (ruleset.sourceUrls && Array.isArray(ruleset.sourceUrls)) {
-    //   urlsToRestore.push(...ruleset.sourceUrls.filter(url => typeof url === 'string' && url.startsWith('http')));
-    // }
-    
-    if (urlsToRestore.length > 0) {
-      console.log(`  🔗 Found ${urlsToRestore.length} URLs to restore: ${urlsToRestore.join(', ')}`);
-      
-      // Create sources from discovered URLs
-      ruleset.sources = urlsToRestore.map((url, index) => ({
-        sourceUrl: url,
-        type: realmType === "policy" ? "policy" : "statute", // Use actual realm type
-        title: `${entityName} ${ruleset.domain} Document${urlsToRestore.length > 1 ? ` ${index + 1}` : ''}`,
-      }));
-      
-      console.log(`  ✅ Restored ${ruleset.sources.length} sources for processing`);
-    } else {
+    restoreLegacySources(ruleset, entityName, realmType);
+    if (!ruleset.sources || ruleset.sources.length === 0) {
       console.log(`  ⏭️  No sources or legacy URLs found for ${entityName}`);
       return false;
     }
@@ -751,137 +639,101 @@ export async function processUndownloadedSources(
 
   for (let i = 0; i < ruleset.sources.length; i++) {
     const source = ruleset.sources[i];
-    
-    // Skip sources that have already been downloaded
-    if (source.downloadedAt) {
-      continue;
-    }
-
+    if (source.downloadedAt) continue;
     console.log(`  📥 Downloading unprocessed source ${i + 1}/${ruleset.sources.length}: ${source.sourceUrl}`);
-    
     try {
-      // Get content type to determine if PDF or HTML with safe fallback
-      let contentType = "text/html";
-      try {
-        contentType = await getContentTypeFromUrl(source.sourceUrl);
-      } catch (error: any) {
-        console.log(`    ⚠️  Content type detection failed, using URL-based detection: ${error.message}`);
-        contentType = source.sourceUrl.toLowerCase().endsWith('.pdf') ? "application/pdf" : "text/html";
-      }
-      
-      // Download the content with size limits
-      const response = await axios.get(source.sourceUrl, {
-        timeout: 30000,
-        maxContentLength: 10 * 1024 * 1024, // 10MB limit
-        responseType: 'arraybuffer', // Always use arraybuffer to handle both PDF and HTML safely
-        headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; Ordinizer/1.0; +http://ordinizer.example.com)",
-        },
-      });
-
-      // Enhanced PDF detection after content is downloaded
-      const isPdf = isContentPdf(response.data, contentType, source.sourceUrl, source.type);
-
-      let textContent = "";
-      
-      // Create unique filenames based on source type to prevent overwrites
+      const { textContent, title } = await downloadAndExtractSourceContent(source, entityDir, entityName, ruleset.domain, realmType);
+      // Save text file with unique name
       const baseFileName = source.type || "statute";
-      
-      // Count how many sources of this type we've seen so far
-      const sameTypeCount = ruleset.sources.slice(0, i).filter(s => s.type === source.type).length;
+      const sameTypeCount = ruleset.sources.slice(0, i).filter((s: any) => s.type === source.type).length;
       const sourceIndex = sameTypeCount === 0 ? "" : `_${sameTypeCount + 1}`;
       const fileName = `${baseFileName}${sourceIndex}`;
-      
-      if (isPdf) {
-        // Save PDF file with unique name
-        const pdfPath = path.join(entityDir, `${fileName}.pdf`);
-        textContent = await getTextFromPdfFile(pdfPath);
-      } else {
-        // Handle HTML content
-        const htmlContent = Buffer.from(response.data).toString('utf-8');
-        
-        // Clean HTML by removing STYLE and SCRIPT elements
-        const virtualConsole = new VirtualConsole();
-        virtualConsole.forwardTo(console,  { jsdomErrors: "none" });
-        const dom = new JSDOM(htmlContent, { virtualConsole });
-        const document = dom.window.document;
-        const elementsToRemove = document.querySelectorAll("script, style");
-        elementsToRemove.forEach((element) => element.remove());
-        const cleanedHtml = dom.serialize();
-        
-        // Save HTML file with unique name
-        const htmlFilePath = path.join(entityDir, `${fileName}.html`);
-        await fs.writeFile(htmlFilePath, cleanedHtml, 'utf-8');
-        console.log(`    💾 Saved HTML: ${fileName}.html`);
-        
-        // Convert HTML to text using cleaned HTML
-        textContent = convertHtmlToText(cleanedHtml);
-        
-        // Extract title if not already set
-        if (!source.title || source.title === "Unknown Document" || source.title === "Document") {
-          const titleElement = document.title || 
-                              document.querySelector('h1')?.textContent?.trim() ||
-                              document.querySelector('h2')?.textContent?.trim();
-          if (titleElement) {
-            source.title = titleElement.substring(0, 100);
-          }
-        }
-      }
-      
-      // Save text file with unique name
       const txtPath = path.join(entityDir, `${fileName}.txt`);
       await fs.writeFile(txtPath, textContent, 'utf-8');
-      console.log(`    📝 Saved text: ${fileName}.txt (${textContent.length} characters)`);
-      
-      // Extract title if not already set
-      let title = source.title;
-      if (!title || title === "Unknown Document" || title === "Document") {
-        if (isPdf) {
-          title = `${entityName} ${source.type === "policy" ? "Policy" : "Ordinance"} (PDF)`;
-        } else {
-          // Fallback title for HTML if not extracted during processing
-          title = `${entityName} ${source.type === "policy" ? "Policy" : "Ordinance"}`;
-        }
-      }
-      
-      // Update source with download information and file paths
       source.downloadedAt = new Date().toISOString();
-      source.contentLength = textContent.length; // Character count for consistency
+      source.contentLength = textContent.length;
       source.title = title;
-      // TODO - fix this
-      // source.filePaths = {
-      //   html: isPdf ? undefined : `${fileName}.html`,
-      //   pdf: isPdf ? `${fileName}.pdf` : undefined,
-      //   txt: `${fileName}.txt`
-      // };
-      
       console.log(`    ✅ Updated source: ${title} (${textContent.length} chars)`);
       downloadedAny = true;
-      
-      // Add delay between downloads to be respectful
       await delay(DELAY_BETWEEN_DOWNLOADS);
-      
     } catch (error: any) {
       console.error(`    ❌ Failed to download ${source.sourceUrl}: ${error.message}`);
-      
-      // Add delay even after failures to avoid hammering hosts
       await delay(1000);
-      
-      // Don't mark failed downloads as downloaded - skip this source
       console.log(`    ⏭️  Skipping failed source, will retry on next run`);
     }
   }
-  
-  // If we downloaded any sources, persist the updated ruleset
   if (downloadedAny) {
-    const metadataPath = path.join(entityDir, "ruleset.json");
-    // await writeMetadata(metadataPath, ruleset);
-    console.log(`  💾 Updated ruleset with ${ruleset.sources.filter(s => s.downloadedAt).length} processed sources`);
+    // Optionally persist ruleset using storage API
+    // await storage.saveRuleset(ruleset);
+    console.log(`  💾 Updated ruleset with ${ruleset.sources.filter((s: any) => s.downloadedAt).length} processed sources`);
   }
-  
   return downloadedAny;
 }
+function restoreLegacySources(ruleset: any, entityName: string, realmType?: string) {
+  if (!ruleset.originalCellValue || typeof ruleset.originalCellValue !== 'string') return;
+  const urlMatches = ruleset.originalCellValue.match(/https?:\/\/[\S\],;"']+/g);
+  if (urlMatches && urlMatches.length > 0) {
+    ruleset.sources = urlMatches.map((url: string, index: number) => ({
+      sourceUrl: url,
+      type: realmType === "policy" ? "policy" : "statute",
+      title: `${entityName} ${ruleset.domain} Document${urlMatches.length > 1 ? ` ${index + 1}` : ''}`,
+    }));
+    console.log(`  ✅ Restored ${ruleset.sources.length} sources for processing`);
+  }
+}
 
+async function downloadAndExtractSourceContent(source: any, entityDir: string, entityName: string, domain: string, realmType?: string) {
+  let contentType = "text/html";
+  try {
+    contentType = await getContentTypeFromUrl(source.sourceUrl);
+  } catch (error: any) {
+    contentType = source.sourceUrl.toLowerCase().endsWith('.pdf') ? "application/pdf" : "text/html";
+  }
+  const response = await axios.get(source.sourceUrl, {
+    timeout: 30000,
+    maxContentLength: 10 * 1024 * 1024,
+    responseType: 'arraybuffer',
+    headers: {
+      "User-Agent": USER_AGENT,
+    },
+  });
+  const isPdf = isContentPdf(response.data, contentType, source.sourceUrl, source.type);
+  let textContent = "";
+  let title = source.title;
+  if (isPdf) {
+    // Save PDF file with unique name
+    const baseFileName = source.type || "statute";
+    const pdfPath = path.join(entityDir, `${baseFileName}.pdf`);
+    await fs.writeFile(pdfPath, response.data);
+    textContent = await getTextFromPdfFile(pdfPath);
+    if (!title || title === "Unknown Document" || title === "Document") {
+      title = `${entityName} ${source.type === "policy" ? "Policy" : "Ordinance"} (PDF)`;
+    }
+  } else {
+    const htmlContent = Buffer.from(response.data).toString('utf-8');
+    const virtualConsole = new VirtualConsole();
+    virtualConsole.forwardTo(console,  { jsdomErrors: "none" });
+    const dom = new JSDOM(htmlContent, { virtualConsole });
+    const document = dom.window.document;
+    const elementsToRemove = document.querySelectorAll("script, style");
+    elementsToRemove.forEach((element) => element.remove());
+    const cleanedHtml = dom.serialize();
+    const htmlFilePath = path.join(entityDir, `${source.type || "statute"}.html`);
+    await fs.writeFile(htmlFilePath, cleanedHtml, 'utf-8');
+    textContent = convertHtmlToText(cleanedHtml);
+    if (!title || title === "Unknown Document" || title === "Document") {
+      const titleElement = document.title || 
+        document.querySelector('h1')?.textContent?.trim() ||
+        document.querySelector('h2')?.textContent?.trim();
+      if (titleElement) {
+        title = titleElement.substring(0, 100);
+      } else {
+        title = `${entityName} ${source.type === "policy" ? "Policy" : "Ordinance"}`;
+      }
+    }
+  }
+  return { textContent, title };
+}
 // ─── Create missing ruleset files ──────────────────────────────────────────
 
 // export async function createMissingMetadataFiles(realm: Realm, reloadMode: boolean = false, entitiesToInclude?: Set<string>): Promise<void> {
@@ -1085,7 +937,9 @@ export async function generateSummaryFile(realm: Realm): Promise<void> {
     `\n📊 Generating ${realm.id}-summary.json summary...`,
   );
 
-  const dataDir = path.join(getProjectDataDir(), realm.datapath);
+  const storage = getDefaultStorage(realm.id);
+
+  const dataDir = path.join(storage.getDataDir(), realm.datapath);
   const summaryPath = path.join(
     dataDir,
     `${realm.id}-summary.json`,
@@ -1288,7 +1142,8 @@ export async function createDirectoryStructureFromJSON(
   
   const filePath = path.join(getProjectRootDir(), realm.dataSource.path);
   const jsonData = await fs.readJson(filePath);
-  const dataDir = path.join(getProjectDataDir(), realm.datapath);
+  const storage = getDefaultStorage(realm.id);
+  const dataDir = path.join(storage.getDataDir(), realm.datapath);
   
   let processedCount = 0;
   let directoryCount = 0;
@@ -1381,7 +1236,7 @@ export async function createDirectoryStructureFromJSON(
             timeout: 30000,
             responseType: 'arraybuffer', // Handle both HTML and PDF
             headers: {
-              'User-Agent': 'Mozilla/5.0 (compatible; EntityCrawler/1.0)'
+              'User-Agent': USER_AGENT,
             }
           });
           

@@ -2,19 +2,19 @@ import fs from "fs-extra";
 import path from "path";
 import axios from "axios";
 import { PDFParse } from 'pdf-parse';
-import { JSDOM, VirtualConsole } from "jsdom";
+import { JSDOM } from "jsdom";
 import { convertHtmlToText } from "./simpleHtmlToText.js";
 import {
  type ArticleLink,
   type StatuteLibraryConfig,
   DELAY_BETWEEN_DOWNLOADS,
   verboseLog,
-  getProjectDataDir,
   getProjectRootDir,
   loadStatuteLibraryConfig,
   getLibraryForUrl,
 } from "./extractionConfig.js";
 import { Ruleset, RulesetSource } from "@civillyengaged/ordinizer-core";
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -70,7 +70,7 @@ export function getPrimarySource(ruleset: Ruleset): RulesetSource {
   if (!ruleset.sources) 
     ruleset.sources = [];
   
-  if (ruleset.sources.length = 0) {
+  if (ruleset.sources.length === 0) {
     ruleset.sources.push({
       sourceUrl: ""
     });
@@ -164,6 +164,12 @@ export async function ensurePdfParseCompatibility(): Promise<void> {
   }
 }
 
+/**
+ * solid standalone function
+ * @param extractedText 
+ * @param formTitle 
+ * @returns 
+ */
 export function interpretTextAsForm(extractedText: string, formTitle: string): string {
   const lines = extractedText.split('\n').map(line => line.trim()).filter(line => line.length > 0);
   
@@ -241,27 +247,6 @@ export function interpretTextAsForm(extractedText: string, formTitle: string): s
 
 // ─── HTTP / content detection ────────────────────────────────────────────────
 
-
-/**
- * Check filesource if known URL source
- */
-export async function checkUrlSource(url: string): Promise<boolean> {
-    const config = await loadStatuteLibraryConfig();
-    const library = getLibraryForUrl(url, config);
-
-    if (library && !library.download) {
-      console.log(
-        `⚠️  Download not supported for ${library.name}: ${library.notes}`,
-      );
-      logToFile(
-        `Skipped download from ${library.name}: ${url} - ${library.notes}`,
-      );
-      return false;
-    }
-    console.log(`Downloading: ${url}${library ? ` (${library.name})` : ""}`);
-    return true;
-}
-
 /**
  * Downloads content from URL and saves to the given filepath
  * @param url 
@@ -300,16 +285,12 @@ export async function downloadFromUrl(url: string): Promise<string> {
  */
 export async function downloadFromUrlAnyType(url: string, saveToPath?: string, filename?: string): Promise<{ data: string, isPdf: boolean }> {
     try {
-    if (!await checkUrlSource(url)) {
-      throw new Error(`Download not supported for this URL: ${url}`);
-    }
 
     verboseLog(`HTTP GET Request:`, {
       url: url,
       timeout: 30000,
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": USER_AGENT
       },
     });
 
@@ -318,8 +299,7 @@ export async function downloadFromUrlAnyType(url: string, saveToPath?: string, f
       maxRedirects: 5,
       responseType: 'arraybuffer',
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; Ordinizer/1.0; +http://nyseeds.org/ordinizer)",
+        "User-Agent": USER_AGENT,
       },
     });
 
@@ -357,7 +337,7 @@ export async function getContentTypeFromUrl(url: string): Promise<string> {
     const response = await axios.head(url, {
       timeout: 10000,
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; Ordinizer/1.0; +http://ordinizer.example.com)",
+        "User-Agent": USER_AGENT,
       },
     });
     return response.headers["content-type"]?.toString() || "text/html";

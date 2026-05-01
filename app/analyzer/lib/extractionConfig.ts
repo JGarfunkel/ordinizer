@@ -2,6 +2,7 @@ import fs from "fs-extra";
 import path from "path";
 import { type Realm } from "@civillyengaged/ordinizer-core";
 import { loadSpreadsheetExtractionProperties } from "./spreadsheetParser.js";
+import { IStorage, getDefaultStorage } from "@civillyengaged/ordinizer-servercore";
 
 export type { Realm };
 export { parseName, parseGradeFromCell, getEntityPrefix, getStateCode, getColumnMap } from "./spreadsheetParser.js";
@@ -124,11 +125,6 @@ export function verboseLog(...args: any[]): void {
 
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
-export function getProjectDataDir(): string {
-  const scriptDir = path.dirname(new URL(import.meta.url).pathname);
-  return path.join(scriptDir, "..", "data");
-}
-
 export function getProjectRootDir(): string {
   // return the path that we are running the script from
   return process.cwd();
@@ -161,20 +157,15 @@ let statuteLibraryConfig: StatuteLibraryConfig | null = null;
 let realmsConfig: RealmsConfig | null = null;
 
 // TODO: move to storage
-export async function loadStatuteLibraryConfig(): Promise<StatuteLibraryConfig> {
+export async function loadStatuteLibraryConfig(storage: IStorage): Promise<StatuteLibraryConfig> {
   if (statuteLibraryConfig) {
     return statuteLibraryConfig;
   }
 
   try {
     // Use consistent path resolution relative to script directory
-    const scriptDir = path.dirname(new URL(import.meta.url).pathname);
-    const configPath = path.join(
-      scriptDir,
-      "..",
-      "data",
-      "statute-libraries.json",
-    );
+    const dataDir = await storage.getDataDir();
+    const configPath = path.join(      dataDir,      "statute-libraries.json");
     statuteLibraryConfig = await fs.readJson(configPath);
     return statuteLibraryConfig!;
   } catch (error: any) {
@@ -199,22 +190,6 @@ export async function loadStatuteLibraryConfig(): Promise<StatuteLibraryConfig> 
       lastUpdated: new Date().toISOString(),
     };
   }
-}
-
-export async function loadRealmsConfig(): Promise<RealmsConfig> {
-  if (realmsConfig) {
-    return realmsConfig;
-  }
-
-const scriptDir = path.dirname(new URL(import.meta.url).pathname);
-const configPath = path.join(
-    scriptDir,
-    "..",
-    "data",
-    "realms.json",
-);
-realmsConfig = await fs.readJson(configPath);
-return realmsConfig!;
 }
 
 export function getLibraryForUrl(

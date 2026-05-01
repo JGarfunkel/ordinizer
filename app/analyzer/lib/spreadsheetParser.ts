@@ -42,9 +42,11 @@ export interface SpreadsheetExtractionProperties {
 
 let spreadsheetExtractionProperties: SpreadsheetExtractionProperties | null = null;
 
+// unused currently
 export function loadSpreadsheetExtractionProperties(): SpreadsheetExtractionProperties {
   if (spreadsheetExtractionProperties) return spreadsheetExtractionProperties;
-  const confPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "spreadsheetExtractionProperties.json");
+  //TODO - change path to be able to get from the local data directory
+  const confPath = path.join("data", "spreadsheetExtractionProperties.json");
   spreadsheetExtractionProperties = fs.readJsonSync(confPath);
   return spreadsheetExtractionProperties!;
 }

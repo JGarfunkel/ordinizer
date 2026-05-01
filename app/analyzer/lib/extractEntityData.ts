@@ -67,13 +67,13 @@ async function processSpreadsheetData(
   entitiesToInclude?: Set<string>,
   reloadMode: boolean = false,
 ): Promise<void> {
+  const storage = await getStorage(realm.id);
   // Phase 1: Parse CSV/API data, create entity files and domains.json
   const { rows, headers, columnMap, domainsToProcess } =
-    await parseAndWriteEntities(csvData, realm, targetDomain, entitiesToInclude, verbose);
+    await parseAndWriteEntities(storage, csvData, realm, targetDomain, entitiesToInclude, verbose);
 
   if (domainsToProcess.length === 0) return;
 
-  const storage = await getStorage(realm.id);
 
   // Phase 2: Per-entity download loop
   await downloadEntitySources(storage, rows, realm, hyperlinkData, headers, columnMap, domainsToProcess, {

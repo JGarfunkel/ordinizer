@@ -8,7 +8,6 @@ import {
   DOMAINS,
   DOMAIN_MAPPING,
   verboseLog,
-  getProjectDataDir,
   getDomainDisplayName,
   getDomainDescription,
   getDomainColumnIndex,
@@ -19,9 +18,7 @@ import {
   DefaultSpreadsheetParser,
   getEntityPrefix,
 } from "./spreadsheetParser.js";
-import {
-  getSourceUrl,
-} from "./extractionUtils.js";
+import { IStorage, getDefaultStorage } from "@civillyengaged/ordinizer-servercore";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -327,9 +324,12 @@ export async function extractGoogleSheetsAsCsv(sheetUrl: string): Promise<string
 
 // ─── Filesystem-based entity discovery ───────────────────────────────────────
 
+
+
 export async function getExistingMunicipalitiesFromFilesystem(realm: Realm, targetDomain?: string, entitiesToInclude?: Set<string>, verbose: boolean = false): Promise<any[][]> {
   const rows: any[][] = [];
-  const realmDir = path.join(getProjectDataDir(), realm.datapath);
+  const storage = getDefaultStorage(realm.id);
+  const realmDir = path.join(storage.getDataDir(), realm.datapath);
   
   console.log(`📂 Scanning filesystem for existing entities in: ${realmDir}`);
   if (targetDomain) {
@@ -508,6 +508,7 @@ export function convertSchoolDistrictJsonToCsv(jsonData: any[]): string {
 // ─── Entity parsing & file writing ──────────────────────────────────────────
 
 export async function parseAndWriteEntities(
+  storage: IStorage,
   csvData: string,
   realm: Realm,
   targetDomain?: string,
@@ -678,11 +679,11 @@ export async function parseAndWriteEntities(
       return true;
     });
 
-  await fs.ensureDir("data");
+  
 
   // Only update entity file if no entity filter was applied
   if (!entitiesToInclude) {
-    const entityFilePath = path.join(getProjectDataDir(), realm.datapath, realm.entityFile);
+    const entityFilePath = path.join(storage.getDataDir(), realm.datapath, realm.entityFile);
     await fs.ensureDir(path.dirname(entityFilePath));
     
     await fs.writeJson(
@@ -705,7 +706,7 @@ export async function parseAndWriteEntities(
   }
 
   // Create domains.json (if not exists) in realm-specific directory
-  const domainsFile = path.join(getProjectDataDir(), realm.datapath, "domains.json");
+  const domainsFile = path.join(storage.getDataDir(), realm.datapath, "domains.json");
   if (!(await fs.pathExists(domainsFile))) {
     const domains = realm.domains.map((domain) => {
       return {

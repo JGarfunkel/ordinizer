@@ -304,8 +304,3 @@ async function main() {
 		process.exit(1);
 	}
 }
-
-// Run main function if this script is executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-	main().catch(console.error);
-}

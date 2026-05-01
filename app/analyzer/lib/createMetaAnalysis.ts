@@ -555,16 +555,4 @@ async function generateMetaAnalysis(st: IStorage, domainId: string = 'trees', re
   console.log(`🎯 ${modelMunicipalities.length} model municipalities found`);
 }
 
-// CLI interface
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const domainId = process.argv[2] || 'trees';
-  const storage = getDefaultStorage('data');
-  generateMetaAnalysis(storage, domainId)
-    .then(() => process.exit(0))
-    .catch(error => {
-      console.error('Meta-analysis generation failed:', error);
-      process.exit(1);
-    });
-}
-
 export { generateMetaAnalysis, findBestPracticesForQuestion };
