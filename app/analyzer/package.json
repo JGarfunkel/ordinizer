@@ -2,8 +2,15 @@
   "name": "@civillyengaged/ordinizer-analyzer",
   "version": "1.0.1",
   "description": "Analysis and offline data preparation tools for Ordinizer.",
-  "main": "lib/createMetaAnalysis.ts",
-  "types": "lib/createMetaAnalysis.d.ts",
+  "type": "module",
+  "main": "lib/index.ts",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./lib/index.ts",
+      "types": "./lib/index.d.ts"
+    }
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -11,7 +18,9 @@
     "build": "tsc",
     "meta-analysis": "tsx lib/createMetaAnalysis.ts",
     "smoke-test": "tsx lib/smokeTest.ts",
-    "test": "npx --node-options=--experimental-vm-modules jest"
+    "test": "jest -c jest.config.cjs",
+    "test:unit": "jest -c jest.config.cjs",
+    "test:integration": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js -c jest.integration.config.cjs"
   },
   "dependencies": {
     "@civillyengaged/ordinizer-core": "1.0.1",
@@ -19,16 +28,21 @@
     "@types/jsdom": "^28.0.1",
     "@types/node": "^20.19.39",
     "axios": "^1.15.1",
+    "dotenv": "^17.4.2",
     "fs-extra": "^11.1.1",
     "googleapis": "^171.4.0",
     "jsdom": "^28.0.1",
-    "openai": "^4.0.0",
+    "openai": "^6.35.0",
     "pdf-parse": "^2.4.5",
     "ts-node": "^10.9.2"
   },
   "devDependencies": {
-    "@types/jest": "^29.5.0",
+    "@babel/core": "^7.28.0",
+    "@babel/preset-env": "^7.28.0",
+    "@types/jest": "^29.5.14",
+    "babel-jest": "^29.7.0",
     "jest": "^29.7.0",
+    "jest-environment-jsdom": "^30.3.0",
     "ts-jest": "^29.4.0",
     "tsx": "^4.7.0"
   }

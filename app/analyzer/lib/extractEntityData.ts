@@ -8,7 +8,6 @@ dotenv.config();
 import {
   verboseLog,
   setVerboseMode,
-  getSpreadsheetUrl,
   findSimilarFlags,
 } from "./extractionConfig.js";
 

@@ -45,8 +45,7 @@ let spreadsheetExtractionProperties: SpreadsheetExtractionProperties | null = nu
 // unused currently
 export function loadSpreadsheetExtractionProperties(): SpreadsheetExtractionProperties {
   if (spreadsheetExtractionProperties) return spreadsheetExtractionProperties;
-  //TODO - change path to be able to get from the local data directory
-  const confPath = path.join("data", "spreadsheetExtractionProperties.json");
+  const confPath = path.join( "spreadsheetExtractionProperties.json");
   spreadsheetExtractionProperties = fs.readJsonSync(confPath);
   return spreadsheetExtractionProperties!;
 }

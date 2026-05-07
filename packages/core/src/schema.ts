@@ -70,7 +70,7 @@ export interface EntityDomain {
  * It can be used for more granular analysis and scoring, 
  * especially when the scoring engine needs to evaluate specific rules or regulations rather than just high-level questions.
  * These provide the metadata; the content is referenced by the Url and in the vector database, but not stored directly.
- * These are currently stored in metdadat.json
+ * These are currently stored in metadata.json
  */
 export interface Ruleset {
   id?: string;
@@ -79,9 +79,10 @@ export interface Ruleset {
   entityId: string;
   domain: string;
   domainId: string;
+  homePage: string; // URL of the main page for the entity/domain
   originalCellValue?: string; // The original text from the source file (for reference)
   metadataCreated: string; // Timestamp when the ruleset metadata was created
-  stateCodeApplies: boolean; // legacy field indicating if state code applies, used for scoring adjustments
+  stateCodeApplies?: boolean; // legacy field indicating if state code applies, used for scoring adjustments
   statuteNumber?: string; // Optional statute number (e.g., "Section 5.2")
   sources: RulesetSource[]; // Array of sources that inform this ruleset, with metadata about each source
   isArticleBased?: boolean; // Indicates if the ruleset is based on multiple articles/sections
@@ -91,8 +92,9 @@ export interface RulesetSource {
   downloadedAt?: string; // Timestamp when the source was downloaded
   sourceUrl: string; // URL of the source document
   title?: string; // Optional title of the source document
-  type?: 'statute' | 'policy' | 'form' | 'guidance'; // Type of the governance source
+  type?: 'statute' | 'policy' | 'form' | 'guidance' | 'information' | 'homepage' | 'other'; // Type of the governance source
   contentLength?: number; // Optional length of the source content (e.g., word count)
+  downloadedFilename?: string; // Relative path to the downloaded artifact (HTML or TXT file)
 }
 
 export interface DomainWithQuestions {
@@ -107,7 +109,7 @@ export interface DomainWithQuestions {
 export interface Question {
   id: number; // Changed: used as number in storage.ts
   domainId: string;
-  title: string;
+  title?: string;
   question: string; // TODO consider changing to something else to avoid question.question redundancy
   category?: string;
   order: string;
@@ -381,6 +383,12 @@ export interface Entity {
   state?: string;
   country?: string;
   singular?: string; // URL-friendly singular form (backward compatibility)
+  mainUrl?: string; // URL to the entity's page 
+  governingUrl?: string;
+  governingBody?: string; // name of the board specific to the realm
+  hubUrl?: string; // URL to independent information hub
+  authorityUrl?: string;
+  parentId: string | null; // For hierarchical relationships (e.g., village within town
 }
 
 export interface Domain {
@@ -389,6 +397,10 @@ export interface Domain {
   displayName: string;
   description?: string;
   questions?: Question[];
+  questionPromptScope?: string;
+  questionPromptRequirements?: string[];
+  keywords?: string[];
+  type: 'statutory' | 'policy' | 'general';
 }
 
 export interface AnalyzedQuestion {

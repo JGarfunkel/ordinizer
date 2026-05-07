@@ -1,11 +1,10 @@
 import fs from "fs-extra";
 import path from "path";
-import axios from "axios";
+import axios, { AxiosResponse } from "axios";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { convertHtmlToText } from "./simpleHtmlToText";
+import { convertHtmlToText, convertHtmlToTextSimple } from "./simpleHtmlToText";
 import {
   type ArticleLink,
-  DOMAIN_MAPPING,
   DELAY_BETWEEN_DOWNLOADS,
   verboseLog,
   getProjectRootDir,
@@ -109,8 +108,8 @@ export async function downloadEntitySources(
 
     for (const domain of domainsToProcess) {
       // Get domain data from the corresponding column using ordinance headers
-      const mappedDomain = DOMAIN_MAPPING[domain] || domain;
-      const columnIndex = columnMap[mappedDomain];
+      // const mappedDomain = DOMAIN_MAPPING[domain] || domain;
+      const columnIndex = columnMap[domain];
       const cellText = row[columnIndex]; // Direct access to cell text
       let url = "";
       let grade: string | null = null;
@@ -121,7 +120,7 @@ export async function downloadEntitySources(
       const allRowIndex = rows.indexOf(row); // Index in full rows array
       const dataRowIndex = allRowIndex - 1; // Exclude header row at rows[0]
       const rowIndex = dataRowIndex + 2; // Adjusted mapping to fix off-by-one error
-      const colIndex = columnMap[mappedDomain];
+      const colIndex = columnMap[domain];
 
       if (
         colIndex !== undefined &&
@@ -234,7 +233,7 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
 
   // Create municipality directory for ruleset only
   const storage = getDefaultStorage(realm.id);
-  const realmDir = path.join(storage.getDataDir(), realm.datapath);
+  const realmDir = path.join(storage.getRealmDir(), realm.datapath);
   
   const municipalityDirPath = path.join(
     realmDir,
@@ -318,7 +317,7 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
           console.log(
             `  ⚠️  Article stitching resulted in insufficient content, falling back to main page`
           );
-          plainTextContent = convertHtmlToText(content);
+          plainTextContent = convertHtmlToTextSimple(content);
           sourceUrls = undefined;
         } else {
           console.log(
@@ -327,7 +326,7 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
         }
       } else {
         // Regular single-page processing
-        plainTextContent = convertHtmlToText(content);
+        plainTextContent = convertHtmlToTextSimple(content);
       }
 
       await fs.writeFile(stateFilePath, plainTextContent, "utf-8");
@@ -372,9 +371,12 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
 }
 
 export async function checkIfValidUrl(storage: IStorage, url: string): Promise<boolean> {
-    if (url && url.trim() !== "" && url.toLowerCase() !== "n/a") {
+  if (url && url.trim() !== "" && url.toLowerCase() !== "n/a") {
     // TODO: move this call to a higher level function
     const config = await loadStatuteLibraryConfig(storage);
+    if (!config) {
+      return true;
+    }
     const library = getLibraryForUrl(url, config);
     if (library && !library.download) {
       console.log(
@@ -607,7 +609,7 @@ async function stitchArticlesAndGenerateContent(articles: ArticleLink[], sourceU
     console.log(
       `  ⚠️  Article stitching resulted in insufficient content, falling back to main page`
     );
-    plainTextContent = convertHtmlToText(content);
+    plainTextContent = convertHtmlToTextSimple(content);
     sourceUrls = undefined;
   } else {
     console.log(
@@ -682,253 +684,70 @@ function restoreLegacySources(ruleset: any, entityName: string, realmType?: stri
   }
 }
 
+/**
+ * @see downloadFromUrlAndSave
+ */
 async function downloadAndExtractSourceContent(source: any, entityDir: string, entityName: string, domain: string, realmType?: string) {
-  let contentType = "text/html";
-  try {
-    contentType = await getContentTypeFromUrl(source.sourceUrl);
-  } catch (error: any) {
-    contentType = source.sourceUrl.toLowerCase().endsWith('.pdf') ? "application/pdf" : "text/html";
-  }
-  const response = await axios.get(source.sourceUrl, {
-    timeout: 30000,
-    maxContentLength: 10 * 1024 * 1024,
-    responseType: 'arraybuffer',
-    headers: {
-      "User-Agent": USER_AGENT,
-    },
-  });
-  const isPdf = isContentPdf(response.data, contentType, source.sourceUrl, source.type);
+  const sourceType = source.type || "statute";
+  const downloadedFilepath = await downloadFromUrlAndSave(source.sourceUrl, entityDir, sourceType);
+  const isPdf = downloadedFilepath.endsWith(".pdf");
   let textContent = "";
   let title = source.title;
+
   if (isPdf) {
-    // Save PDF file with unique name
-    const baseFileName = source.type || "statute";
-    const pdfPath = path.join(entityDir, `${baseFileName}.pdf`);
-    await fs.writeFile(pdfPath, response.data);
-    textContent = await getTextFromPdfFile(pdfPath);
+    textContent = await getTextFromPdfFile(downloadedFilepath);
     if (!title || title === "Unknown Document" || title === "Document") {
-      title = `${entityName} ${source.type === "policy" ? "Policy" : "Ordinance"} (PDF)`;
+      title = `${entityName} ${sourceType} (PDF)`;
     }
   } else {
-    const htmlContent = Buffer.from(response.data).toString('utf-8');
+    const htmlContent = await fs.readFile(downloadedFilepath, "utf-8");
+    ({ textContent, title } = await extractAndCleanHtmlContent(
+      htmlContent));
+    if (title === "") {
+      title = `${entityName} ${sourceType}`;
+    }
+
+  }
+  // TODO - this doesn't really need to return the textContent or the title...
+  return { textContent, title };
+}
+
+
+export async function extractAndCleanHtmlContent(htmlContent: string) 
+  : Promise<{ textContent: string, title: string }>   {
+    // Pre-strip script/style blocks so cleaning works even when JSDOM is mocked in tests.
+    const htmlWithoutExecutableContent = htmlContent
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+      .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ");
+
     const virtualConsole = new VirtualConsole();
-    virtualConsole.forwardTo(console,  { jsdomErrors: "none" });
-    const dom = new JSDOM(htmlContent, { virtualConsole });
+    virtualConsole.forwardTo(console, { jsdomErrors: "none" });
+    const dom = new JSDOM(htmlWithoutExecutableContent, { virtualConsole });
     const document = dom.window.document;
     const elementsToRemove = document.querySelectorAll("script, style");
     elementsToRemove.forEach((element) => element.remove());
     const cleanedHtml = dom.serialize();
-    const htmlFilePath = path.join(entityDir, `${source.type || "statute"}.html`);
-    await fs.writeFile(htmlFilePath, cleanedHtml, 'utf-8');
-    textContent = convertHtmlToText(cleanedHtml);
-    if (!title || title === "Unknown Document" || title === "Document") {
-      const titleElement = document.title || 
-        document.querySelector('h1')?.textContent?.trim() ||
-        document.querySelector('h2')?.textContent?.trim();
-      if (titleElement) {
-        title = titleElement.substring(0, 100);
-      } else {
-        title = `${entityName} ${source.type === "policy" ? "Policy" : "Ordinance"}`;
-      }
+    let textContent = convertHtmlToTextSimple(cleanedHtml);
+    if (!textContent || textContent.trim().length === 0) {
+      // Fallback for pages where DOM-based extraction unexpectedly yields empty output.
+      textContent = htmlWithoutExecutableContent
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
     }
-  }
+    let title = "";
+    const titleElement = document.title ||
+      document.querySelector('h1')?.textContent?.trim() ||
+      document.querySelector('h2')?.textContent?.trim();
+    if (titleElement) {
+      title = titleElement.substring(0, 100);
+    } else {
+      title = "";
+    }
   return { textContent, title };
 }
-// ─── Create missing ruleset files ──────────────────────────────────────────
 
-// export async function createMissingMetadataFiles(realm: Realm, reloadMode: boolean = false, entitiesToInclude?: Set<string>): Promise<void> {
-//   if (reloadMode) {
-//     console.log("\n🔄 Reload mode: Regenerating ruleset.json files from source data...");
-//   } else {
-//     console.log("\n🔍 Checking for missing ruleset.json files...");
-//   }
-
-//   const realmDir = path.join(getProjectDataDir(), realm.datapath);
-//   if (!(await fs.pathExists(realmDir))) {
-//     console.log(`  No realm directory found: ${realmDir}`);
-//     return;
-//   }
-//   const domains = await fs.readdir(realmDir);
-//   let missingCount = 0;
-//   let createdCount = 0;
-
-//   for (const domain of domains) {
-//     const domainPath = path.join(realmDir, domain);
-//     const stat = await fs.stat(domainPath);
-
-//     if (
-//       !stat.isDirectory() ||
-//       domain.endsWith(".json") ||
-//       domain.endsWith(".csv")
-//     )
-//       continue;
-
-//     const municipalities = await fs.readdir(domainPath);
-
-//     for (const municipality of municipalities) {
-//       if (!municipality.startsWith(getEntityPrefix())) continue;
-
-//       // Apply municipality filter if specified
-//       if (entitiesToInclude) {
-//         const prefixRegex = new RegExp(`^${getEntityPrefix()}(.+)-(.+)$`);
-//         const match = municipality.match(prefixRegex);
-//         const municipalityName = match ? match[1].replace(/([A-Z])/g, " $1").trim() : municipality;
-//         const shouldProcess = entitiesToInclude.has(municipalityName.toLowerCase());
-//         if (!shouldProcess) {
-//           continue; // Skip this municipality
-//         }
-//       }
-
-//       const municipalityPath = path.join(domainPath, municipality);
-//       const municipalityStat = await fs.stat(municipalityPath);
-
-//       if (!municipalityStat.isDirectory()) continue;
-
-//       const statutePath = path.join(municipalityPath, "statute.txt");
-//       const metadataPath = path.join(municipalityPath, "ruleset.json");
-
-//       if (
-//         (await fs.pathExists(statutePath)) &&
-//         (!(await fs.pathExists(metadataPath)) || reloadMode)
-//       ) {
-//         if (reloadMode && (await fs.pathExists(metadataPath))) {
-//           console.log(`  Reload mode: Regenerating ruleset.json: ${domain}/${municipality}`);
-//         } else {
-//           missingCount++;
-//           console.log(`  Missing ruleset.json: ${domain}/${municipality}`);
-//         }
-
-//         try {
-//           const statuteStats = await fs.stat(statutePath);
-//           const statuteContent = await fs.readFile(statutePath, "utf-8");
-
-//           // Parse municipality name and type from directory name
-//           const prefixRegex = new RegExp(`^${getEntityPrefix()}(.+)-(.+)$`);
-//           const match = municipality.match(prefixRegex);
-//           const municipalityName = match
-//             ? match[1].replace(/([A-Z])/g, " $1").trim()
-//             : municipality;
-//           const municipalityType = match ? match[2] : "Unknown";
-
-//           // Check if ruleset already exists and preserve existing data if present
-//           let existingMetadata: Ruleset | null = null;
-//           let existingOriginalCellValue = "Not available";
-//           if (await fs.pathExists(metadataPath)) {
-//             try {
-//               existingMetadata = await readMetadata(metadataPath);
-//               if (existingMetadata?.originalCellValue) {
-//                 existingOriginalCellValue = existingMetadata.originalCellValue;
-//               }
-//             } catch (error: any) {
-//               // Ignore errors reading existing ruleset
-//             }
-//           }
-
-//           const downloadedAt = statuteStats.birthtime?.toISOString() || statuteStats.mtime.toISOString();
-          
-//           // Extract statute number and title from HTML if available
-//           let statuteTitle = domain.charAt(0).toUpperCase() + domain.slice(1).replace(/-/g, " ");
-//           const htmlPath = path.join(municipalityPath, "statute.html");
-//           if (await fs.pathExists(htmlPath)) {
-//             const statuteInfo = await extractStatuteInfo(htmlPath);
-//             if (statuteInfo.title) {
-//               statuteTitle = statuteInfo.title;
-//               console.log(`    📋 Extracted statute info: ${statuteInfo.number || "N/A"} - ${statuteInfo.title || "N/A"}`);
-//             }
-//           }
-
-//           // Start with existing ruleset if available, otherwise create base ruleset
-//           const ruleset: Ruleset = existingMetadata || {
-//             municipality: municipalityName,
-//             municipalityType: municipalityType,
-//             domain: domain.charAt(0).toUpperCase() + domain.slice(1).replace(/-/g, " "),
-//             domainId: domain,
-//             sources: [],
-//             originalCellValue: existingOriginalCellValue,
-//             stateCodeApplies: false,
-//             metadataCreated: new Date().toISOString(),
-//             note: "Ruleset created retroactively for existing statute file",
-//           };
-
-//           // Always update basic fields from current processing
-//           ruleset.municipality = municipalityName;
-//           ruleset.municipalityType = municipalityType;
-//           ruleset.domain = domain.charAt(0).toUpperCase() + domain.slice(1).replace(/-/g, " ");
-//           ruleset.domainId = domain;
-//           ruleset.originalCellValue = existingOriginalCellValue;
-
-//           // Add or update the primary statute source using merge strategy
-//           if ((existingMetadata && getSourceUrl(existingMetadata)) || existingOriginalCellValue !== "Not available") {
-//             const sourceUrl = (existingMetadata && getSourceUrl(existingMetadata)) || existingOriginalCellValue;
-//             if (sourceUrl && sourceUrl !== "Not available" && sourceUrl !== "Unknown") {
-//               addOrUpdateSource(ruleset, {
-//                 downloadedAt: (existingMetadata && getDownloadedAt(existingMetadata)) || downloadedAt,
-//                 contentLength: statuteContent.length,
-//                 sourceUrl: sourceUrl,
-//                 title: statuteTitle,
-//                 type: "statute"
-//               });
-//             }
-//           } else {
-//             // Create placeholder source if no URL is available
-//             if (!ruleset.sources || ruleset.sources.length === 0) {
-//               ruleset.sources = [{
-//                 downloadedAt,
-//                 contentLength: statuteContent.length,
-//                 sourceUrl: "Unknown",
-//                 title: statuteTitle,
-//                 type: "statute"
-//               }];
-//             }
-//           }
-
-//           // Add statute number if extracted
-//           if (await fs.pathExists(htmlPath)) {
-//             const statuteInfo = await extractStatuteInfo(htmlPath);
-//             if (statuteInfo.number) ruleset.statuteNumber = statuteInfo.number;
-//           }
-
-//           await writeMetadata(metadataPath, ruleset);
-          
-//           // Process any additional sources (form, guidance, etc.) after saving ruleset
-//           try {
-//             const processedSources = await processUndownloadedSources(municipalityPath, ruleset, `${municipalityName} - ${municipalityType}`, realm.ruleType);
-//             if (processedSources) {
-//               console.log(`    🔄 Processed additional sources for ${municipalityName} - ${municipalityType}`);
-//             }
-//           } catch (error: any) {
-//             console.warn(`    ⚠️  Failed to process additional sources for ${municipalityName} - ${municipalityType}: ${error.message}`);
-//           }
-          
-//           createdCount++;
-//           if (reloadMode) {
-//             console.log(
-//               `    ✅ Regenerated ruleset.json for ${municipalityName} - ${municipalityType}`,
-//             );
-//           } else {
-//             console.log(
-//               `    ✅ Created ruleset.json for ${municipalityName} - ${municipalityType}`,
-//             );
-//           }
-//         } catch (error: any) {
-//           console.error(
-//             `    ❌ Failed to create ruleset for ${municipality}: ${error.message}`,
-//           );
-//         }
-//       }
-//     }
-//   }
-
-//   if (reloadMode) {
-//     console.log(
-//       `\n📊 Reload complete: ${createdCount} ruleset files regenerated from source data`,
-//     );
-//   } else {
-//     console.log(
-//       `\n📊 Ruleset check complete: ${missingCount} missing files found, ${createdCount} created`,
-//     );
-//   }
-// }
 
 // ─── Generate summary file ──────────────────────────────────────────────────
 
@@ -939,7 +758,7 @@ export async function generateSummaryFile(realm: Realm): Promise<void> {
 
   const storage = getDefaultStorage(realm.id);
 
-  const dataDir = path.join(storage.getDataDir(), realm.datapath);
+  const dataDir = path.join(storage.getRealmDir(), realm.datapath);
   const summaryPath = path.join(
     dataDir,
     `${realm.id}-summary.json`,
@@ -1143,7 +962,7 @@ export async function createDirectoryStructureFromJSON(
   const filePath = path.join(getProjectRootDir(), realm.dataSource.path);
   const jsonData = await fs.readJson(filePath);
   const storage = getDefaultStorage(realm.id);
-  const dataDir = path.join(storage.getDataDir(), realm.datapath);
+  const dataDir = path.join(storage.getRealmDir(), realm.datapath);
   
   let processedCount = 0;
   let directoryCount = 0;
@@ -1286,7 +1105,7 @@ export async function createDirectoryStructureFromJSON(
             console.log(`        💾 Saved HTML: ${policyHtmlPath}`);
             
             // Convert HTML to text focusing on semantic content
-            textContent = convertHtmlToText(htmlContent);
+            textContent = convertHtmlToTextSimple(htmlContent);
           }
           
           // Save as policy.txt (for both HTML and PDF)
@@ -1317,7 +1136,7 @@ export async function createDirectoryStructureFromJSON(
         //   }
           
           // Save updated ruleset
-          await writeMetadata(path.join(domainDir, "ruleset.json"), ruleset);
+          storage.saveRuleset(ruleset);
           
           // Process any undownloaded sources in the ruleset  
           await processUndownloadedSources(domainDir, ruleset, districtName, realm.ruleType);
@@ -1342,7 +1161,7 @@ export async function createDirectoryStructureFromJSON(
               title: "Failed Download",
               type: "statute"
             });
-            await writeMetadata(path.join(domainDir, "ruleset.json"), ruleset);
+            storage.saveRuleset(ruleset);
             
             logToFile(`HTTP ${httpCode} error downloading ${sourceUrl}`);
           } else {
@@ -1363,392 +1182,3 @@ export async function createDirectoryStructureFromJSON(
   console.log(`✅ Created directories for ${processedCount} districts across ${directoryCount} domain/entity combinations`);
 }
 
-/**
- * @deprecated
- */
-async function writeMetadata(path: string, content: string) {
-
-}
-
-// ─── Cleanup mode ────────────────────────────────────────────────────────────
-
-// TODO - review this and refactor
-export async function runCleanupMode(
-  realm: Realm,
-  targetDomain?: string,
-  entityFilter?: string,
-  forceMode: boolean = false,
-): Promise<void> {
-  console.log("\n🧹 Starting cleanup mode...");
-  logToFile("Starting cleanup mode");
-
-//   const realmDir = path.join(getProjectDataDir(), realm.datapath);
-//   if (!(await fs.pathExists(realmDir))) {
-//     console.log(`  No realm directory found: ${realmDir}`);
-//     return;
-//   }
-//   const domains = await fs.readdir(realmDir);
-
-//   let processedCount = 0;
-//   let updatedCount = 0;
-//   let binaryDetectedCount = 0;
-
-//   // Filter domains if specified
-//   const domainsToProcess = targetDomain
-//     ? domains.filter((d) => d.toLowerCase() === targetDomain.toLowerCase())
-//     : domains;
-
-//   if (targetDomain && domainsToProcess.length === 0) {
-//     console.error(
-//       `Domain "${targetDomain}" not found. Available domains: ${domains.join(", ")}`,
-//     );
-//     return;
-//   }
-
-//   for (const domain of domainsToProcess) {
-//     const domainPath = path.join(realmDir, domain);
-//     const stat = await fs.stat(domainPath);
-
-//     if (
-//       !stat.isDirectory() ||
-//       domain.endsWith(".json") ||
-//       domain.endsWith(".csv")
-//     )
-//       continue;
-
-//     console.log(`\n📁 Processing domain: ${domain}`);
-
-//     const municipalities = await fs.readdir(domainPath);
-
-//     for (const municipality of municipalities) {
-//       if (!municipality.startsWith(getEntityPrefix())) continue;
-
-//       // Apply municipality filter if specified
-//       if (entityFilter) {
-//         const filters = entityFilter
-//           .split(",")
-//           .map((f) => f.trim().toLowerCase());
-//         const municipalityName = municipality.toLowerCase();
-//         const found = filters.some((filter) =>
-//           municipalityName.includes(filter),
-//         );
-//         if (!found) continue;
-//       }
-
-//       const municipalityPath = path.join(domainPath, municipality);
-//       const municipalityStat = await fs.stat(municipalityPath);
-
-//       if (!municipalityStat.isDirectory()) continue;
-
-//       const metadataPath = path.join(municipalityPath, "ruleset.json");
-//       const statutePath = path.join(municipalityPath, "statute.txt");
-//       const statuteHtmlPath = path.join(municipalityPath, "statute.html");
-//       const statutePdfPath = path.join(municipalityPath, "statute.pdf");
-
-//       console.log(`  🔍 Checking ${municipality}...`);
-//       processedCount++;
-
-//       try {
-//         // Step 1: Check ruleset.json
-//         if (!(await fs.pathExists(metadataPath))) {
-//           console.log(`    ⏭️  Skipping - no ruleset.json`);
-//           continue;
-//         }
-
-//         const ruleset = await fs.readJson(metadataPath);
-
-//         // Step 1: Handle referencesStateCode==true directories
-//         if (ruleset.referencesStateCode === true) {
-//           console.log(`    🏛️  State code reference detected - cleaning up local files`);
-//           let removedFiles = 0;
-          
-//           // Remove all statute.* files
-//           const statuteFiles = ['statute.txt', 'statute.html', 'statute.pdf'];
-//           for (const fileName of statuteFiles) {
-//             const fPath = path.join(municipalityPath, fileName);
-//             if (await fs.pathExists(fPath)) {
-//               await fs.remove(fPath);
-//               console.log(`    🗑️  Removed ${fileName}`);
-//               removedFiles++;
-//               logToFile(`Removed ${municipality}/${domain}: ${fileName} (referencesStateCode=true)`);
-//             }
-//           }
-          
-//           // Remove analysis.json file
-//           const analysisPath = path.join(municipalityPath, 'analysis.json');
-//           if (await fs.pathExists(analysisPath)) {
-//             await fs.remove(analysisPath);
-//             console.log(`    🗑️  Removed analysis.json`);
-//             removedFiles++;
-//             logToFile(`Removed ${municipality}/${domain}: analysis.json (referencesStateCode=true)`);
-//           }
-          
-//           // Remove backup files (statute.*.backup-*)
-//           const files = await fs.readdir(municipalityPath);
-//           const backupFiles = files.filter(file => file.includes('.backup-'));
-//           for (const backupFile of backupFiles) {
-//             const backupPath = path.join(municipalityPath, backupFile);
-//             await fs.remove(backupPath);
-//             console.log(`    🗑️  Removed ${backupFile}`);
-//             removedFiles++;
-//             logToFile(`Removed ${municipality}/${domain}: ${backupFile} (referencesStateCode=true)`);
-//           }
-          
-//           if (removedFiles > 0) {
-//             console.log(`    ✅ Cleaned up ${removedFiles} files for state code reference`);
-//             updatedCount++;
-//           } else {
-//             console.log(`    ✅ Already clean (no statute/analysis files found)`);
-//           }
-//           continue;
-//         }
-
-//         // Step 2: Skip if no sourceUrl or points to state code
-//         const sourceUrl = getSourceUrl(ruleset);
-//         if (!sourceUrl) {
-//           console.log(`    ⏭️  Skipping - no sourceUrl`);
-//           continue;
-//         }
-
-//         if (
-//           ruleset.stateCodeApplies === true ||
-//           sourceUrl.toLowerCase().includes("state") ||
-//           sourceUrl.toLowerCase().includes("nys.gov")
-//         ) {
-//           console.log(`    ⏭️  Skipping - uses state code`);
-//           continue;
-//         }
-
-//         // Step 3: Re-download if original file doesn't exist (HTML or PDF)
-//         const hasHtml = await fs.pathExists(statuteHtmlPath);
-//         const hasPdf = await fs.pathExists(statutePdfPath);
-        
-//         if (!hasHtml && !hasPdf) {
-//           console.log(`    📥 Re-downloading statute file...`);
-//           try {
-//             const contentType = await getContentTypeFromUrl(sourceUrl);
-//             // Initial detection - will be enhanced after download
-//             let isPdf = contentType.includes('application/pdf') || sourceUrl.toLowerCase().endsWith('.pdf');
-            
-//             const response = await axios.get(sourceUrl, {
-//               timeout: 30000,
-//               responseType: isPdf ? 'arraybuffer' : 'text',
-//               headers: {
-//                 "User-Agent": "Mozilla/5.0 (compatible; OrdinanceCrawler/1.0)",
-//               },
-//             });
-
-//             if (isPdf) {
-//               await fs.writeFile(statutePdfPath, Buffer.from(response.data));
-//               logToFile(`Re-downloaded ${municipality}/${domain}: statute.pdf`);
-//             } else {
-//               await fs.writeFile(statuteHtmlPath, response.data);
-//               logToFile(`Re-downloaded ${municipality}/${domain}: statute.html`);
-//             }
-//           } catch (downloadError: any) {
-//             console.log(
-//               `    ❌ Failed to re-download: ${downloadError.message}`,
-//             );
-//             logToFile(
-//               `Failed to re-download ${municipality}/${domain}: ${downloadError.message}`,
-//             );
-//             continue;
-//           }
-//         }
-
-//         // Step 4: Generate new statute.txt from original file (HTML or PDF)
-//         let newText: string = "";
-        
-//         if (await fs.pathExists(statutePdfPath)) {
-//           // Handle PDF files
-//             newText = await getTextFromPdfFile(statutePdfPath);
-//         } else if (await fs.pathExists(statuteHtmlPath)) {
-//           // Handle HTML files
-//           const htmlContent = await fs.readFile(statuteHtmlPath, "utf-8");
-
-//           // Extract anchor from source URL if present for targeted section extraction
-//           const primarySourceUrl = getSourceUrl(ruleset) || "";
-//           const anchorMatch = primarySourceUrl.match(/#(.+)$/);
-//           const anchorId = anchorMatch ? anchorMatch[1] : undefined;
-
-//           // Use conversion with anchor support for targeted extraction
-//           newText = convertHtmlToText(htmlContent, anchorId);
-//         } else {
-//           console.log(`    ⚠️  No source file found (neither HTML nor PDF)`);
-//           continue;
-//         }
-
-//         if (newText) {
-//           // Extract anchor info for logging
-//           const primarySourceUrl = getSourceUrl(ruleset) || "";
-//           const anchorMatch = primarySourceUrl.match(/#(.+)$/);
-//           const anchorId = anchorMatch ? anchorMatch[1] : undefined;
-
-//           if (forceMode) {
-//             // Force mode: just compare with existing and update if different
-//             const existingText = (await fs.pathExists(statutePath))
-//               ? await fs.readFile(statutePath, "utf-8")
-//               : "";
-
-//             if (newText !== existingText) {
-//               await fs.writeFile(statutePath, newText, "utf-8");
-//               console.log(
-//                 `    🔄 Force update: statute.txt regenerated (${existingText.length} -> ${newText.length} chars)${anchorId ? ` [anchor: #${anchorId}]` : ""}`,
-//               );
-
-//               // Update timestamp and content length in ruleset
-//               const primarySrcUrl = getSourceUrl(ruleset) || "";
-//               ruleset.lastCleanup = new Date().toISOString();
-//               addOrUpdateSource(ruleset, {
-//                 downloadedAt: getDownloadedAt(ruleset) || new Date().toISOString(),
-//                 contentLength: newText.length,
-//                 sourceUrl: primarySrcUrl,
-//                 title: getSourceTitle(ruleset),
-//                 type: "statute"
-//               });
-//               await writeMetadata(metadataPath, ruleset);
-
-//               // Process any undownloaded sources in the ruleset
-//               await processUndownloadedSources(municipalityPath, ruleset, municipality, realm.ruleType);
-
-//               updatedCount++;
-//               logToFile(
-//                 `Force updated ${municipality}/${domain}: statute.txt regenerated from HTML`,
-//               );
-//             } else {
-//               console.log(`    ✅ No changes needed (force mode)`);
-//             }
-//           } else {
-//             // Normal cleanup mode: use temporary file and compare
-//             const newStatutePath = path.join(
-//               municipalityPath,
-//               "statute_new.txt",
-//             );
-//             await fs.writeFile(newStatutePath, newText);
-
-//             if (anchorId) {
-//               console.log(`    🎯 Using anchor-based extraction: #${anchorId}`);
-//             }
-
-//             // Step 5: Compare with existing statute.txt (normal cleanup mode)
-//             let shouldUpdate = false;
-//             let diffReason = "";
-
-//             if (!(await fs.pathExists(statutePath))) {
-//               shouldUpdate = true;
-//               diffReason = "no existing statute.txt";
-//             } else {
-//               const existingText = await fs.readFile(statutePath, "utf-8");
-//               if (newText !== existingText) {
-//                 shouldUpdate = true;
-//                 diffReason = `content differs (${existingText.length} -> ${newText.length} chars)`;
-//               }
-//             }
-
-//             if (shouldUpdate) {
-//               console.log(`    🔄 Updating statute.txt - ${diffReason}`);
-
-//               // Replace statute.txt
-//               await fs.move(newStatutePath, statutePath, { overwrite: true });
-
-//               // Update timestamps and content length through sources
-//               const currentTime = new Date().toISOString();
-//               const primarySrcUrl = getSourceUrl(ruleset) || "";
-//               addOrUpdateSource(ruleset, {
-//                 downloadedAt: currentTime,
-//                 contentLength: newText.length,
-//                 sourceUrl: primarySrcUrl,
-//                 title: getSourceTitle(ruleset),
-//                 type: "statute"
-//               });
-//               ruleset.lastCleanup = currentTime;
-//               await writeMetadata(metadataPath, ruleset);
-
-//               // Process any undownloaded sources in the ruleset
-//               await processUndownloadedSources(municipalityPath, ruleset, municipality, realm.ruleType);
-
-//               updatedCount++;
-//               logToFile(
-//                 `Updated ${municipality}/${domain}: statute.txt (${diffReason})`,
-//               );
-//             } else {
-//               console.log(`    ✅ No changes needed`);
-//               await fs.remove(newStatutePath);
-//             }
-//           }
-//         } else {
-//           console.log(`    ⚠️  No valid text content extracted`);
-//         }
-
-//         // Step 4: Delete statute.txt.backup* files
-//         const backupFiles = await fs.readdir(municipalityPath);
-//         const backupFilesToDelete = backupFiles.filter((file) =>
-//           file.startsWith("statute.txt.backup"),
-//         );
-
-//         if (backupFilesToDelete.length > 0) {
-//           console.log(
-//             `    🗑️  Removing ${backupFilesToDelete.length} backup files`,
-//           );
-//           for (const backupFile of backupFilesToDelete) {
-//             await fs.remove(path.join(municipalityPath, backupFile));
-//             logToFile(
-//               `Deleted backup: ${municipality}/${domain}/${backupFile}`,
-//             );
-//           }
-//         }
-
-//         // Step 5: Extract statute number and title
-//         if (await fs.pathExists(statuteHtmlPath)) {
-//           const statuteInfo = await extractStatuteInfo(statuteHtmlPath);
-//           if (statuteInfo.number || statuteInfo.title) {
-//             console.log(
-//               `    📋 Statute info: ${statuteInfo.number || "N/A"} - ${statuteInfo.title || "N/A"}`,
-//             );
-
-//             // Update ruleset with statute info
-//             if (statuteInfo.number) ruleset.statuteNumber = statuteInfo.number;
-//             if (statuteInfo.title) ruleset.statuteTitle = statuteInfo.title;
-
-//             await fs.writeJson(metadataPath, ruleset, { spaces: 2 });
-//             logToFile(
-//               `Extracted statute info for ${municipality}/${domain}: ${statuteInfo.number} - ${statuteInfo.title}`,
-//             );
-//           }
-//         }
-
-//         // Step 6: Analyze statute.txt for binary data
-//         if (await fs.pathExists(statutePath)) {
-//           const statuteContent = await fs.readFile(statutePath, "utf-8");
-//           if (hasBinaryData(statuteContent)) {
-//             console.log(`    ⚠️  BINARY DATA DETECTED in statute.txt!`);
-//             logToFile(
-//               `ERROR: Binary data detected in ${municipality}/${domain}/statute.txt`,
-//             );
-//             binaryDetectedCount++;
-//           }
-//         }
-//       } catch (error: any) {
-//         console.log(
-//           `    ❌ Error processing ${municipality}: ${error.message}`,
-//         );
-//         logToFile(
-//           `Error processing ${municipality}/${domain}: ${error.message}`,
-//         );
-//       }
-//     }
-//   }
-
-//   console.log(`\n✅ Cleanup completed!`);
-//   console.log(`   📊 Processed: ${processedCount} municipalities`);
-//   console.log(`   🔄 Updated: ${updatedCount} statute files`);
-//   if (binaryDetectedCount > 0) {
-//     console.log(
-//       `   ⚠️  Binary data detected: ${binaryDetectedCount} files (check logs)`,
-//     );
-//   }
-
-//   logToFile(
-//     `Cleanup completed - Processed: ${processedCount}, Updated: ${updatedCount}, Binary detected: ${binaryDetectedCount}`,
-//   );
-}

@@ -99,6 +99,41 @@ export class VectorService {
 	}
 
 	/**
+	 * Check whether vectors already exist for a municipality/domain pair.
+	 * Supports both current IDs (${municipalityId}-${domainId}-statute-chunk-*)
+	 * and legacy IDs (${municipalityId}-${domainId}-*).
+	 */
+	async hasIndexedDocument(
+		municipalityId: string,
+		domainId: string,
+		documentType: "statute" | "guidance" = "statute",
+	): Promise<boolean> {
+		try {
+			await this.initializeIndex();
+			const index = this.getIndex();
+
+			const currentPrefix = `${municipalityId}-${domainId}-${documentType}-chunk-`;
+			const current = await index.listPaginated({ prefix: currentPrefix });
+			if (current.vectors && current.vectors.length > 0) {
+				return true;
+			}
+
+			if (documentType === "statute") {
+				const legacyPrefix = `${municipalityId}-${domainId}-`;
+				const legacy = await index.listPaginated({ prefix: legacyPrefix });
+				if (legacy.vectors && legacy.vectors.length > 0) {
+					return true;
+				}
+			}
+
+			return false;
+		} catch (error) {
+			console.warn(`Unable to verify vector index state for ${municipalityId}/${domainId}:`, error);
+			return false;
+		}
+	}
+
+	/**
 	 * Split statute text into meaningful chunks
 	 */
 	private chunkStatuteText(text: string, municipalityId: string, domainId: string): Array<{
@@ -493,13 +528,15 @@ export class VectorService {
 	/** Chunk, embed, and upsert a document into Pinecone */
 	async indexDocumentInPinecone(
 	documentText: string,
-	municipalityId: string,
+	entityId: string,
 	domain: string,
-	index: any,
 	documentType: "statute" | "guidance" = "statute",
+	domainIds?: string[],
 	) {
+	const index = this.getIndex();
+
 	const chunks = this.chunkText(documentText, 2000);
-	console.log(`Indexing ${documentType} for ${municipalityId}-${domain}: ${chunks.length} chunks`);
+	console.log(`Indexing ${documentType} for ${entityId}-${domain}: ${chunks.length} chunks`);
 	const vectors: any[] = [];
 
 	for (let i = 0; i < chunks.length; i++) {
@@ -515,10 +552,16 @@ export class VectorService {
 		await checkRateLimit(estimateTokens(chunk));
 		const res = await this.openai.embeddings.create({ model: "text-embedding-3-small", input: chunk });
 		recordTokenUsage(res.usage?.total_tokens || estimateTokens(chunk));
+		const metadata: Record<string, any> = {
+			entityId, domainId: domain, documentType, chunkIndex: i, content: chunk,
+		};
+		if (domainIds && domainIds.length > 0) {
+			metadata.domainIds = domainIds;
+		}
 		vectors.push({
-			id: `${municipalityId}-${domain}-${documentType}-chunk-${i}`,
+			id: `${entityId}-${domain}-${documentType}-chunk-${i}`,
 			values: res.data[0].embedding,
-			metadata: { municipalityId, domainId: domain, documentType, chunkIndex: i, content: chunk },
+			metadata,
 		});
 		} catch (error) {
 		console.error(`Error embedding chunk ${i}:`, error);
@@ -526,7 +569,7 @@ export class VectorService {
 	}
 
 	if (vectors.length > 0) {
-		console.log(`Upserting ${vectors.length} vectors for ${municipalityId}-${domain}`);
+		console.log(`Upserting ${vectors.length} vectors for ${entityId}-${domain}`);
 		await index.upsert(vectors);
 		console.log(`Indexed ${vectors.length} chunks`);
 	}
@@ -537,10 +580,20 @@ export class VectorService {
 		question: string,
 		municipalityId: string,
 		domain: string,
-		index: any,
-		existingAnswersContext = "",
+		indexOrExistingAnswersContext?: any,
+		existingAnswersContextOrScoreInstructions = "",
 		scoreInstructions?: string,
 		) {
+		const hasIndexObject =
+			typeof indexOrExistingAnswersContext === "object" &&
+			indexOrExistingAnswersContext !== null &&
+			typeof indexOrExistingAnswersContext.query === "function";
+		const index = hasIndexObject ? indexOrExistingAnswersContext : this.getIndex();
+		const existingAnswersContext = hasIndexObject
+			? existingAnswersContextOrScoreInstructions
+			: (indexOrExistingAnswersContext || "");
+		const resolvedScoreInstructions = hasIndexObject ? scoreInstructions : existingAnswersContextOrScoreInstructions;
+
 		console.log(`Vector Q&A for ${municipalityId}-${domain}: "${question.substring(0, 100)}..."`);
 		try {
 			const enhanced = this.enhanceQuestionForVectorSearch(question, domain);
@@ -569,7 +622,7 @@ export class VectorService {
 			})
 			.join("\n\n");
 
-			const scoreText = scoreInstructions ? `\n\nSCORING GUIDANCE: ${scoreInstructions}` : "";
+			const scoreText = resolvedScoreInstructions ? `\n\nSCORING GUIDANCE: ${resolvedScoreInstructions}` : "";
 			const systemPrompt = `You are analyzing municipal statutes. Based ONLY on the provided statute text, answer the user's question. If not found, respond with "Not specified in the statute." Cite section numbers when available.\n\nFocus on unique information for this specific question.${scoreText}`;
 			const userPromptPrefix = `Question: ${question}\n\nRelevant statute text:\n`;
 			const available = 6000 - estimateTokens(systemPrompt) - estimateTokens(userPromptPrefix);
@@ -580,10 +633,10 @@ export class VectorService {
 			await checkRateLimit(estimateTokens(systemPrompt + userPrompt) + 1000);
 
 			const answerRes = await this.openai.chat.completions.create({
-			model: currentModel || "gpt-4o",
+			model: currentModel || "gpt-5.4-mini",
 			messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
 			temperature: 0.1,
-			max_tokens: 1000,
+			max_completion_tokens: 1000,
 			});
 			const answerTokens = answerRes.usage?.total_tokens || 1000;
 			recordTokenUsage(answerTokens);

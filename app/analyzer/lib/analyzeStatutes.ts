@@ -16,7 +16,7 @@ import { Analysis, MetaAnalysis, getDefaultStorage, getRealmsFromStorage, IStora
 } from "@civillyengaged/ordinizer-servercore";
 
 import { generateMetaAnalysis } from "./createMetaAnalysis.js";
-import { Vector } from "@pinecone-database/pinecone/dist/pinecone-generated-ts-fetch/db_data/index.js";
+import { indexEntity } from "./indexDocumentService.js";
 
 // TODO - put this into a config file or environment variable
 const GRADING_ID = process.env.GRADING_ID || "${GRADING_ID}";
@@ -34,7 +34,7 @@ async function getStorage(options: AnalyzeOptions): Promise<IStorage> {
 // Initialize clients
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-interface AnalyzeOptions {
+export interface AnalyzeOptions {
   domain?: string;
   entity?: string;
   realm?: string; // Target realm for analysis
@@ -45,7 +45,7 @@ interface AnalyzeOptions {
   setGrades?: boolean;
   useMeta?: boolean; // New: Compare against meta-analysis ideal answers
   generateMeta?: boolean; // New: Generate meta-analysis after completing analysis
-  model?: "gpt-4o-mini" | "gpt-4-turbo"; // Model selection for testing
+  model?: "gpt-5.4-mini" | "gpt-5.4" | "gpt-5.5"; // Model selection for testing
   questionId?: string; // New: Analyze only specific question ID
   skipRecent?: string; // New: Skip analysis if generated within specified time (e.g., "15m", "2h", "1d")
   generateScoreOnly?: boolean; // New: Only calculate and update normalized scores without re-analyzing
@@ -65,28 +65,6 @@ function log(message: string, ...args: any[]) {
 // Safe error message extraction
 function errMsg(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Handle reindexing when analysis is skipped but --reindex flag is used
- */
-async function handleReindexOnly(
-  entity: string,
-  domain: string,
-  vectorService: VectorService,
-  options: AnalyzeOptions = {},
-) {
-  console.log(`🔄 ${entity}: Reindexing documents in vector database...`);
-  const st = await getStorage(options);
-  const statute = await st.getDocumentText(domain, entity, options.realm);
-  if (statute) {
-    await vectorService.indexDocumentInPinecone(statute, entity, domain, "statute");
-    const additionalSources = await st.getAdditionalSources(domain, entity, options.realm);
-    if (additionalSources && additionalSources.guidance) {
-      await vectorService.indexDocumentInPinecone(additionalSources.guidance, entity, domain, "guidance");
-    }
-    console.log(`✅ ${entity}: Reindexing complete`);
-  }
 }
 
 // Add meta-analysis comparison to existing analysis
@@ -449,7 +427,7 @@ function compareQuestions(
   };
 }
 
-async function analyzeStatutes(options: AnalyzeOptions = {}) {
+export async function analyzeStatutes(options: AnalyzeOptions = {}) {
   VERBOSE = options.verbose || false;
   const vectorService = getVectorService();
   vectorService.setVerbose(VERBOSE);
@@ -755,7 +733,7 @@ async function processEntity(
       } else if (!skipRecent && ageInDays < 30) {
         console.log(`⏭️  ${entity}: Analysis is recent (${ageInDays.toFixed(1)} days old) and statute unchanged, skipping`);
         if (options.reindex) {
-          await handleReindexOnly(entity, domain, vectorService, options);
+          await indexEntity(entity, { ...options, force: true });
         }
         return false; // No OpenAI calls made
       }
@@ -961,6 +939,74 @@ async function processEntity(
     }
 
 
+interface AnalysisContent {
+  method: "direct" | "conversation" | "vector";
+  text: string;
+}
+
+/**
+ * Fetches and validates the statute text, triggers any necessary reindexing,
+ * and determines which analysis mode to use:
+ *   "direct"       — statute < 1000 words; pass full text to LLM directly
+ *   "conversation" — statute ≤ 50 000 chars; pass full text in a single LLM conversation
+ *   "vector"       — statute > 50 000 chars; query Pinecone per question
+ */
+async function prepareAnalysisContent(
+  entity: string,
+  domain: string,
+  vectorService: VectorService,
+  options: AnalyzeOptions,
+): Promise<AnalysisContent> {
+  const st = await getStorage(options);
+  const text = await st.getDocumentText(domain, entity, options.realm);
+  if (!text) {
+    throw new Error(`No document text found for ${entity} in domain ${domain}`);
+  }
+
+  if (isHtmlContent(text)) {
+    throw new Error(
+      `Statute file contains HTML content instead of plain text. File needs to be converted from HTML to text before analysis.`,
+    );
+  }
+
+  if (text.length > 5000000) {
+    throw new Error(
+      `Statute file is too large (${text.length} bytes). This may indicate a corrupted file.`,
+    );
+  }
+
+  const binaryContentRegex = /[\x00-\x08\x0E-\x1F\x7F-\x9F\u2000-\u200F\uFEFF]/;
+  if (binaryContentRegex.test(text.substring(0, 1000))) {
+    throw new Error(
+      `Statute file appears to contain binary data instead of text. File may be corrupted.`,
+    );
+  }
+
+  if (options.reindex) {
+    await indexEntity(entity, { ...options, force: true });
+  }
+
+  const wordCount = text.trim().split(/\s+/).length;
+  if (wordCount < 1000) {
+    return { method: "direct", text };
+  }
+
+  if (text.length <= 50000) {
+    return { method: "conversation", text };
+  }
+
+  // Vector mode — make sure Pinecone has vectors for this entity/domain before querying
+  if (!options.reindex) {
+    const hasStatuteVectors = await vectorService.hasIndexedDocument(entity, domain, "statute");
+    if (!hasStatuteVectors) {
+      console.log(`🔄 ${entity}: No statute vectors found for ${domain}; auto-reindexing before analysis...`);
+      await indexEntity(entity, options);
+    }
+  }
+
+  return { method: "vector", text };
+}
+
 async function generateVectorAnalysis(
   entity: string,
   domain: string,
@@ -973,68 +1019,17 @@ async function generateVectorAnalysis(
   const force = options.force || false;
   const questionId = options.questionId;
 
-  const statute = await st.getDocumentText(domain, entity, options.realm);
-  if (!statute) {
-    throw new Error(`No document text found for ${entity} in domain ${domain}`);
-  }
-  
-  // Load additional source files (guidance.txt, form.txt)
-  const additionalSources = await st.getAdditionalSources(domain, entity, options.realm);
+  const content = await prepareAnalysisContent(entity, domain, vectorService, options);
+  const statute = content.text;
 
-  // Check if the statute file contains HTML content
-  if (isHtmlContent(statute)) {
-    throw new Error(
-      `Statute file contains HTML content instead of plain text. File needs to be converted from HTML to text before analysis.`,
-    );
+  if (content.method === "direct") {
+    const wordCount = statute.trim().split(/\s+/).length;
+    console.log(`📝 ${entity}: Statute is short (${wordCount} words < 1000), using direct analysis instead of vector search`);
+    return await generateDirectAnalysis(entity, domain, metadata, questions, statute, options);
   }
 
-  // Check for corrupted or binary files
-  if (statute.length > 5000000) {
-    // 5MB limit
-    throw new Error(
-      `Statute file is too large (${statute.length} bytes). This may indicate a corrupted file.`,
-    );
-  }
-
-  // Check for binary content (non-text characters)
-  const binaryContentRegex = /[\x00-\x08\x0E-\x1F\x7F-\x9F\u2000-\u200F\uFEFF]/;
-  if (binaryContentRegex.test(statute.substring(0, 1000))) {
-    throw new Error(
-      `Statute file appears to contain binary data instead of text. File may be corrupted.`,
-    );
-  }
-
-  // Index documents in vector database if reindex is explicitly requested
-  if (options.reindex) {
-    await vectorService.indexDocumentInPinecone(statute, entity, domain, "statute");
-    
-    if (additionalSources.guidance) {
-      await vectorService.indexDocumentInPinecone(additionalSources.guidance, entity, domain, "guidance");
-    }
-  }
-
-  // Count words in the statute
   const wordCount = statute.trim().split(/\s+/).length;
-  const useDirectAnalysis = wordCount < 1000;
-
-  if (useDirectAnalysis) {
-    console.log(
-      `📝 ${entity}: Statute is short (${wordCount} words < 1000), using direct analysis instead of vector search`,
-    );
-    return await generateDirectAnalysis(
-      entity,
-      domain,
-      metadata,
-      questions,
-      statute,
-      options,
-      additionalSources,
-    );
-  } else {
-    console.log(
-      `🔍 ${entity}: Statute is long (${wordCount} words), using vector analysis`,
-    );
-  }
+  console.log(`🔍 ${entity}: Statute is long (${wordCount} words), using ${content.method} analysis`);
 
   let existingAnalysis = await st.getAnalysis(domain, entity);
 
@@ -1064,9 +1059,9 @@ async function generateVectorAnalysis(
       questionId,
     );
 
-  // Choose analysis method based on statute size
+  // Choose analysis method based on content prepared by prepareAnalysisContent
   const statuteSize = statute.length;
-  const useConversationMode = statuteSize <= 50000;
+  const useConversationMode = content.method === "conversation";
 
   // Track token usage for efficiency analysis
   let totalVectorTokens = 0;
@@ -1082,6 +1077,7 @@ async function generateVectorAnalysis(
     );
 
     const conversationStartTokens = getCurrentTokenUsage();
+    const additionalSources = await st.getAdditionalSources(domain, entity, options.realm);
 
     const questionTexts = questionsToAnalyze.map((q) => q.question);
     const municipalityDisplayName = entity
@@ -1328,6 +1324,8 @@ async function generateVectorAnalysis(
   const scores = calculateNormalizedScores(allAnswers, questions);
 
   return {
+    entityId: entity,
+    domainId: domain,
     entity: {
       id: entity,
       displayName: `${metadata.entity || "Unknown"} - ${metadata.municipalityType || "Entity"}`,
@@ -1358,7 +1356,6 @@ async function generateDirectAnalysis(
   questions: any[],
   statute: string,
   options: AnalyzeOptions = {},
-  additionalSources: { guidance?: string; form?: string } = {},
 ) {
   const st = await getStorage(options);
   const force = options.force || false;
@@ -1449,6 +1446,8 @@ async function generateDirectAnalysis(
   );
 
   const analysis = {
+    entityId: entity,
+    domainId: domain,
     entity: { id: entity, displayName: entity },
     domain: domain,
     analyzedAt: new Date().toISOString(),
@@ -1688,7 +1687,7 @@ Options:
   --generate-questions      Generate questions.json using AI if it doesn't already exist
   --skip-recent <time>      Skip analysis if generated within specified time (e.g., "15m", "2h", "1d")
   --generate-score-only     Calculate and update normalized scores for existing analysis files
-  --model <model>           AI model to use: gpt-4o, gpt-4o-mini, gpt-5, gpt-5-mini, gpt-4-turbo
+  --model <model>           AI model to use: gpt-5.4-mini, gpt-5.4, gpt-5.5
   --help, -h               Show this help message
 
 Examples:
@@ -1892,9 +1891,11 @@ async function parseArgs() {
 
 
 // Run the script
-(async () => {
-  const options = await parseArgs();
-  analyzeStatutes(options).catch(console.error);
-})();
+if (require.main === module) {
+  (async () => {
+    const options = await parseArgs();
+    analyzeStatutes(options).catch(console.error);
+  })();
+}
 
 

@@ -27,6 +27,7 @@ export interface StatuteLibrary {
   urlPatterns: string[];
   download: boolean;
   extractionSupported: boolean;
+  useCurl?: boolean;
   anchorSupported: boolean;
   notes: string;
 }
@@ -88,23 +89,24 @@ export interface ArticleLink {
 
 // ─── Domain config ───────────────────────────────────────────────────────────
 
-export function getSpreadsheetUrl(): string {
-  return loadSpreadsheetExtractionProperties().url;
-}
+// TODO - move to spreadsheet parser
+// export function getSpreadsheetUrl(): string {
+//   return loadSpreadsheetExtractionProperties().url;
+// }
 
-export function getDomains(): string[] {
-  return loadSpreadsheetExtractionProperties().domains.map((d) => d.name);
-}
+// export function getDomains(): string[] {
+//   return loadSpreadsheetExtractionProperties().domains.map((d) => d.name);
+// }
 
-/** @deprecated Use getDomains() instead */
-export const DOMAINS = getDomains();
+// /** @deprecated Use getDomains() instead */
+// export const DOMAINS = getDomains();
 
-export function getDomainMapping(): Record<string, string> {
-  return loadSpreadsheetExtractionProperties().domainMapping;
-}
+// export function getDomainMapping(): Record<string, string> {
+//   return loadSpreadsheetExtractionProperties().domainMapping;
+// }
 
-/** @deprecated Use getDomainMapping() instead */
-export const DOMAIN_MAPPING = getDomainMapping();
+// /** @deprecated Use getDomainMapping() instead */
+// export const DOMAIN_MAPPING = getDomainMapping();
 
 export const DELAY_BETWEEN_DOWNLOADS = 5000; // 5 seconds
 
@@ -157,38 +159,22 @@ let statuteLibraryConfig: StatuteLibraryConfig | null = null;
 let realmsConfig: RealmsConfig | null = null;
 
 // TODO: move to storage
-export async function loadStatuteLibraryConfig(storage: IStorage): Promise<StatuteLibraryConfig> {
+export async function loadStatuteLibraryConfig(storage: IStorage): Promise<StatuteLibraryConfig | null> {
   if (statuteLibraryConfig) {
     return statuteLibraryConfig;
   }
 
   try {
-    // Use consistent path resolution relative to script directory
+    // Statute libraries are shared above individual realm folders.
     const dataDir = await storage.getDataDir();
-    const configPath = path.join(      dataDir,      "statute-libraries.json");
-    statuteLibraryConfig = await fs.readJson(configPath);
+    const localConfigPath = path.join(dataDir, "statute-libraries.json");
+    statuteLibraryConfig = await fs.readJson(localConfigPath);
     return statuteLibraryConfig!;
   } catch (error: any) {
     console.warn(
       `Warning: Could not load statute library config: ${error.message}`,
     );
-    // Return default configuration
-    return {
-      libraries: [
-        {
-          id: "ecode360",
-          name: "eCode360",
-          baseUrl: "https://ecode360.com",
-          urlPatterns: ["ecode360.com"],
-          download: true,
-          extractionSupported: true,
-          anchorSupported: true,
-          notes: "Supports direct downloads and anchor-based extraction",
-        },
-      ],
-      defaultLibrary: "ecode360",
-      lastUpdated: new Date().toISOString(),
-    };
+    return null;
   }
 }
 

@@ -329,7 +329,7 @@ export async function extractGoogleSheetsAsCsv(sheetUrl: string): Promise<string
 export async function getExistingMunicipalitiesFromFilesystem(realm: Realm, targetDomain?: string, entitiesToInclude?: Set<string>, verbose: boolean = false): Promise<any[][]> {
   const rows: any[][] = [];
   const storage = getDefaultStorage(realm.id);
-  const realmDir = path.join(storage.getDataDir(), realm.datapath);
+  const realmDir = path.join(storage.getRealmDir(), realm.datapath);
   
   console.log(`📂 Scanning filesystem for existing entities in: ${realmDir}`);
   if (targetDomain) {
@@ -683,7 +683,7 @@ export async function parseAndWriteEntities(
 
   // Only update entity file if no entity filter was applied
   if (!entitiesToInclude) {
-    const entityFilePath = path.join(storage.getDataDir(), realm.datapath, realm.entityFile);
+    const entityFilePath = path.join(storage.getRealmDir(), realm.datapath, realm.entityFile);
     await fs.ensureDir(path.dirname(entityFilePath));
     
     await fs.writeJson(
@@ -706,7 +706,7 @@ export async function parseAndWriteEntities(
   }
 
   // Create domains.json (if not exists) in realm-specific directory
-  const domainsFile = path.join(storage.getDataDir(), realm.datapath, "domains.json");
+  const domainsFile = path.join(storage.getRealmDir(), realm.datapath, "domains.json");
   if (!(await fs.pathExists(domainsFile))) {
     const domains = realm.domains.map((domain) => {
       return {

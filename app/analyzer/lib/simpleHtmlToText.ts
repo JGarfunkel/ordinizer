@@ -3,6 +3,135 @@
 import fs from "fs/promises";
 import { JSDOM, VirtualConsole } from "jsdom";
 
+function extractStructuredText(root: Element | Document): string {
+	if (typeof (root as Element).querySelectorAll !== "function") {
+		return "";
+	}
+
+	const blocks = Array.from(
+		(root as Element).querySelectorAll("h1, h2, h3, h4, h5, h6, p, li"),
+	);
+	const segments: string[] = [];
+
+	for (const block of blocks) {
+		const raw = (block.textContent || "").replace(/\s+/g, " ").trim();
+		if (!raw) {
+			continue;
+		}
+
+		if (/^h[1-6]$/i.test(block.tagName)) {
+			segments.push(`\n${raw}\n`);
+			continue;
+		}
+
+		if (block.tagName.toLowerCase() === "li") {
+			segments.push(`- ${raw}`);
+			continue;
+		}
+
+		segments.push(raw);
+	}
+
+	return segments.join("\n\n").trim();
+}
+
+export function convertHtmlToTextSimple(html: string): string {
+	try {
+		const virtualConsole = new VirtualConsole();
+		virtualConsole.forwardTo(console, { jsdomErrors: "none" });
+		const dom = new JSDOM(html, { virtualConsole });
+		const document = dom.window.document;
+
+		document.querySelectorAll("script, style, noscript").forEach((element) => {
+			element.remove();
+		});
+
+		const root: Element | Document =
+			document.body || document.documentElement || document;
+		const blocks = Array.from(
+			(root as Element).querySelectorAll(
+				"h1, h2, h3, h4, h5, h6, p, li, blockquote, pre, td, th",
+			),
+		);
+
+		const segments: string[] = [];
+		for (const block of blocks) {
+			const raw = (block.textContent || "").replace(/\s+/g, " ").trim();
+			if (!raw) {
+				continue;
+			}
+			if (block.tagName.toLowerCase() === "li") {
+				segments.push(`- ${raw}`);
+				continue;
+			}
+			segments.push(raw);
+		}
+
+		if (segments.length > 0) {
+			return segments.join("\n\n").trim();
+		}
+
+		return ((root.textContent || "") as string).replace(/\s+/g, " ").trim();
+	} catch {
+		return html
+			.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+			.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+			.replace(/<[^>]*>/g, " ")
+			.replace(/\s+/g, " ")
+			.trim();
+	}
+}
+
+export function normalizeExtractedText(rawText: string): string {
+	let text = rawText;
+
+	// Preserve paragraph structure by converting multiple whitespace to proper newlines
+	text = text.replace(/\n\s*\n/g, "\n\n"); // Double newlines for paragraphs
+	text = text.replace(/\t+/g, "\t"); // Preserve tabs
+	text = text.replace(/[ ]+/g, " "); // Collapse multiple spaces to single
+	text = text.replace(/\n /g, "\n"); // Remove leading spaces after newlines
+
+	// Better newline preservation - don't collapse all newlines
+	text = text.replace(/\n{3,}/g, "\n\n"); // Maximum of 2 consecutive newlines
+	text = text.replace(/([a-z])([A-Z])/g, "$1 $2"); // Split merged CamelCase tokens
+
+	const preFilterText = text;
+
+	// More lenient line filtering: keep most content, only remove obvious navigation
+	const lines = text.split("\n");
+	const filteredLines: string[] = [];
+
+	for (let i = 0; i < lines.length; i++) {
+		const currentLine = lines[i].trim();
+
+		// Keep empty lines for spacing
+		if (currentLine === "") {
+			filteredLines.push(lines[i]);
+			continue;
+		}
+
+		// Remove lines that are clearly navigation/UI elements
+		const isNavigationLine =
+			/^(back|next|home|menu|search|login|logout)$/i.test(currentLine) || // Common navigation terms
+			/^[\d\s\-\.]{1,10}$/.test(currentLine) || // Lines with only numbers/punctuation
+			/^(©|®|™|\(c\))/i.test(currentLine) || // Copyright notices
+			currentLine.match(/^(print|email|share|download|pdf)$/i); // Action buttons
+
+		// Keep everything else - be much more inclusive for statute content
+		if (!isNavigationLine) {
+			filteredLines.push(lines[i]);
+		}
+	}
+
+	text = filteredLines.join("\n");
+	if (text.trim().length < 50 && preFilterText.trim().length > text.trim().length) {
+		// Avoid dropping substantive content when line filtering is too aggressive for a page structure.
+		text = preFilterText;
+	}
+
+	return text.trim();
+}
+
 /**
  * Convert HTML content to clean, readable text
  * This function removes scripts, styles, and navigation elements while preserving
@@ -22,7 +151,8 @@ export function convertHtmlToText(html: string, anchorId?: string): string {
 		const scripts = document.querySelectorAll("script, style");
 		scripts.forEach((script) => script.remove());
 
-		let targetElement = document.body;
+		let targetElement: Element | Document =
+			document.body || document.documentElement || document;
 
 		// If we have an anchor ID, try to extract only the relevant section
 		if (anchorId) {
@@ -119,14 +249,15 @@ export function convertHtmlToText(html: string, anchorId?: string): string {
 			}
 		}
 
-		// Convert <p> and <div> elements to newlines before extracting text
-		const paragraphs = targetElement.querySelectorAll("p, div");
-		paragraphs.forEach((element) => {
-			element.insertAdjacentText("afterend", "\n");
-		});
+		const structuredText = extractStructuredText(targetElement);
 
-		// Get text content and preserve structure
-		let text = targetElement?.textContent || document.textContent || "";
+		// Fallback extraction for pages with little semantic markup.
+		let text = structuredText ||
+			((targetElement && "textContent" in targetElement
+				? targetElement.textContent
+				: "") ||
+			document.textContent ||
+			"");
 
 		// Replace "chevron_right" with newlines for better navigation structure
 		text = text.replace(/chevron_right/g, "\n");
@@ -149,63 +280,38 @@ export function convertHtmlToText(html: string, anchorId?: string): string {
 		// Look for municipality name pattern and remove everything before it
 		const municipalityPatterns = [
 			/(?:Village|Town|City)\s+of\s+[A-Za-z\s\-]+/i,
-			/[A-Za-z\s\-]+\s+(?:Village|Town|City)/i,
+			/[A-Za-z][A-Za-z\s\-]{0,80}\s+(?:Village|Town|City)\b/i,
 		];
 
 		for (const pattern of municipalityPatterns) {
 			const match = text.match(pattern);
 			if (match) {
 				const startIndex = text.indexOf(match[0]);
-				if (startIndex > 50) {
-					// Remove content before municipality name if there's navigation
-					text = text.substring(startIndex);
-					break;
+				// Only trim when municipality header appears near the top; late matches
+				// often come from footer/contact blocks and can hide main content.
+				if (startIndex > 50 && startIndex <= 1200) {
+					// Remove content before municipality name only when enough content remains.
+					const candidate = text.substring(startIndex).trim();
+					if (candidate.length > 200) {
+						text = candidate;
+						break;
+					}
 				}
 			}
 		}
 
-		// Preserve paragraph structure by converting multiple whitespace to proper newlines
-		text = text.replace(/\n\s*\n/g, "\n\n"); // Double newlines for paragraphs
-		text = text.replace(/\t+/g, "\t"); // Preserve tabs
-		text = text.replace(/[ ]+/g, " "); // Collapse multiple spaces to single
-		text = text.replace(/\n /g, "\n"); // Remove leading spaces after newlines
+		text = normalizeExtractedText(text);
 
-		// Better newline preservation - don't collapse all newlines
-		text = text.replace(/\n{3,}/g, "\n\n"); // Maximum of 2 consecutive newlines
-
-		// More lenient line filtering: keep most content, only remove obvious navigation
-		const lines = text.split("\n");
-		const filteredLines: string[] = [];
-    
-		for (let i = 0; i < lines.length; i++) {
-			const currentLine = lines[i].trim();
-      
-			// Keep empty lines for spacing
-			if (currentLine === '') {
-				filteredLines.push(lines[i]);
-				continue;
-			}
-      
-			// Remove lines that are clearly navigation/UI elements
-			const isNavigationLine = 
-				currentLine.length < 3 ||                                   // Very short lines (likely UI elements)
-				/^(back|next|home|menu|search|login|logout)$/i.test(currentLine) || // Common navigation terms
-				/^[\d\s\-\.]{1,10}$/.test(currentLine) ||                  // Lines with only numbers/punctuation
-				/^(©|®|™|\(c\))/i.test(currentLine) ||                     // Copyright notices
-				currentLine.match(/^(print|email|share|download|pdf)$/i);   // Action buttons
-      
-			// Keep everything else - be much more inclusive for statute content
-			if (!isNavigationLine) {
-				filteredLines.push(lines[i]);
-			}
+		if (!text.trim()) {
+			const regexFallback = html
+				.replace(/<(h[1-6]|p|li|div|section|article|br|tr|td|th)[^>]*>/gi, "\n")
+				.replace(/<\/\s*(h[1-6]|p|li|div|section|article|tr|td|th)\s*>/gi, "\n")
+				.replace(/<[^>]*>/g, " ");
+			text = normalizeExtractedText(regexFallback);
 		}
-    
-		text = filteredLines.join("\n");
-
-		text = text.trim();
 
 		// If we extracted a specific section, add metadata
-		if (anchorId && targetElement !== document.body) {
+		if (anchorId && document.body && targetElement !== document.body) {
 			const sectionInfo = `[Extracted from anchor #${anchorId}]\n\n`;
 			text = sectionInfo + text;
 			console.log(`  ✅ Successfully extracted ${text.length} characters from anchor section`);
@@ -257,26 +363,26 @@ async function main() {
 	const args = process.argv.slice(2);
 
 	if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
-		console.log("Usage:");
-		console.log("  tsx scripts/utils/simpleHtmlToText.ts <input.html> [output.txt]");
-		console.log("");
-		console.log("Parameters:");
-		console.log("  input.html     HTML file to convert");
-		console.log("  output.txt     Output text file (optional, defaults to stdout)");
-		console.log("");
-		console.log("Features:");
-		console.log("  - Removes navigation elements and scripts/styles");
-		console.log("  - Preserves paragraph structure and meaningful content");
-		console.log("  - Supports anchor-based section extraction (when used as library)");
-		console.log("");
-		console.log("Examples:");
-		console.log("  tsx scripts/utils/simpleHtmlToText.ts policy.html policy.txt");
-		console.log("  tsx scripts/utils/simpleHtmlToText.ts policy.html > output.txt");
-		console.log("");
-		console.log("Library Usage:");
-		console.log("  import { convertHtmlToText } from './lib/simpleHtmlToText.js';");
-		console.log("  const text = convertHtmlToText(html);                    // Full document");
-		console.log("  const text = convertHtmlToText(html, 'section-id');      // Specific section");
+		console.log(`Usage:
+  tsx scripts/utils/simpleHtmlToText.ts <input.html> [output.txt]
+
+Parameters:
+  input.html     HTML file to convert
+  output.txt     Output text file (optional, defaults to stdout)
+
+Features:
+  - Removes navigation elements and scripts/styles
+  - Preserves paragraph structure and meaningful content
+  - Supports anchor-based section extraction (when used as library)
+
+Examples:
+  tsx scripts/utils/simpleHtmlToText.ts policy.html policy.txt
+  tsx scripts/utils/simpleHtmlToText.ts policy.html > output.txt
+
+Library Usage:
+  import { convertHtmlToText } from './lib/simpleHtmlToText.js';
+  const text = convertHtmlToText(html);                    // Full document
+  const text = convertHtmlToText(html, 'section-id');      // Specific section`);
 		return;
 	}
 

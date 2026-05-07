@@ -1,20 +1,84 @@
 import fs from "fs-extra";
 import path from "path";
+import os from "os";
 import axios from "axios";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import { PDFParse } from 'pdf-parse';
 import { JSDOM } from "jsdom";
 import { convertHtmlToText } from "./simpleHtmlToText.js";
 import {
  type ArticleLink,
-  type StatuteLibraryConfig,
+  type StatuteLibrary,
   DELAY_BETWEEN_DOWNLOADS,
   verboseLog,
   getProjectRootDir,
   loadStatuteLibraryConfig,
-  getLibraryForUrl,
 } from "./extractionConfig.js";
 import { Ruleset, RulesetSource } from "@civillyengaged/ordinizer-core";
+import { getDefaultStorage } from "@civillyengaged/ordinizer-servercore";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+const execFileAsync = promisify(execFile);
+
+let cachedLibraryConfig: Map<string, StatuteLibrary> | null | undefined;
+let cachedDefaultLibrary: StatuteLibrary | null | undefined;
+
+/**
+ * Needed as certain libraries (e.g., Municode) have aggressive anti-bot measures that cause 
+ * normal HTTP requests to fail, but curl with proper headers can still work. 
+ * This allows per-library configuration of when to use curl.
+ * @param url 
+ * @returns true if curl should be used for this URL, false to use normal HTTP request
+ */
+export async function shouldUseCurlForUrl(url: string): Promise<boolean> {
+  try {
+    if (cachedLibraryConfig === undefined) {
+      const storage = getDefaultStorage(process.env.CURRENT_REALM || "");
+      const config = await loadStatuteLibraryConfig(storage);
+      if (!config) {
+        cachedLibraryConfig = null;
+        cachedDefaultLibrary = null;
+      } else {
+        const patternMap = new Map<string, StatuteLibrary>();
+        for (const library of config.libraries) {
+          for (const pattern of library.urlPatterns) {
+            patternMap.set(pattern, library);
+          }
+        }
+        cachedLibraryConfig = patternMap;
+        cachedDefaultLibrary = config.libraries.find((library) => library.id === config.defaultLibrary) || null;
+      }
+    }
+
+    const configMap = cachedLibraryConfig;
+    if (!configMap) {
+      return false;
+    }
+
+    let matchedLibrary: StatuteLibrary | undefined;
+    for (const [pattern, library] of configMap) {
+      if (url.includes(pattern)) {
+        matchedLibrary = library;
+        break;
+      }
+    }
+    const selectedLibrary = matchedLibrary
+      || cachedDefaultLibrary
+      || null;
+
+    if (!selectedLibrary) {
+      return false;
+    }
+
+    return Boolean(selectedLibrary.useCurl);
+  } catch (error: any) {
+    verboseLog("Unable to resolve per-library curl setting", {
+      url,
+      message: error?.message,
+    });
+    return false;
+  }
+}
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -98,8 +162,26 @@ export function addOrUpdateSource(ruleset: Ruleset, source: RulesetSource): void
   if (!ruleset.sources) {
     ruleset.sources = [];
   }
+
+  const normalizeForMatch = (rawUrl: string | undefined): string => {
+    if (!rawUrl) return "";
+    const trimmed = rawUrl.trim();
+    if (!trimmed) return "";
+    try {
+      const parsed = new URL(trimmed);
+      parsed.hash = "";
+      if (parsed.pathname.length > 1) {
+        parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+      }
+      return parsed.toString();
+    } catch {
+      return trimmed.replace(/#.*$/, "").replace(/\/+$/, "");
+    }
+  };
+
+  const sourceMatchUrl = normalizeForMatch(source.sourceUrl);
   
-  const existingIndex = ruleset.sources.findIndex(s => s.sourceUrl === source.sourceUrl);
+  const existingIndex = ruleset.sources.findIndex((s) => normalizeForMatch(s.sourceUrl) === sourceMatchUrl);
   
   if (existingIndex >= 0) {
     ruleset.sources[existingIndex] = source;
@@ -273,7 +355,76 @@ export async function downloadFromUrlAndSave(url: string, saveToPath: string, fi
 export async function downloadFromUrl(url: string): Promise<string> {
     const response = await downloadFromUrlAnyType(url);
     const encoding = response.isPdf ? 'base64' : 'utf-8';
-    return Buffer.from(response.data).toString(encoding);
+    return response.data.toString(encoding);
+}
+
+function extractFinalContentType(rawHeaders: string): string {
+  const lines = rawHeaders.split(/\r?\n/).reverse();
+  const contentTypeLine = lines.find((line) => /^content-type\s*:/i.test(line));
+  return contentTypeLine ? contentTypeLine.split(":").slice(1).join(":").trim().toLowerCase() : "";
+}
+
+export async function downloadViaCurl(url: string, saveToPath?: string, filename?: string): Promise<{ data: Buffer, isPdf: boolean }> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ordinizer-curl-"));
+  const safeFileBase = (filename || "download").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const bodyPath = path.join(tempDir, `${safeFileBase}.bin`);
+  const headersPath = path.join(tempDir, `${safeFileBase}.headers.txt`);
+
+  try {
+    const curlArgs = [
+      "--location",
+      "--max-redirs", "10",
+      "--compressed",
+      "--silent",
+      "--show-error",
+      "--fail-with-body",
+      "--connect-timeout", "20",
+      "--max-time", "90",
+      "--user-agent", USER_AGENT,
+      "--dump-header", headersPath,
+      "--output", bodyPath,
+      url,
+    ];
+
+    verboseLog("curl download", {
+      url,
+      saveToPath,
+      filename,
+      curlArgs,
+      bodyPath,
+      headersPath,
+    });
+
+    const result = await execFileAsync("curl", curlArgs, { windowsHide: true });
+    if (result.stderr?.trim()) {
+      verboseLog("curl stderr", { url, stderr: result.stderr });
+    }
+
+    const data = await fs.readFile(bodyPath);
+    const headerText = await fs.readFile(headersPath, "utf-8").catch(() => "");
+    const contentType = extractFinalContentType(headerText);
+    const isPdf = isContentPdf(data, contentType, url);
+
+    verboseLog("curl response metadata", {
+      url,
+      contentType,
+      dataLength: data.length,
+      isPdf,
+    });
+
+    return { data, isPdf };
+  } catch (error: any) {
+    verboseLog("curl download failed", {
+      url,
+      message: error?.message,
+      stderr: error?.stderr,
+      stdout: error?.stdout,
+      code: error?.code,
+    });
+    throw new Error(`Failed to download content from URL with curl: ${url} - ${error?.message || "unknown error"}`);
+  } finally {
+    await fs.remove(tempDir).catch(() => undefined);
+  }
 }
 
 /**
@@ -283,7 +434,12 @@ export async function downloadFromUrl(url: string): Promise<string> {
  * @param filename 
  * @returns object with data and isPdf
  */
-export async function downloadFromUrlAnyType(url: string, saveToPath?: string, filename?: string): Promise<{ data: string, isPdf: boolean }> {
+export async function downloadFromUrlAnyType(url: string, saveToPath?: string, filename?: string): Promise<{ data: Buffer, isPdf: boolean }> {
+    const useCurlForUrl = await shouldUseCurlForUrl(url);
+    if (useCurlForUrl) {
+      return downloadViaCurl(url, saveToPath, filename);
+    }
+
     try {
 
     verboseLog(`HTTP GET Request:`, {
@@ -304,19 +460,20 @@ export async function downloadFromUrlAnyType(url: string, saveToPath?: string, f
     });
 
     const contentType = response.headers["content-type"]?.toString() || '';
-    const isPdf = isContentPdf(response.data, contentType, url);
+    const data = Buffer.isBuffer(response.data) ? response.data : Buffer.from(response.data);
+    const isPdf = isContentPdf(data, contentType, url);
 
     verboseLog(`HTTP Response:`, {
       status: response.status,
       statusText: response.statusText,
       headers: response.headers,
-      dataLength: response.data?.byteLength || 0,
-      dataType: typeof response.data,
+      dataLength: data.byteLength,
+      dataType: typeof data,
       contentType: contentType,
       isPdf: isPdf
     });
 
-    return { data: response.data, isPdf: isPdf };
+    return { data, isPdf: isPdf };
 
   } catch (error: any) {
     verboseLog(`HTTP Request Failed:`, {
@@ -325,12 +482,29 @@ export async function downloadFromUrlAnyType(url: string, saveToPath?: string, f
       status: error.response?.status,
       statusText: error.response?.statusText,
     });
+
+    const status = Number(error?.response?.status || 0);
+    const shouldRetryViaCurl = [401, 403, 406, 409, 429, 503].includes(status);
+    if (shouldRetryViaCurl) {
+      verboseLog(`Retrying with curl due to likely bot-block/edge protection`, {
+        url,
+        status,
+      });
+      try {
+        return await downloadViaCurl(url, saveToPath, filename);
+      } catch (curlError: any) {
+        verboseLog(`Curl fallback failed`, {
+          url,
+          status,
+          error: curlError?.message,
+        });
+      }
+    }
+
     throw new Error("Failed to download content from URL: " + url + " - " + error.message);
   }
 
 }
-
-
 
 export async function getContentTypeFromUrl(url: string): Promise<string> {
   try {

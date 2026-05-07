@@ -213,7 +213,7 @@ Synthesized best practice:`;
 
   try {
     // Rate limiting for synthesis
-    const estimatedTokens = estimateTokens(prompt) + 200; // Add max_tokens estimate
+    const estimatedTokens = estimateTokens(prompt) + 200; // Add max_completion_tokens estimate
     await checkRateLimit(estimatedTokens);
     
     console.log(`🤖 Synthesizing best practice from ${topAnswers.length} top municipalities for question: ${questionText.substring(0, 80)}...`);

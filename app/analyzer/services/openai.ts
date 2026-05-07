@@ -2,11 +2,24 @@ import fs from "fs/promises";
 import path from "path";
 import OpenAI from "openai";
 
-// the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-const openai = new OpenAI({ 
-	apiKey: process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_ENV_VAR || "default_key" 
-});
+let openai: OpenAI | null = null; 
+
 export { openai };
+
+/**
+ * Singleton to get OpenAI instance with API key from environment variable. 
+ * Ensures only one instance is created and shared across the app.
+ * @returns OpenAI instance
+ */
+function getOpenAI(): OpenAI {
+  if (!openai) {
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error("OPENAI_API_KEY is required");
+    }
+    openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  }
+  return openai;
+}
 
 // ─── Token Rate Limiter ────────────────────────────────────────────────────────
 
@@ -16,7 +29,7 @@ interface TokenUsage {
 }
 
 let tokenUsageHistory: TokenUsage[] = [];
-export let currentModel = "gpt-4o-mini";
+export let currentModel = "gpt-5.4-mini";
 export function setCurrentModel(model: string) { currentModel = model; }
 let modelConfig: any = null;
 export const QUESTION_PAUSE_MS = 200;
@@ -42,11 +55,9 @@ export async function loadModelConfig() {
       console.warn("Could not load AI-models.json, using default rate limits");
       modelConfig = {
         models: {
-          "gpt-4o": { tokensPerMinute: 30000 },
-          "gpt-4o-mini": { tokensPerMinute: 200000 },
-          "gpt-5": { tokensPerMinute: 30000 },
-          "gpt-5-mini": { tokensPerMinute: 200000 },
-          "gpt-4-turbo": { tokensPerMinute: 30000 },
+          "gpt-5.5": { tokensPerMinute: 30000 },
+          "gpt-5.4": { tokensPerMinute: 30000 },
+          "gpt-5.4-mini": { tokensPerMinute: 200000 },
         },
       };
     }
@@ -280,10 +291,11 @@ export async function answerQuestionDirectly(
     const estimatedTokens = estimateTokens(systemPrompt + userPrompt) + 500;
     await checkRateLimit(estimatedTokens);
 
-    const response = await openai.chat.completions.create({
+    const response = await createChatCompletion(userPrompt, {
       model,
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
       temperature: 0.1,
+      system: systemPrompt,
+      format: "text",
     });
 
     const actualTokens = response.usage?.total_tokens || estimatedTokens;
@@ -349,7 +361,7 @@ export async function analyzeQuestionsWithFullStatute(
       const estimatedTokens = estimateTokens(messages.map(m => m.content).join(" ")) + 300;
       await checkRateLimit(estimatedTokens);
 
-      const response = await openai.chat.completions.create({
+      const response = await getOpenAI().chat.completions.create({
         model,
         messages,
         response_format: { type: "json_object" },
@@ -449,11 +461,64 @@ export async function generateGapAnalysis(
   }
 }
 
+/**
+ * deprecated
+ * @param model 
+ * @param prompt 
+ * @param temperature 
+ * @param maxTokens 
+ */
 export async function fetchChatResponse(model: string, prompt: string, temperature = 0.1, maxTokens = 150) {
-  return await openai.chat.completions.create({
+  return createChatCompletion(prompt, {
     model,
-    messages: [{ role: "user", content: prompt }],
     temperature,
-    max_tokens: maxTokens,
+    maxCompletionTokens: maxTokens,
+  });
+}
+
+type ChatResponseFormat = { type: "text" } | { type: "json_object" };
+
+export interface ChatDefaultsOptions {
+  format?: "text" | "json";
+  system?: string;
+  temperature?: number;
+  model?: string;
+  maxCompletionTokens?: number;
+}
+
+/**
+ * Shared chat wrapper with sensible defaults so callers only pass the user prompt.
+ */
+export async function createChatCompletion(
+  userPrompt: string,
+  options: ChatDefaultsOptions = {}
+) {
+  const {
+    format = "json",
+    system,
+    temperature = 0.2,
+    model = currentModel,
+    maxCompletionTokens,
+  } = options;
+
+  const responseFormat: ChatResponseFormat = format === "json"
+    ? { type: "json_object" }
+    : { type: "text" };
+
+  const systemPrompt = format === "json"
+    ? (system ? `${system} Output strict JSON only.` : "Output strict JSON only.")
+    : system || "";
+
+  return await getOpenAI().chat.completions.create({
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    response_format: responseFormat,
+    temperature,
+    ...(maxCompletionTokens != null
+      ? { max_completion_tokens: maxCompletionTokens }
+      : {}),
   });
 }
