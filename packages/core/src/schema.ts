@@ -88,11 +88,18 @@ export interface Ruleset {
   isArticleBased?: boolean; // Indicates if the ruleset is based on multiple articles/sections
 }
 
+/**
+ * This is the metadata for a source document that informs a Ruleset. 
+ * It includes information about when it was downloaded, the URL, type of source,
+ *  and where the content is stored locally. 
+ * The actual text content of the source is not stored here, 
+ * but can be retrieved using the sourceUrl or downloadedFilename as needed.
+ */
 export interface RulesetSource {
   downloadedAt?: string; // Timestamp when the source was downloaded
   sourceUrl: string; // URL of the source document
   title?: string; // Optional title of the source document
-  type?: 'statute' | 'policy' | 'form' | 'guidance' | 'information' | 'homepage' | 'other'; // Type of the governance source
+  type?: 'statute' | 'policy' | 'form' | 'guidance' | 'information' | 'homepage' | 'general'; // Type of the governance source
   contentLength?: number; // Optional length of the source content (e.g., word count)
   downloadedFilename?: string; // Relative path to the downloaded artifact (HTML or TXT file)
 }

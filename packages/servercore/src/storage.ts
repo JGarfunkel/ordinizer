@@ -201,7 +201,11 @@ export interface IStorageReadOnly {
    * @param entityId 
    * @param realmId 
    */
-  getAdditionalSources(domainId: string, entityId: string, realmId?: string): Promise<{ guidance?: string; form?: string }>;
+  getAdditionalSources(domainId: string, entityId: string): Promise<{ data: string[] }>;
+  processEntityDownloads(entityId: string, 
+      processFunc: (content: string, entityId: string, domainIds: string[], filename: string) => Promise<void>
+  ): Promise<void>;
+
 
   // Data Sources
   getDataSources(): Promise<DataSourcesConfig | null>;
@@ -261,6 +265,9 @@ export interface IStorage extends IStorageReadOnly {
 
   // save the ruleset
   saveRuleset(ruleset: Ruleset): Promise<Ruleset>;
+
+  deleteAnalysisBackups(domainId: string, entityId: string): Promise<number>;
+  deleteMetadataBackups(domainId: string, entityId: string): Promise<number>;
 
 }
 
@@ -355,9 +362,9 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   // -------------------------------------------------------------------------
 
   async getRealmConfig(): Promise< Realm> {
-    console.debug("Fetching realm config for realmId:", this.realmId);
+    //console.debug("Fetching realm config for realmId:", this.realmId);
     if (this.realmConfig && this.realmConfig.id === this.realmId) {
-      console.debug("Returning cached realm config:", this.realmConfig.id);
+      //console.debug("Returning cached realm config:", this.realmConfig.id);
       return this.realmConfig;
     }
     const realmsPath = path.join(DEFAULT_DATA_ROOT, "realms.json");
@@ -870,37 +877,61 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
   /**
    * Read the statute or policy text for an entity/domain.
+   * This skips checking the ruleset (metadata.json)
    * Returns null when the file does not exist.
    */
   async getDocumentText(domainId: string, entityId: string, realmId?: string): Promise<string | null> {
     const realmConfig = await this.getRealmConfig();
     const realmType = realmConfig.ruleType ?? 'statute';
     const file = path.join(this.getRealmDir(), domainId, entityId, `${realmType}.txt`);
-    if (!await fs.pathExists(file)) return null;
+    if (!await fs.pathExists(file)) { 
+      return null;
+    }
     return fs.readFile(file, "utf-8");
+  }
+
+  async getAdditionalSources(domainId: string, entityId: string): Promise<{ data: string[] }> {
+    const data: string[] = [];
+
+    await this.processEntityDownloads(entityId, async (content, _entityId, domainIds) => {
+      if (domainIds.includes(domainId)) {
+        data.push(content);
+      }
+    });
+
+    return { data };
   }
 
   async processEntityDownloads(
     entityId: string,
-    processFunc: (content: string, entityId: string, domainIds: string[]) => Promise<void>
+    processFunc: (content: string, entityId: string, domainIds: string[], filename: string) => Promise<void>
   ): Promise<void> {
-    const entityDocsDir = path.join(this.getRealmDir(), "EntityDocuments", entityId);
+    console.debug("Processing entity downloads for entityId:", entityId);
+    const entityDocsDir = path.join(this.getRealmDir(), "EntityDownloads", entityId);
     const historyFile = path.join(entityDocsDir, "history.json");
-    if (!await fs.pathExists(historyFile)) return;
+    if (!await fs.pathExists(historyFile)) {
+      console.warn(`No history.json found for entity ${entityId} at expected path:`, historyFile);
+      return;
+    }
     try {
       const history = await fs.readJson(historyFile);
-      if (!history.documents || !Array.isArray(history.documents)) return;
-      const relatedDocs = history.documents.filter((doc: any) =>
+      if (!history.records || !Array.isArray(history.records)) {
+        console.warn("no history.records found in history.json for entity", entityId);
+        return;
+      }
+      const relatedDocs = history.records.filter((doc: any) =>
         doc.status === "related" && Array.isArray(doc.matchedDomainIds) && doc.matchedDomainIds.length > 0
       );
+      console.debug(`Found ${relatedDocs.length} related documents for entity ${entityId} in history.json`);
       for (const doc of relatedDocs) {
         const localFile = doc.localFileText;
+        // TODO - we'll need to clean up the file references in history.json to strip the path
         const fileName = localFile ? localFile.split("/").pop() : doc.filename;
         if (!fileName) continue;
         const filePath = path.join(entityDocsDir, fileName);
         if (!await fs.pathExists(filePath)) continue;
         const content = await fs.readFile(filePath, "utf-8");
-        await processFunc(content, entityId, doc.matchedDomainIds);
+        await processFunc(content, entityId, doc.matchedDomainIds, fileName);
       }
     } catch (error) {
       console.error(`Error processing entity downloads for ${entityId}:`, error);
@@ -1202,6 +1233,27 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
     return { backupPath, mtime: stat.mtime };
   }
 
+  private async deleteBackupFiles(domainId: string, entityId: string, prefix: string): Promise<number> {
+    const directoryPath = path.join(this.getRealmDir(), domainId, entityId);
+    if (!await fs.pathExists(directoryPath)) {
+      return 0;
+    }
+
+    const files = await fs.readdir(directoryPath);
+    const backupFiles = files.filter(file => file.startsWith(prefix) && file.endsWith(".json"));
+
+    await Promise.all(backupFiles.map(file => fs.remove(path.join(directoryPath, file))));
+    return backupFiles.length;
+  }
+
+  async deleteAnalysisBackups(domainId: string, entityId: string): Promise<number> {
+    return this.deleteBackupFiles(domainId, entityId, "analysis-backup-");
+  }
+
+  async deleteMetadataBackups(domainId: string, entityId: string): Promise<number> {
+    return this.deleteBackupFiles(domainId, entityId, "metadata-backup-");
+  }
+
   async createAnalysis(analysis: InsertAnalysis): Promise<Analysis> {
     let entityId = this.getAnalysisEntityId(analysis);
     if (!entityId) {
@@ -1256,6 +1308,9 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
       );
     }
     const file = path.join(this.getRealmDir(), ruleset.domainId, ruleset.entityId, "metadata.json");
+    if (!ruleset.metadataCreated) {
+      ruleset.metadataCreated = new Date().toISOString();
+    }
     this.saveJsonBackup(file);
     await fs.writeJson(file, ruleset, { spaces: 2 });
     console.log("saved ruleset at path:", file);

@@ -5,13 +5,10 @@ import { google } from "googleapis";
 import {
   type Realm,
   type Metadata,
-  DOMAINS,
-  DOMAIN_MAPPING,
   verboseLog,
   getDomainDisplayName,
   getDomainDescription,
   getDomainColumnIndex,
-  getSpreadsheetUrl,
 } from "./extractionConfig.js";
 import {
   type ISpreadsheetParser,
@@ -531,7 +528,7 @@ export async function parseAndWriteEntities(
         console.log(`Found ${rows.length} existing entities to process`);
       } else {
       console.log("📥 Fetching fresh data from Google Sheets API");
-      const sheetUrl = getSpreadsheetUrl();
+      const sheetUrl = await storage.getRealmConfig().then(config => config?.dataSource?.url);
       if (!sheetUrl) {
         throw new Error("Spreadsheet URL is not configured in spreadsheetExtractionProperties.json");
       }
@@ -574,7 +571,7 @@ export async function parseAndWriteEntities(
   // Set headers based on data source type
   let headers: string[];
   let columnMap: Record<string, number> = {};
-  let domainsToProcess: string[];
+  let domainsToProcess: string[] = [];
 
   if (realm.dataSource.type === 'google-sheets') {
     // Build column map from spreadsheet parser
@@ -583,16 +580,17 @@ export async function parseAndWriteEntities(
 
     console.log(`Domain column mapping:`, columnMap);
 
+    // TODO - uncommen this once we have a stable spreadsheet format with domain columns
     // Filter domains if targetDomain is specified
-    domainsToProcess = targetDomain
-      ? DOMAINS.filter((d) => {
-          const mappedDomain = DOMAIN_MAPPING[d] || d;
-          return (
-            d.toLowerCase() === targetDomain.toLowerCase() ||
-            mappedDomain.toLowerCase() === targetDomain.toLowerCase()
-          );
-        })
-      : DOMAINS;
+    // domainsToProcess = targetDomain
+    //   ? DOMAINS.filter((d) => {
+    //       const mappedDomain = DOMAIN_MAPPING[d] || d;
+    //       return (
+    //         d.toLowerCase() === targetDomain.toLowerCase() ||
+    //         mappedDomain.toLowerCase() === targetDomain.toLowerCase()
+    //       );
+    //     })
+    //   : DOMAINS;
   } else {
     // For JSON files, extract headers from the first row of CSV data
     const csvLines = csvData.trim().split('\n');

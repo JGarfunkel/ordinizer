@@ -11,6 +11,7 @@ import path from "path";
 import { JSDOM } from "jsdom";
 import { convertHtmlToTextSimple } from "./simpleHtmlToText.js";
 import { downloadFromUrlAnyType, pdfToText } from "./extractionUtils.js";
+import type { DownloadRequestOptions } from "./extractionUtils.js";
 import type { CrawledPage, ExtractedLink } from "./domainScoring.js";
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,7 @@ export interface SpiderHistoryEntry {
   timestamp: string;
   localFile?: string; // relative path to HTML artifact
   localFileText?: string; // relative path to TXT artifact
+  localFileTextSize?: number; // length of the text content in the TXT artifact, for quick reference
 }
 
 export interface SpiderHistoryFile {
@@ -278,6 +280,31 @@ export function upsertHistoryEntry(
   });
 }
 
+export async function recordFileSize(
+  storage: any,
+  historyMap: Map<string, SpiderHistoryEntry>,
+  entry: SpiderHistoryEntry,
+): Promise<number | undefined> {
+  if (!entry.localFileText) {
+    return undefined;
+  }
+
+  const txtPath = fromRelativeDownloadsPath(storage, entry.localFileText);
+  if (!(await fs.pathExists(txtPath))) {
+    return undefined;
+  }
+
+  const fileText = await fs.readFile(txtPath, "utf-8");
+  const localFileTextSize = fileText.length;
+
+  upsertHistoryEntry(historyMap, {
+    ...entry,
+    localFileTextSize,
+  });
+
+  return localFileTextSize;
+}
+
 // ---------------------------------------------------------------------------
 // Websites file CRUD
 // ---------------------------------------------------------------------------
@@ -362,14 +389,14 @@ export function fromRelativeDownloadsPath(storage: any, relativePathValue: strin
 // ---------------------------------------------------------------------------
 
 export function formatTxtArtifact(url: string, timestamp: string, text: string): string {
-  const header = `# ${url} downloaded at ${timestamp}`;
+  const header = `# ${url} downloaded at ${timestamp}, converted at ${new Date().toISOString()}`;
   const trimmedBody = text.trim();
   return `${header}\n\n${trimmedBody}`;
 }
 
 export function parseTxtArtifactBody(rawText: string): string {
   const normalized = rawText.replace(/\r\n/g, "\n");
-  return normalized.replace(/^# .* downloaded at .*\n\n/, "").trim();
+  return normalized.replace(/^# .* downloaded at .*?, converted at .*?\n\n/, "").trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -623,9 +650,12 @@ export function classifyDownloadError(error: unknown): HistoryStatus {
   return "no-content";
 }
 
-export async function fetchPageContent(url: string): Promise<{ page: DownloadedPage | null; status: HistoryStatus }> {
+export async function fetchPageContent(
+  url: string,
+  options: DownloadRequestOptions = {},
+): Promise<{ page: DownloadedPage | null; status: HistoryStatus }> {
   try {
-    const downloaded = await downloadFromUrlAnyType(url);
+    const downloaded = await downloadFromUrlAnyType(url, undefined, undefined, options);
     if (downloaded.isPdf) {
       return { page: { kind: "pdf", pdfBuffer: downloaded.data }, status: "related" };
     }

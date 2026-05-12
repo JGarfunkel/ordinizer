@@ -22,7 +22,7 @@ describe("addOrUpdateSource", () => {
     addOrUpdateSource(ruleset, {
       sourceUrl: "https://example.org/policies#section-1",
       title: "Original",
-      type: "guidance",
+      type: "general",
     });
 
     addOrUpdateSource(ruleset, {
@@ -42,13 +42,13 @@ describe("addOrUpdateSource", () => {
     addOrUpdateSource(ruleset, {
       sourceUrl: "https://example.org/alpha",
       title: "Alpha",
-      type: "guidance",
+      type: "general",
     });
 
     addOrUpdateSource(ruleset, {
       sourceUrl: "https://example.org/beta",
       title: "Beta",
-      type: "guidance",
+      type: "general",
     });
 
     expect(ruleset.sources).toHaveLength(2);

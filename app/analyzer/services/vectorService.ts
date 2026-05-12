@@ -1,31 +1,71 @@
+/**
+ * VectorService: Handles all interactions with the Pinecone vector database for statute storage and retrieval.
+ * Includes methods for initializing the index, chunking statute text, generating embeddings, indexing statutes, and searching for relevant sections.
+ * Designed for use in the ordinance analysis process to enable efficient retrieval of relevant statute sections based on user questions.	
+ */
 import { Pinecone } from '@pinecone-database/pinecone';
 import OpenAI from 'openai';
 import {
   checkRateLimit,
   recordTokenUsage,
   estimateTokens,
-  sleep,
-  QUESTION_PAUSE_MS,
-  currentModel,
-  extractSectionReferences,
-  openai,
-} from "./openai.js";
+} from "./aiService.js";
 
-let vectorServiceInstance: VectorService | null = null;
+//TODO define DocumentType as a union type and use it consistently across the application
+export type DocumentType = "statute" | "guidance" | "general" | "policy" | "shared";
 
-export function getVectorService() {
-	if (!vectorServiceInstance) {
-		vectorServiceInstance = new VectorService();
+/**
+ * Extract Section reference from the text
+ * @TODO - decide where this should live
+ * @param text
+ * @returns 
+ */
+export function extractSectionReferences(text: string): string[] {
+		const sectionRegex = /(?:§|Section)\s*(\d+(?:[.-]\d+)*[A-Z]*)/gi;
+		const matches = [...text.matchAll(sectionRegex)];
+		return [...new Set(matches.map(m => m[0]).slice(0, 3))];
 	}
-	return vectorServiceInstance;
+
+/**
+ * Generates the document key
+ * @param entityId: always required
+ * @param domains ignored if documentType is "shared", but should be an array of domains for future flexibility (currently we only use the first domain for the key)
+ * @param documentType: type of the document (e.g., "statute", "guidance", "general", "policy", "shared")
+ * @param filename: optional filename for shared documents
+ */
+export function getDocumentKey(entityId: string, 
+							domains?: string[], 
+							documentType?: DocumentType,
+							filename?: string): string {
+
+	if (!domains) {
+		return `${entityId}-shared/`;
+	}						
+	return documentType === "shared" ?
+			`${entityId}-shared/${filename}` :
+			`${entityId}-${domains[0]}/${documentType}`;
+	}
+
+/**
+ * singleton pattern to ensure only one instance of VectorService is created and shared across the application
+ * 
+ * // TODO - decide to create multiple instances if we want to support multiple realms with different Pinecone indexes in the future, but for now a single instance is simpler and sufficient since we are only using one index. The service is designed to be flexible and easily replaceable if we want to switch to a different vector database provider in the future.
+ */
+const vectorMap = new Map<string, VectorService>();
+export function getVectorService(realm: string) {
+	if (!vectorMap.has(realm)) {
+		vectorMap.set(realm, new VectorService(realm));
+	}
+	return vectorMap.get(realm)!;
 }
 
 export class VectorService {
 	private pinecone: Pinecone;
-	private indexName = 'ordinizer-statutes';
+	private indexName = '';
 	private openai;
   
-	constructor() {
+	constructor(realm: string) {
+		this.indexName = `ordinizer-${realm}`;
 		this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 		this.pinecone = new Pinecone({
 			apiKey: process.env.PINECONE_API_KEY!,
@@ -61,9 +101,9 @@ export class VectorService {
 				// Wait for index to be ready
 				console.log('Waiting for index to be ready...');
 				await this.waitForIndexReady();
+				console.log(`Pinecone index ${this.indexName} is ready`);
 			}
       
-			console.log(`Pinecone index ${this.indexName} is ready`);
 			return true;
 		} catch (error) {
 			console.error('Error initializing Pinecone index:', error);
@@ -104,42 +144,38 @@ export class VectorService {
 	 * and legacy IDs (${municipalityId}-${domainId}-*).
 	 */
 	async hasIndexedDocument(
-		municipalityId: string,
-		domainId: string,
-		documentType: "statute" | "guidance" = "statute",
+		documentKey: string,
 	): Promise<boolean> {
 		try {
 			await this.initializeIndex();
 			const index = this.getIndex();
 
-			const currentPrefix = `${municipalityId}-${domainId}-${documentType}-chunk-`;
-			const current = await index.listPaginated({ prefix: currentPrefix });
+			const current = await index.listPaginated({ prefix: documentKey });
 			if (current.vectors && current.vectors.length > 0) {
+				console.log(`Pinecone contains ${current.vectors.length} vectors with prefix ${documentKey}`);
 				return true;
-			}
-
-			if (documentType === "statute") {
-				const legacyPrefix = `${municipalityId}-${domainId}-`;
-				const legacy = await index.listPaginated({ prefix: legacyPrefix });
-				if (legacy.vectors && legacy.vectors.length > 0) {
-					return true;
-				}
 			}
 
 			return false;
 		} catch (error) {
-			console.warn(`Unable to verify vector index state for ${municipalityId}/${domainId}:`, error);
+			console.warn(`Unable to verify vector index state for ${documentKey}:`, error);
 			return false;
 		}
 	}
 
 	/**
-	 * Split statute text into meaningful chunks
+	 * Chunker specific to statutes, with intelligent splitting by paragraphs and sections to preserve 
+	 * context as much as possible while fitting within token limits for embedding. 
+	 * Also includes metadata for better retrieval and analysis.
+	 * @param text 
+	 * @param entityId 
+	 * @param domainId 
+	 * @returns 
 	 */
-	private chunkStatuteText(text: string, municipalityId: string, domainId: string): Array<{
+	private chunkStatuteText(text: string, entityId: string, domainId: string): Array<{
 		content: string;
 		metadata: {
-			municipalityId: string;
+			entityId: string;
 			domainId: string;
 			chunkIndex: number;
 			section?: string;
@@ -148,7 +184,7 @@ export class VectorService {
 		const chunks: Array<{
 			content: string;
 			metadata: {
-				municipalityId: string;
+				entityId: string;
 				domainId: string;
 				chunkIndex: number;
 				section?: string;
@@ -221,7 +257,7 @@ export class VectorService {
 				chunks.push({
 					content: trimmedSection,
 					metadata: {
-						municipalityId,
+						entityId,
 						domainId,
 						chunkIndex: index,
 						section: sectionMatch ? sectionMatch[1] : undefined
@@ -268,99 +304,39 @@ export class VectorService {
 	}
 
 	/**
-	 * Index a statute document in the vector database
+	 * Compatibility wrapper for statute indexing.
+	 * Prefer indexDocumentInPinecone() for all document types.
 	 */
-	async indexStatute(municipalityId: string, domainId: string, statuteText: string) {
-		try {
-			// Check for corrupted or binary files
-			if (statuteText.length > 5000000) { // 5MB limit
-				console.log(`⚠️  Skipping ${municipalityId}/${domainId} - file too large (${statuteText.length} bytes)`);
-				return;
-			}
-      
-			// Check for binary content (non-text characters)
-			// Exclude common legal symbols like § (167), © (169), ® (174), etc.
-			const binaryContentRegex = /[\x00-\x08\x0E-\x1F\x7F-\x9F\u2000-\u200F\uFEFF]/;
-			if (binaryContentRegex.test(statuteText.substring(0, 1000))) {
-				console.log(`⚠️  Skipping ${municipalityId}/${domainId} - appears to contain binary data`);
-				return;
-			}
-      
-			// Ensure index is ready
-			await this.initializeIndex();
-      
-			// Delete existing chunks for this municipality/domain combination
-			await this.deleteStatute(municipalityId, domainId);
-      
-			// Split text into chunks
-			const chunks = this.chunkStatuteText(statuteText, municipalityId, domainId);
-      
-			if (chunks.length === 0) {
-				console.log(`No valid chunks found for ${municipalityId}/${domainId}`);
-				return;
-			}
-      
-			// Process chunks silently to avoid console spam
-      
-			// Generate embeddings for all chunks (with truncation as needed)
-			console.log(`Processing ${chunks.length} chunks for ${municipalityId}/${domainId}`);
-      
-			const embeddings = await this.generateEmbeddings(chunks.map(chunk => chunk.content));
-			console.log(`Generated ${embeddings.length} embeddings`);
-      
-			// Prepare vectors for upsert
-			const vectors = chunks.slice(0, embeddings.length).map((chunk, index) => ({
-				id: `${municipalityId}-${domainId}-${index}`,
-				values: embeddings[index],
-				metadata: {
-					municipalityId: municipalityId,
-					municipalityName: municipalityId.replace('NY-', '').replace('-', ' '),
-					domainId: domainId,
-					domainName: domainId === 'weeds' ? 'Weed Management' : domainId,
-					chunkIndex: index,
-					section: chunk.metadata.section || '',
-					content: chunk.content.substring(0, 40000), // Pinecone metadata limit
-				}
-			}));
-      
-			console.log(`Created ${vectors.length} vectors for upsert`);
-      
-			// Upsert in batches
-			const batchSize = 100;
-			const index = this.getIndex();
-      
-			for (let i = 0; i < vectors.length; i += batchSize) {
-				const batch = vectors.slice(i, i + batchSize);
-				await index.upsert(batch);
-				// Batch processing silently
-			}
-      
-			// Indexing completed silently
-		} catch (error) {
-			console.error(`Error indexing statute for ${municipalityId}/${domainId}:`, error);
-			throw error;
-		}
+	async indexStatute(entityId: string, domainId: string, statuteText: string) {
+		return this.indexDocumentInPinecone(statuteText, entityId, domainId, "statute", { url: "", fileName: "statute.txt", fetchedAt: "" });
 	}
 
 	/**
 	 * Delete statute chunks from the vector database
+	 * This is used if we need to re-index a statute, ensuring we don't have orphaned chunks from previous versions. 
+	 * It also helps to keep the index clean and relevant.
+	 * 
+	 * //TODO change the parameters to be just the prefix
 	 */
-	async deleteStatute(municipalityId: string, domainId: string) {
+	async deleteIndexedChunksForDocument(
+		prefix: string,
+	) {
 		try {
 			const index = this.getIndex();
-      
-			// Get all vectors and delete by ID pattern
-			const listResponse = await index.listPaginated({
-				prefix: `${municipalityId}-${domainId}-`
-			});
-      
+
+			const ids: string[] = [];
+			const listResponse = await index.listPaginated({ prefix });
 			if (listResponse.vectors && listResponse.vectors.length > 0) {
-				const ids = listResponse.vectors.map(v => v.id!);
+				ids.push(...listResponse.vectors.map(v => v.id!).filter(Boolean));
+			}
+			const uniqueIds = [...new Set(ids)];
+      
+			if (uniqueIds.length > 0) {
         
 				// Delete in small batches to avoid Pinecone API limits
 				const batchSize = 10;
-				for (let i = 0; i < ids.length; i += batchSize) {
-					const batch = ids.slice(i, i + batchSize);
+				for (let i = 0; i < uniqueIds.length; i += batchSize) {
+					const batch = uniqueIds.slice(i, i + batchSize);
 					try {
 						await index.deleteMany({ ids: batch });
 					} catch (batchError) {
@@ -468,190 +444,266 @@ export class VectorService {
 
 	/** Split statute text into token-safe chunks for embedding */
 	chunkText(text: string, maxChunkSize = 1000): string[] {
-	const chunks: string[] = [];
-	const maxTokens = 5000;
-	console.log(`Starting intelligent chunking: ${text.length} characters, max chunk size: ${maxChunkSize}`);
+		const chunks: string[] = [];
+		const maxTokens = 5000;
+		console.log(`Starting intelligent chunking: ${text.length} characters, max chunk size: ${maxChunkSize}`);
 
-	let sections: string[];
-	const doubleNL = text.split(/\.\n\n/).filter(s => s.trim())
-		.map((s, i, a) => i < a.length - 1 && !s.endsWith(".") ? s + "." : s);
+		let sections: string[];
+		const doubleNL = text.split(/\.\n\n/).filter(s => s.trim())
+			.map((s, i, a) => i < a.length - 1 && !s.endsWith(".") ? s + "." : s);
 
-	if (doubleNL.length > 1 && doubleNL.every(s => s.length < maxChunkSize)) {
-		sections = doubleNL;
-		console.log(`Split into ${sections.length} sections by .\\n\\n separators`);
-	} else {
-		const singleNL = text.split(/\.\n/).filter(s => s.trim())
-		.map((s, i, a) => i < a.length - 1 && !s.endsWith(".") ? s + "." : s);
-		if (singleNL.length > 1 && singleNL.some(s => s.length < maxChunkSize * 0.8)) {
-		sections = singleNL;
-		console.log(`Split into ${sections.length} sections by .\\n separators`);
+		if (doubleNL.length > 1 && doubleNL.every(s => s.length < maxChunkSize)) {
+			sections = doubleNL;
+			console.log(`Split into ${sections.length} sections by .\\n\\n separators`);
 		} else {
-		sections = text.split(/(?=§\s*\d+|Section\s+\d+|SECTION\s+\d+|Article\s+[IVXLCDM]+)/i).filter(s => s.trim());
-		console.log(`Split into ${sections.length} sections by § markers (fallback)`);
-		}
-	}
-
-	for (let i = 0; i < sections.length; i++) {
-		const section = sections[i];
-		const sectionTokens = estimateTokens(section);
-		if (section.length <= maxChunkSize && sectionTokens <= maxTokens) {
-		chunks.push(section.trim());
-		} else {
-		const sentences = section.split(/(?<=[.!?])\s+/).filter(s => s.trim());
-		let current = "";
-		for (const sentence of sentences) {
-			const proposed = current + (current ? " " : "") + sentence;
-			if ((proposed.length > maxChunkSize || estimateTokens(proposed) > maxTokens) && current.trim()) {
-			chunks.push(current.trim());
-			current = sentence;
+			const singleNL = text.split(/\.\n/).filter(s => s.trim())
+			.map((s, i, a) => i < a.length - 1 && !s.endsWith(".") ? s + "." : s);
+			if (singleNL.length > 1 && singleNL.some(s => s.length < maxChunkSize * 0.8)) {
+			sections = singleNL;
+			console.log(`Split into ${sections.length} sections by .\\n separators`);
 			} else {
-			current = proposed;
+			sections = text.split(/(?=§\s*\d+|Section\s+\d+|SECTION\s+\d+|Article\s+[IVXLCDM]+)/i).filter(s => s.trim());
+			console.log(`Split into ${sections.length} sections by § markers (fallback)`);
 			}
 		}
-		if (current.trim()) chunks.push(current.trim());
+
+		for (let i = 0; i < sections.length; i++) {
+			const section = sections[i];
+			const sectionTokens = estimateTokens(section);
+			if (section.length <= maxChunkSize && sectionTokens <= maxTokens) {
+			chunks.push(section.trim());
+			} else {
+			const sentences = section.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+			let current = "";
+			for (const sentence of sentences) {
+				const proposed = current + (current ? " " : "") + sentence;
+				if ((proposed.length > maxChunkSize || estimateTokens(proposed) > maxTokens) && current.trim()) {
+				chunks.push(current.trim());
+				current = sentence;
+				} else {
+				current = proposed;
+				}
+			}
+			if (current.trim()) chunks.push(current.trim());
+			}
+		}
+
+		const validated = chunks
+			.filter(c => c.length > 400)
+			.filter(c => {
+			const t = estimateTokens(c);
+			if (t > maxTokens) { console.warn(`⚠️ Filtering oversized chunk: ~${t} tokens`); return false; }
+			if (c.length > 12000) { console.warn(`⚠️ Filtering large character chunk: ${c.length} chars`); return false; }
+			return true;
+			});
+
+		console.log(`Chunking complete: ${chunks.length} total → ${validated.length} validated`);
+		return validated;
+	}
+
+	/**
+	 * Chunk, embed, and upsert a document into Pinecone.
+	 *
+	 * @param domains - One domain string or an array of domains. The first element
+	 *   is the "primary" domain used for vector IDs and the backward-compat scalar
+	 *   `domainId` metadata field. All domains are stored in the `domainIds` array
+	 *   metadata field so a single set of vectors can be retrieved for any of them
+	 *   via `{ domainIds: { $in: [domain] } }` filter.
+	 */
+	async indexDocumentInPinecone(
+		documentText: string,
+		entityId: string,
+		domains: string | string[],
+		documentType: DocumentType = "statute",
+		provenance: { url: string, fileName: string, fetchedAt: string },
+		dryRun = false,
+	) {
+	const domainList = Array.isArray(domains) ? domains : [domains];
+	const primaryDomain = domainList[0];
+
+	await this.initializeIndex();
+
+	if (documentType === "statute") {
+		if (documentText.length > 5000000) {
+			console.log(`⚠️  Skipping ${entityId}/${primaryDomain} - statute file too large (${documentText.length} bytes)`);
+			return;
+		}
+		const binaryContentRegex = /[\x00-\x08\x0E-\x1F\x7F-\x9F\u2000-\u200F\uFEFF]/;
+		if (binaryContentRegex.test(documentText.substring(0, 1000))) {
+			console.log(`⚠️  Skipping ${entityId}/${primaryDomain} - statute appears to contain binary data`);
+			return;
 		}
 	}
 
-	const validated = chunks
-		.filter(c => c.length > 400)
-		.filter(c => {
-		const t = estimateTokens(c);
-		if (t > maxTokens) { console.warn(`⚠️ Filtering oversized chunk: ~${t} tokens`); return false; }
-		if (c.length > 12000) { console.warn(`⚠️ Filtering large character chunk: ${c.length} chars`); return false; }
-		return true;
-		});
-
-	console.log(`Chunking complete: ${chunks.length} total → ${validated.length} validated`);
-	return validated;
+	const prefix = getDocumentKey(entityId, domainList, documentType, provenance.fileName);
+	console.debug("Generated document key prefix:", prefix);
+	const alreadyIndexed = await this.hasIndexedDocument(prefix);
+	if (alreadyIndexed) {
+		await this.deleteIndexedChunksForDocument(prefix);
 	}
 
-	/** Chunk, embed, and upsert a document into Pinecone */
-	async indexDocumentInPinecone(
-	documentText: string,
-	entityId: string,
-	domain: string,
-	documentType: "statute" | "guidance" = "statute",
-	domainIds?: string[],
-	) {
 	const index = this.getIndex();
 
+	// TODO strip first line off of documentText - which would start with "# http" to the end of the line
+	const firstLineEnd = documentText.indexOf("\n");
+	if (firstLineEnd !== -1) {
+		if (documentText.substring(0, firstLineEnd).startsWith("# http")) {
+			documentText = documentText.substring(firstLineEnd + 1);
+		}
+	}
+
 	const chunks = this.chunkText(documentText, 2000);
-	console.log(`Indexing ${documentType} for ${entityId}-${domain}: ${chunks.length} chunks`);
+	console.log(`Indexing ${documentType} for ${entityId} [${domainList.join(", ")}]: ${chunks.length} chunks`);
 	const vectors: any[] = [];
 
 	for (let i = 0; i < chunks.length; i++) {
 		let chunk = chunks[i];
 		let tokenCount = estimateTokens(chunk);
-		console.log(`Chunk ${i + 1}/${chunks.length}: ${chunk.length} chars, ~${tokenCount} tokens`);
 		if (tokenCount > 8000) { console.warn(`⚠️ Skipping chunk ${i + 1}: exceeds embedding limit`); continue; }
 		if (tokenCount > 7500) {
-		chunk = chunk.substring(0, Math.floor(7500 * 3)) + "\n\n[truncated]";
-		tokenCount = estimateTokens(chunk);
+			chunk = chunk.substring(0, Math.floor(7500 * 3)) + "\n\n[truncated]";
+			tokenCount = estimateTokens(chunk);
 		}
 		try {
-		await checkRateLimit(estimateTokens(chunk));
-		const res = await this.openai.embeddings.create({ model: "text-embedding-3-small", input: chunk });
-		recordTokenUsage(res.usage?.total_tokens || estimateTokens(chunk));
-		const metadata: Record<string, any> = {
-			entityId, domainId: domain, documentType, chunkIndex: i, content: chunk,
-		};
-		if (domainIds && domainIds.length > 0) {
-			metadata.domainIds = domainIds;
-		}
-		vectors.push({
-			id: `${entityId}-${domain}-${documentType}-chunk-${i}`,
-			values: res.data[0].embedding,
-			metadata,
-		});
+			const estimatedChunkTokens = estimateTokens(chunk);
+			await checkRateLimit(estimatedChunkTokens);
+			const res = await this.openai.embeddings.create({ model: "text-embedding-3-small", input: chunk });
+			recordTokenUsage(res.usage?.total_tokens || estimatedChunkTokens, estimatedChunkTokens);
+			const docId = prefix + `-${i}`;
+			const metadata: Record<string, any> = {
+				entityId,
+				domainId: primaryDomain,  // scalar — backward-compat filter
+				domainIds: domainList,    // array  — use { domainIds: { $in: [d] } } to query
+				documentType,
+				chunkIndex: i,
+				content: chunk,
+				indexedAt: new Date().toISOString(),
+				...(provenance || {}),
+			};
+			console.log(`Generated embedding for chunk ${docId}} (tokens: ${tokenCount})`);
+			vectors.push({
+				id: docId,
+				values: res.data[0].embedding,
+				metadata,
+			});
 		} catch (error) {
-		console.error(`Error embedding chunk ${i}:`, error);
+			console.error(`Error embedding chunk ${i}:`, error);
 		}
 	}
 
 	if (vectors.length > 0) {
-		console.log(`Upserting ${vectors.length} vectors for ${entityId}-${domain}`);
-		await index.upsert(vectors);
-		console.log(`Indexed ${vectors.length} chunks`);
+		console.log(`Planning to upsert ${vectors.length} vectors for ${entityId} [${domainList.join(", ")}]`);
+		if (!dryRun) {
+			await index.upsert(vectors);
+			console.log(`Indexed ${vectors.length} chunks`);
+		} else {
+			console.log(`Dry run enabled - skipping upsert`);
+		}
 	}
 	}
 
 	/** Answer a question via Pinecone vector search + GPT-4o */
-	async answerQuestionWithVector(
-		question: string,
-		municipalityId: string,
-		domain: string,
-		indexOrExistingAnswersContext?: any,
-		existingAnswersContextOrScoreInstructions = "",
-		scoreInstructions?: string,
-		) {
-		const hasIndexObject =
-			typeof indexOrExistingAnswersContext === "object" &&
-			indexOrExistingAnswersContext !== null &&
-			typeof indexOrExistingAnswersContext.query === "function";
-		const index = hasIndexObject ? indexOrExistingAnswersContext : this.getIndex();
-		const existingAnswersContext = hasIndexObject
-			? existingAnswersContextOrScoreInstructions
-			: (indexOrExistingAnswersContext || "");
-		const resolvedScoreInstructions = hasIndexObject ? scoreInstructions : existingAnswersContextOrScoreInstructions;
+	/**
+	 * List indexed documents in the Pinecone index.
+	 * Fetches chunk-0 for each document key to retrieve metadata, up to `limit` documents.
+	 */
+	async listIndexedDocuments(limit = 100, prefix?: string): Promise<Array<{
+		id: string;
+		entityId: string;
+		domainIds: string[];
+		documentType: string;
+		indexedAt?: string;
+	}>> {
+		await this.initializeIndex();
+		const index = this.getIndex();
 
-		console.log(`Vector Q&A for ${municipalityId}-${domain}: "${question.substring(0, 100)}..."`);
-		try {
-			const enhanced = this.enhanceQuestionForVectorSearch(question, domain);
-			await checkRateLimit(estimateTokens(enhanced));
-			const embedRes = await this.openai.embeddings.create({ model: "text-embedding-3-small", input: enhanced });
-			const embeddingTokens = embedRes.usage?.total_tokens || estimateTokens(enhanced);
-			recordTokenUsage(embeddingTokens);
+		const results: Array<{ id: string; entityId: string; domainIds: string[]; documentType: string; indexedAt?: string }> = [];
+		let paginationToken: string | undefined;
 
-			const searchResults = await index.query({
-			vector: embedRes.data[0].embedding,
-			filter: { municipalityId, domainId: domain },
-			topK: 5,
-			includeMetadata: true,
-			});
+		outer: while (true) {
+			const response = await index.listPaginated({ limit: 100, paginationToken, ...(prefix ? { prefix } : {}) });
+			const chunkZeroIds = (response.vectors ?? [])
+				.map(v => v.id!)
+				.filter(id => id.endsWith("-0"));
 
-			if (!searchResults.matches?.length) {
-			return { answer: "Not specified in the statute.", confidence: 0, sourceRefs: [], vectorTokensUsed: embeddingTokens };
+			if (chunkZeroIds.length > 0) {
+				const fetched = await index.fetch(chunkZeroIds);
+				for (const [vectorId, vector] of Object.entries(fetched.records ?? {})) {
+					const m = vector.metadata as Record<string, any> | undefined;
+					results.push({
+						id: vectorId.replace(/-0$/, ""),
+						entityId: m?.entityId ?? "",
+						domainIds: (m?.domainIds as string[]) ?? (m?.domainId ? [m.domainId as string] : []),
+						documentType: m?.documentType ?? "",
+						indexedAt: m?.indexedAt,
+					});
+					if (results.length >= limit) break outer;
+				}
 			}
 
-			let relevantTexts = searchResults.matches
+			paginationToken = response.pagination?.next;
+			if (!paginationToken) break;
+		}
+
+		return results;
+	}
+
+	/** Answer a question via Pinecone vector search + GPT-4o */
+	async getRelevantChunksForQuestion(
+		question: string,
+		entityId: string,
+		domain: string,
+		topK = 5,
+		documentType?: DocumentType,
+	): Promise<{ chunks: string[]; sourceRefs: string[]; tokenUsage: number }> {
+		const enhanced = this.enhanceQuestionForVectorSearch(question, domain);
+		const estimatedQuestionTokens = estimateTokens(enhanced);
+		await checkRateLimit(estimatedQuestionTokens);
+		const embedRes = await this.openai.embeddings.create({ model: "text-embedding-3-small", input: enhanced });
+		const embeddingTokens = embedRes.usage?.total_tokens || estimatedQuestionTokens;
+		recordTokenUsage(embeddingTokens, estimatedQuestionTokens);
+
+		const filter: Record<string, any> = {
+			entityId,
+			domainIds: { $in: [domain] },
+		};
+
+		if (documentType) {
+			filter.documentType = documentType;
+		}
+
+		console.log(`[DEBUG] vectorService.getRelevantChunksForQuestion: entity=${entityId}, domain=${domain}, documentType=${documentType}`);
+
+		const searchResults = await this.getIndex().query({
+			vector: embedRes.data[0].embedding,
+			filter,
+			topK,
+			includeMetadata: true,
+		});
+
+		console.log(`[DEBUG] vectorService.getRelevantChunksForQuestion: got ${searchResults.matches?.length || 0} matches`);
+
+		if (!searchResults.matches?.length) {
+			return { chunks: [], sourceRefs: [], tokenUsage: embeddingTokens };
+		}
+
+		const chunks = searchResults.matches
 			.map((m: any, idx: number) => {
 				const text = m.metadata?.content || "";
-				const refs = extractSectionReferences(text);
-				const refInfo = refs.length ? ` (${refs.join(", ")})` : "";
-				return `--- CHUNK ${idx + 1} (score: ${m.score?.toFixed(3)}, chunk: ${m.metadata?.chunkIndex}${refInfo}) ---\n${text}`;
-			})
-			.join("\n\n");
+				// Log metadata and preview for debugging
+				console.log(`[VECTOR CHUNK] idx=${idx} score=${m.score?.toFixed(3)} chunkIndex=${m.metadata?.chunkIndex} refs=${JSON.stringify(extractSectionReferences(text))} 
+								preview="${text.substring(0, 60).replace(/\n/g, ' ')}"`);
 
-			const scoreText = resolvedScoreInstructions ? `\n\nSCORING GUIDANCE: ${resolvedScoreInstructions}` : "";
-			const systemPrompt = `You are analyzing municipal statutes. Based ONLY on the provided statute text, answer the user's question. If not found, respond with "Not specified in the statute." Cite section numbers when available.\n\nFocus on unique information for this specific question.${scoreText}`;
-			const userPromptPrefix = `Question: ${question}\n\nRelevant statute text:\n`;
-			const available = 6000 - estimateTokens(systemPrompt) - estimateTokens(userPromptPrefix);
-			if (estimateTokens(relevantTexts) > available)
-			relevantTexts = this.truncateToTokenLimit(relevantTexts, available);
-
-			const userPrompt = `${userPromptPrefix}${relevantTexts}${existingAnswersContext}`;
-			await checkRateLimit(estimateTokens(systemPrompt + userPrompt) + 1000);
-
-			const answerRes = await this.openai.chat.completions.create({
-			model: currentModel || "gpt-5.4-mini",
-			messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-			temperature: 0.1,
-			max_completion_tokens: 1000,
+				// let's add the url to the text for better provenance in the analysis chain - we can experiment with different formats here but the goal is to make sure the model has access to the source url in a consistent way that it can learn to recognize and use effectively
+				if (m.metadata?.url) {
+					return `Source: ${m.metadata.url}\n\n${text}`;
+				}
+				return text;
 			});
-			const answerTokens = answerRes.usage?.total_tokens || 1000;
-			recordTokenUsage(answerTokens);
-			await sleep(QUESTION_PAUSE_MS);
 
-			const answer = answerRes.choices[0].message.content || "Not specified in the statute.";
-			const avgScore = searchResults.matches.reduce((s: number, m: any) => s + (m.score || 0), 0) / searchResults.matches.length;
-			const confidence = Math.max(0, Math.min(100, Math.round(avgScore * 100)));
-			const sourceRefs = extractSectionReferences(relevantTexts);
-			console.log(`Answer: ${answer.substring(0, 100)}... (confidence: ${confidence}%, ${sourceRefs.length} refs)`);
-			return { answer, confidence, sourceRefs, vectorTokensUsed: answerTokens + embeddingTokens };
-		} catch (error) {
-			console.error("Error in vector search:", error);
-			return { answer: "Not specified in the statute.", confidence: 0, sourceRefs: [], vectorTokensUsed: 0 };
-		}
+		const sourceRefs = extractSectionReferences(chunks.join("\n\n"));
+		return { chunks, sourceRefs, tokenUsage: embeddingTokens };
 	}
+
 }
 

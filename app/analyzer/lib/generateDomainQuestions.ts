@@ -13,7 +13,7 @@ import {
   estimateTokens,
   recordTokenUsage,
   createChatCompletion,
-} from "../services/openai.js";
+} from "../services/aiService.js";
 import { getDefaultStorage } from "@civillyengaged/ordinizer-servercore"
 import { type Domain, type Question } from "@civillyengaged/ordinizer-core";
 

@@ -48,7 +48,7 @@ export interface Source {
   contentLength?: number;
   sourceUrl: string;
   title?: string;
-  type: "statute" | "policy" | "form" | "guidance";
+  type: "statute" | "policy" | "form" | "general";
   referencesStateCode?: boolean;
   filePaths?: {
     html?: string;

@@ -17,8 +17,21 @@ import {
 } from "./extractionConfig.js";
 import { Ruleset, RulesetSource } from "@civillyengaged/ordinizer-core";
 import { getDefaultStorage } from "@civillyengaged/ordinizer-servercore";
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+const DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const GENERIC_USER_AGENT = process.env.GENERIC_USER_AGENT || "Mozilla/5.0";
 const execFileAsync = promisify(execFile);
+
+function resolveUserAgent(userAgent?: string): string {
+  if (userAgent && userAgent.trim()) {
+    return userAgent;
+  }
+
+  if (process.env.NOTBOT === "1" || process.env.NOTBOT === "true") {
+    return GENERIC_USER_AGENT;
+  }
+
+  return process.env.USER_AGENT || DEFAULT_USER_AGENT;
+}
 
 let cachedLibraryConfig: Map<string, StatuteLibrary> | null | undefined;
 let cachedDefaultLibrary: StatuteLibrary | null | undefined;
@@ -358,13 +371,23 @@ export async function downloadFromUrl(url: string): Promise<string> {
     return response.data.toString(encoding);
 }
 
+export interface DownloadRequestOptions {
+  userAgent?: string;
+}
+
 function extractFinalContentType(rawHeaders: string): string {
   const lines = rawHeaders.split(/\r?\n/).reverse();
   const contentTypeLine = lines.find((line) => /^content-type\s*:/i.test(line));
   return contentTypeLine ? contentTypeLine.split(":").slice(1).join(":").trim().toLowerCase() : "";
 }
 
-export async function downloadViaCurl(url: string, saveToPath?: string, filename?: string): Promise<{ data: Buffer, isPdf: boolean }> {
+export async function downloadViaCurl(
+  url: string,
+  saveToPath?: string,
+  filename?: string,
+  options: DownloadRequestOptions = {},
+): Promise<{ data: Buffer, isPdf: boolean }> {
+  const userAgent = resolveUserAgent(options.userAgent);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ordinizer-curl-"));
   const safeFileBase = (filename || "download").replace(/[^a-zA-Z0-9._-]/g, "_");
   const bodyPath = path.join(tempDir, `${safeFileBase}.bin`);
@@ -380,7 +403,7 @@ export async function downloadViaCurl(url: string, saveToPath?: string, filename
       "--fail-with-body",
       "--connect-timeout", "20",
       "--max-time", "90",
-      "--user-agent", USER_AGENT,
+      "--user-agent", userAgent,
       "--dump-header", headersPath,
       "--output", bodyPath,
       url,
@@ -434,10 +457,16 @@ export async function downloadViaCurl(url: string, saveToPath?: string, filename
  * @param filename 
  * @returns object with data and isPdf
  */
-export async function downloadFromUrlAnyType(url: string, saveToPath?: string, filename?: string): Promise<{ data: Buffer, isPdf: boolean }> {
+export async function downloadFromUrlAnyType(
+  url: string,
+  saveToPath?: string,
+  filename?: string,
+  options: DownloadRequestOptions = {},
+): Promise<{ data: Buffer, isPdf: boolean }> {
+    const userAgent = resolveUserAgent(options.userAgent);
     const useCurlForUrl = await shouldUseCurlForUrl(url);
     if (useCurlForUrl) {
-      return downloadViaCurl(url, saveToPath, filename);
+      return downloadViaCurl(url, saveToPath, filename, options);
     }
 
     try {
@@ -446,7 +475,7 @@ export async function downloadFromUrlAnyType(url: string, saveToPath?: string, f
       url: url,
       timeout: 30000,
       headers: {
-        "User-Agent": USER_AGENT
+        "User-Agent": userAgent
       },
     });
 
@@ -455,7 +484,7 @@ export async function downloadFromUrlAnyType(url: string, saveToPath?: string, f
       maxRedirects: 5,
       responseType: 'arraybuffer',
       headers: {
-        "User-Agent": USER_AGENT,
+        "User-Agent": userAgent,
       },
     });
 
@@ -491,7 +520,7 @@ export async function downloadFromUrlAnyType(url: string, saveToPath?: string, f
         status,
       });
       try {
-        return await downloadViaCurl(url, saveToPath, filename);
+        return await downloadViaCurl(url, saveToPath, filename, options);
       } catch (curlError: any) {
         verboseLog(`Curl fallback failed`, {
           url,
@@ -508,10 +537,11 @@ export async function downloadFromUrlAnyType(url: string, saveToPath?: string, f
 
 export async function getContentTypeFromUrl(url: string): Promise<string> {
   try {
+    const userAgent = resolveUserAgent();
     const response = await axios.head(url, {
       timeout: 10000,
       headers: {
-        "User-Agent": USER_AGENT,
+        "User-Agent": userAgent,
       },
     });
     return response.headers["content-type"]?.toString() || "text/html";

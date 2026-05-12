@@ -6,7 +6,7 @@ import fs from "fs-extra";
 import path from "path";
 import axios from "axios";
 import { parseCommonCliArgs, requireDataRootAndRealm } from "./scriptArgs.js";
-import { createChatCompletion } from "../services/openai.js";
+import { createChatCompletion } from "../services/aiService.js";
 import { type Realm, Entity} from "@civillyengaged/ordinizer-core";
 
 

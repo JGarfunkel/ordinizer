@@ -8,12 +8,9 @@ import { registerDatasourceRoutes } from "./datasources";
 import { registerStatuteRoutes } from "./statutes";
 import { registerScoreRoutes } from "./scores";
 import { registerAnalysisRoutes } from "./analyses";
-//import { registerQuestionEntityRoutes } from "./questionMunicipalities";
 import { registerMapBoundariesRoutes } from "./mapBoundaries";
 import { registerMetaAnalysisRoutes } from "./metaAnalysis";
 import { registerCombinedMatrixRoutes } from "./combinedMatrix";
-//import { registerJurisdictionRoutes } from "./jurisdictions";
-import { registerVectorRoutes } from "./vector";
 
 export function registerAllRoutes(app: Express, apiPrefix = "/api") {
   registerRealmRoutes(app, apiPrefix);
@@ -31,5 +28,4 @@ export function registerAllRoutes(app: Express, apiPrefix = "/api") {
   registerCombinedMatrixRoutes(app, apiPrefix);
   // registerJurisdictionRoutes(app, apiPrefix);
   // Do NOT register vector routes in main app unless desired
-  // registerVectorRoutes(app, apiPrefix);
 }

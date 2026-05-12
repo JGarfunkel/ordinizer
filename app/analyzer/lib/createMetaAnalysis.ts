@@ -1,7 +1,7 @@
 import { Analysis, AnalysisAnswer, BestPractice, MetaAnalysis } from "@civillyengaged/ordinizer-core";
 import {
  checkRateLimit, recordTokenUsage, estimateTokens, sleep, fetchChatResponse
-} from "../services/openai.js";
+} from "../services/aiService.js";
 import { getDefaultStorage, IStorage} from "@civillyengaged/ordinizer-servercore";
 import { analyzeGapText } from './gapAnalysis'
 

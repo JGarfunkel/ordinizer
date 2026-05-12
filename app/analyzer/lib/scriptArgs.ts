@@ -3,6 +3,7 @@ export interface CommonCliOptions {
   realm?: string;
   domain?: string;
   entity?: string;
+  notbot: boolean;
   force: boolean;
   dryRun: boolean;
 }
@@ -14,6 +15,7 @@ export interface ParsedCommonCli {
 
 export function parseCommonCliArgs(args: string[]): ParsedCommonCli {
   const common: CommonCliOptions = {
+    notbot: false,
     force: false,
     dryRun: false,
   };
@@ -49,6 +51,12 @@ export function parseCommonCliArgs(args: string[]): ParsedCommonCli {
 
     if (arg === "--force") {
       common.force = true;
+      continue;
+    }
+
+    if (arg === "--notbot") {
+      common.notbot = true;
+      process.env.NOTBOT = "1";
       continue;
     }
 

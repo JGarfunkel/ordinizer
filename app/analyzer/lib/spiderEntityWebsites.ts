@@ -43,6 +43,7 @@ import {
   loadHistoryData,
   saveHistoryData,
   upsertHistoryEntry,
+  recordFileSize,
   loadWebsitesFile,
   saveWebsitesFile,
   sanitizeFileSlug,
@@ -92,6 +93,8 @@ interface Args {
   dataRoot: string;
   realm: string;
   entity?: string;
+  notbot: boolean;
+  verbose: boolean;
   all: boolean;
   domain?: string;
   dryRun: boolean;
@@ -108,6 +111,9 @@ interface Args {
   cleanup: boolean;
   rewriteText: boolean;
   scan: boolean;
+  listLocal: boolean;
+  reportRelatedWithoutDomains: boolean;
+  refetch: boolean;
   force: boolean;
 }
 
@@ -125,6 +131,17 @@ interface StatusCounts {
   unrelated: number;
   otherFailure: number;
 }
+
+const HISTORY_STATUSES: HistoryStatus[] = [
+  "404",
+  "blocked",
+  "no-content",
+  "robots-disallow",
+  "timeout",
+  "unrelated",
+  "related",
+  "index",
+];
 
 const SPIDER_LOG_FILE = path.resolve(process.cwd(), "spider.log");
 let spiderLogInitialized = false;
@@ -154,6 +171,36 @@ function getStatusCounts(historyMap: Map<string, SpiderHistoryEntry>): StatusCou
 
 function formatContentSelectorValue(values: string[]): string {
   return values.length > 0 ? values.join(",") : "(none)";
+}
+
+function getDetailedStatusCounts(historyMap: Map<string, SpiderHistoryEntry>): Record<HistoryStatus, number> {
+  const counts = Object.fromEntries(HISTORY_STATUSES.map((status) => [status, 0])) as Record<HistoryStatus, number>;
+  for (const entry of historyMap.values()) {
+    counts[entry.status] += 1;
+  }
+  return counts;
+}
+
+function formatAgeFromTimestamp(timestamp: string): string {
+  const ts = Date.parse(timestamp);
+  if (!Number.isFinite(ts)) {
+    return "unknown";
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - ts);
+  const minutes = Math.floor(elapsedMs / (60 * 1000));
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    const remMinutes = minutes % 60;
+    return remMinutes > 0 ? `${hours}h ${remMinutes}m` : `${hours}h`;
+  }
+
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
 }
 
 function escapeMarkdownCell(value: string): string {
@@ -221,6 +268,7 @@ async function hasCachedHtmlArtifact(
 }
 
 const USER_AGENT = process.env.USER_AGENT || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+const GENERIC_USER_AGENT = process.env.GENERIC_USER_AGENT || "Mozilla/5.0";
 
 /**
  * Signal for user-initiated clean exit from interactive mode
@@ -249,10 +297,54 @@ class InteractiveNextEntitySignal extends Error {
     this.name = "InteractiveNextEntitySignal";
   }
 }
-const REQUEST_DELAY_MS = 1000;
+const REQUEST_DELAY_MS = 2000;
+const BOT_REJECTION_STREAK_THRESHOLD = 3;
+
+function isBotRejectedStatus(status: HistoryStatus): boolean {
+  return status === "blocked";
+}
+
+async function fetchPageWithBotFallback(
+  url: string,
+  consecutiveBotRejections: number,
+  forceGenericUserAgent = false,
+): Promise<{ fetched: Awaited<ReturnType<typeof fetchPageContent>>; consecutiveBotRejections: number }> {
+  const fetched = forceGenericUserAgent
+    ? await fetchPageContent(url, { userAgent: GENERIC_USER_AGENT })
+    : await fetchPageContent(url);
+  await delay(REQUEST_DELAY_MS);
+
+  if (forceGenericUserAgent) {
+    return {
+      fetched,
+      consecutiveBotRejections: isBotRejectedStatus(fetched.status) ? consecutiveBotRejections + 1 : 0,
+    };
+  }
+
+  if (!fetched.page && isBotRejectedStatus(fetched.status)) {
+    const updatedRejections = consecutiveBotRejections + 1;
+    if (updatedRejections >= BOT_REJECTION_STREAK_THRESHOLD) {
+      console.log(`[FETCH][RETRY] ${updatedRejections} bot rejections in a row. Retrying with generic USER-AGENT for: ${url}`);
+      const retryFetched = await fetchPageContent(url, { userAgent: GENERIC_USER_AGENT });
+      await delay(REQUEST_DELAY_MS);
+      if (retryFetched.page) {
+        return { fetched: retryFetched, consecutiveBotRejections: 0 };
+      }
+      return {
+        fetched: retryFetched,
+        consecutiveBotRejections: isBotRejectedStatus(retryFetched.status) ? updatedRejections : 0,
+      };
+    }
+    return { fetched, consecutiveBotRejections: updatedRejections };
+  }
+
+  return { fetched, consecutiveBotRejections: 0 };
+}
 
 const DEFAULT_RECRAWL_DAYS = 3;
 const DEFAULT_MAX_PAGES_PER_SOURCE = 30;
+/** Maximum number of domain matches stored per page. Keeping this small avoids overfit and noisy data. */
+const MAX_MATCHED_DOMAINS = 3;
 function normalizeReviewChoice(value: string, fallback: ReviewStatus): ReviewStatus {
   const normalized = value.trim().toLowerCase();
   if (!normalized) return fallback;
@@ -361,6 +453,8 @@ function parseArgs(args: string[]): Args {
     dataRoot: common.dataRoot,
     realm: common.realm,
     entity: common.entity,
+    notbot: common.notbot,
+    verbose: false,
     domain: common.domain,
     all: false,
     dryRun: common.dryRun,
@@ -375,6 +469,9 @@ function parseArgs(args: string[]): Args {
     cleanup: false,
     rewriteText: false,
     scan: false,
+    listLocal: false,
+    reportRelatedWithoutDomains: false,
+    refetch: false,
     force: false,
   };
 
@@ -453,6 +550,10 @@ function parseArgs(args: string[]): Args {
       options.interactive = true;
       continue;
     }
+    if (arg === "--verbose" || arg === "-v") {
+      options.verbose = true;
+      continue;
+    }
     if (arg === "--interactive-honor-history") {
       options.interactiveHonorHistory = true;
       continue;
@@ -469,6 +570,18 @@ function parseArgs(args: string[]): Args {
       options.scan = true;
       continue;
     }
+    if (arg === "--listlocal") {
+      options.listLocal = true;
+      continue;
+    }
+    if (arg === "--report-related-without-domains") {
+      options.reportRelatedWithoutDomains = true;
+      continue;
+    }
+    if (arg === "--refetch") {
+      options.refetch = true;
+      continue;
+    }
     if (arg === "--force") {
       options.force = true;
       continue;
@@ -477,12 +590,24 @@ function parseArgs(args: string[]): Args {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  if (!options.cleanup && !options.rewriteText && !options.all && !options.entity && !options.specimenUrlsFile) {
+  if (!options.cleanup && !options.rewriteText && !options.listLocal && !options.reportRelatedWithoutDomains && !options.refetch && !options.all && !options.entity && !options.specimenUrlsFile) {
     throw new Error("Specify --entity <id>, --all, or --specimenUrlsFile <path>");
   }
 
-  if (options.scan && (options.cleanup || options.rewriteText || Boolean(options.specimenUrlsFile))) {
-    throw new Error("--scan/--nospider cannot be combined with --cleanup, --rewriteText, or --specimenUrlsFile");
+  if (options.scan && (options.cleanup || options.rewriteText || options.listLocal || options.reportRelatedWithoutDomains || options.refetch || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--scan/--nospider cannot be combined with --cleanup, --rewriteText, --listlocal, --report-related-without-domains, --refetch, or --specimenUrlsFile");
+  }
+
+  if (options.listLocal && (options.cleanup || options.rewriteText || options.scan || options.reportRelatedWithoutDomains || options.refetch || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--listlocal cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --report-related-without-domains, --refetch, or --specimenUrlsFile");
+  }
+
+  if (options.reportRelatedWithoutDomains && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.refetch || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--report-related-without-domains cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --refetch, or --specimenUrlsFile");
+  }
+
+  if (options.refetch && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.reportRelatedWithoutDomains || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--refetch cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --report-related-without-domains, or --specimenUrlsFile");
   }
 
   if (options.interactiveHonorHistory) {
@@ -715,39 +840,47 @@ function evaluateLinkCandidate(
     localMenuUrls: Set<string>;
     entityRecordUrls: Set<string>;
     recrawlDays: number;
+    verbose: boolean;
   },
 ): LinkCandidateEvaluation | null {
   const normalizedLinkUrl = normalizeUrlForMatch(linkUrl);
-  if (context.entityRecordUrls.has(normalizedLinkUrl)) {
+  const logSkip = (reason: string): null => {
+    if (context.verbose) {
+      console.log(`[LINK][SKIP] ${normalizedLinkUrl} - ${reason}`);
+    }
     return null;
+  };
+
+  if (context.entityRecordUrls.has(normalizedLinkUrl)) {
+    return logSkip("entity seed URL");
   }
   if (context.visited.has(normalizedLinkUrl) || context.queuedNormalizedUrls.has(normalizedLinkUrl)) {
-    return null;
+    return logSkip("already visited or already queued");
   }
   if (context.localMenuUrls.has(normalizedLinkUrl)) {
-    return null;
+    return logSkip("known local menu URL");
   }
   if (SKIP_URL_PATTERN.test(normalizedLinkUrl)) {
-    return null;
+    return logSkip("matches skip URL pattern");
   }
 
   let hostname = "";
   try {
     hostname = new URL(normalizedLinkUrl).hostname.toLowerCase();
   } catch {
-    return null;
+    return logSkip("invalid URL");
   }
 
   if (!isAllowedCrawlHost(hostname, context.allowedHosts)) {
-    return null;
+    return logSkip(`host not allowed (${hostname})`);
   }
 
   const existingLinkHistory = context.historyMap.get(normalizedLinkUrl);
   if (existingLinkHistory && canSkipStatus(existingLinkHistory.status)) {
-    return null;
+    return logSkip(`history status skip (${existingLinkHistory.status})`);
   }
   if (wasAttemptedRecently(existingLinkHistory, context.recrawlDays)) {
-    return null;
+    return logSkip(`attempted recently (${existingLinkHistory?.timestamp || "unknown"})`);
   }
 
   return {
@@ -763,9 +896,9 @@ function inferSourceType(url: string, title: string): RulesetSource["type"] {
     return "form";
   }
   if (text.includes("policy") || text.includes("guideline") || text.includes("manual")) {
-    return "guidance";
+    return "general";
   }
-  return "guidance";
+  return "general";
 }
 
 async function runSpecimenMode(
@@ -801,6 +934,7 @@ async function runSpecimenMode(
   const specimenEntityId = args.entity || "__specimen__";
   await ensureEntityHistoryLayout(storage, specimenEntityId);
   const { historyMap } = await loadHistoryData(storage, specimenEntityId);
+  let consecutiveBotRejections = 0;
 
   console.log(`[SPECIMEN] Evaluating ${urls.length} URL(s) against ${domainsToUse.length} domain(s)\n`);
 
@@ -812,7 +946,9 @@ async function runSpecimenMode(
     const normalizedUrl = normalizeUrlForMatch(url);
     let status: HistoryStatus = "related";
 
-    const fetched = await fetchPageContent(url);
+    const fetchResult = await fetchPageWithBotFallback(url, consecutiveBotRejections, args.notbot);
+    const fetched = fetchResult.fetched;
+    consecutiveBotRejections = fetchResult.consecutiveBotRejections;
     if (!fetched.page) {
       status = fetched.status;
       console.log(`[ERROR] Could not fetch or parse URL (${status})`);
@@ -855,7 +991,8 @@ async function runSpecimenMode(
     const scores = scoreDomainDetailed(domainsToUse, page, specimenEntity?.governingBody);
     const matchedDomainIds = scores
       .filter((score) => isDomainScoreMatch(score))
-      .map((score) => score.domainId);
+      .map((score) => score.domainId)
+      .slice(0, MAX_MATCHED_DOMAINS);
 
     status = matchedDomainIds.length > 0 ? "related" : "unrelated";
     upsertHistoryEntry(historyMap, {
@@ -884,12 +1021,12 @@ async function runSpecimenMode(
   console.log("[SPECIMEN] Done.");
 }
 
-async function readRobotsAllows(url: string): Promise<(targetUrl: string) => boolean> {
+async function readRobotsAllows(url: string, userAgent: string = USER_AGENT): Promise<(targetUrl: string) => boolean> {
   try {
     const robotsUrl = new URL("/robots.txt", url).toString();
     const response = await axios.get(robotsUrl, {
       timeout: 5000,
-      headers: { "User-Agent": USER_AGENT },
+      headers: { "User-Agent": userAgent },
       validateStatus: () => true,
     });
     if (response.status < 200 || response.status >= 400 || typeof response.data !== "string") {
@@ -957,7 +1094,7 @@ async function spiderEntity(
 
   const robotsCheckers = new Map<string, (targetUrl: string) => boolean>();
   for (const host of Array.from(allowedHosts)) {
-    const checker = await readRobotsAllows(`https://${host}`);
+    const checker = await readRobotsAllows(`https://${host}`, args.notbot ? GENERIC_USER_AGENT : USER_AGENT);
     robotsCheckers.set(host, checker);
   }
 
@@ -982,9 +1119,14 @@ async function spiderEntity(
     const { discovered: discoveredMenuLinks, contentSelectors } = await discoverLocalMenuLinks(storage, historyMap, entity, entityRecordUrls, {
       domains: domainsToUse,
     });
+    // Preserve wildcard entries — they are managed by cleanup mode and should survive menu link rediscovery.
+    const wildcardUrls = Array.from(localMenuUrls).filter((url) => url.endsWith("*"));
     localMenuUrls.clear();
     for (const menuUrl of discoveredMenuLinks) {
       localMenuUrls.add(menuUrl);
+    }
+    for (const wildcard of wildcardUrls) {
+      localMenuUrls.add(wildcard);
     }
     menuLinks.urls = Array.from(localMenuUrls);
     menuLinks.timestamp = new Date().toISOString();
@@ -1111,7 +1253,7 @@ async function spiderEntity(
           );
         }
       }
-      const matchedDomainIds = matchedScores.map((score) => score.domainId);
+      const matchedDomainIds = matchedScores.map((score) => score.domainId).slice(0, MAX_MATCHED_DOMAINS);
 
       // Check if this page is a seed/entity URL (depth 0) - always treat as related
       const normalizedMainUrl = entity.mainUrl ? normalizeUrlForMatch(entity.mainUrl) : null;
@@ -1205,6 +1347,7 @@ async function spiderEntity(
       // Cache hits normally reuse artifacts, but if artifact files are missing, re-save them.
       let localFile: string | undefined = priorEntry?.localFile;
       let localFileText: string | undefined = priorEntry?.localFileText;
+      let localFileTextSize: number | undefined = priorEntry?.localFileTextSize;
 
       const hasHtmlArtifact = localFile
         ? await fs.pathExists(fromRelativeDownloadsPath(storage, localFile))
@@ -1224,7 +1367,18 @@ async function spiderEntity(
           contentSelector: hostRecordBefore?.contentSelector,
         });
         if (saved.localFile) localFile = saved.localFile;
-        if (saved.localFileText) localFileText = saved.localFileText;
+        if (saved.localFileText) {
+          localFileText = saved.localFileText;
+          localFileTextSize = await recordFileSize(storage, historyMap, {
+            url: normalizedPageUrl,
+            entityId: entity.id,
+            matchedDomainIds,
+            status: finalStatus,
+            timestamp: statusTimestamp,
+            ...(localFile ? { localFile } : {}),
+            localFileText,
+          });
+        }
         console.log(`[ARTIFACTS] saved for ${scoredPage.url}: localFile=${localFile}, localFileText=${localFileText}`);
       } else if (page.fromCache) {
         console.log(`[ARTIFACTS] skipped (fromCache) for ${scoredPage.url}: reusing localFile=${localFile}, localFileText=${localFileText}`);
@@ -1243,57 +1397,59 @@ async function spiderEntity(
           timestamp: statusTimestamp,
           ...(localFile ? { localFile } : {}),
           ...(localFileText ? { localFileText } : {}),
+          ...(typeof localFileTextSize === "number" ? { localFileTextSize } : {}),
         });
         console.log(`[HISTORY] entry for ${finalStatus}: url=${normalizedPageUrl} localFile=${localFile || '(none)'} localFileText=${localFileText || '(none)'}`);
       }
 
-      if (finalStatus !== "index") {
-        for (const scored of matchedScores) {
-          try {
-            const domain = domainsToUse.find((d) => (d.id || d.name) === scored.domainId);
+      // if (finalStatus !== "index") {
+      //   for (const scored of matchedScores) {
+      //     try {
+      //       const domain = domainsToUse.find((d) => (d.id || d.name) === scored.domainId);
 
-            // Use the TXT artifact as downloadedFilename, or HTML if TXT not available
-            const downloadedFilename = localFileText || localFile || "";
+      //       // Use the TXT artifact as downloadedFilename, or HTML if TXT not available
+      //       const downloadedFilename = localFileText || localFile || "";
 
-            const source: RulesetSource = {
-              sourceUrl: scoredPage.url,
-              downloadedAt: new Date().toISOString(),
-              title: scoredPage.title || scoredPage.url,
-              type: inferSourceType(scoredPage.url, scoredPage.title),
-              downloadedFilename,
-            };
+      //       const source: RulesetSource = {
+      //         sourceUrl: scoredPage.url,
+      //         downloadedAt: new Date().toISOString(),
+      //         title: scoredPage.title || scoredPage.url,
+      //         type: inferSourceType(scoredPage.url, scoredPage.title),
+      //         downloadedFilename,
+      //       };
 
-            const ruleset = await storage.getRulesetOrCreate(scored.domainId, entity.id);
-            ruleset.municipality = ruleset.municipality || entity.name;
-            ruleset.municipalityType = ruleset.municipalityType || entity.type;
-            ruleset.domain = ruleset.domain || domain?.displayName || scored.domainId;
-            ruleset.homePage = ruleset.homePage || normalizeUrl(entity.mainUrl) || scoredPage.url;
+      //       const ruleset = await storage.getRulesetOrCreate(scored.domainId, entity.id);
+      //       ruleset.municipality = ruleset.municipality || entity.name;
+      //       ruleset.municipalityType = ruleset.municipalityType || entity.type;
+      //       ruleset.domain = ruleset.domain || domain?.displayName || scored.domainId;
+      //       ruleset.homePage = ruleset.homePage || normalizeUrl(entity.mainUrl) || scoredPage.url;
 
-            const before = (ruleset.sources || []).length;
-            addOrUpdateSource(ruleset, source);
-            const after = (ruleset.sources || []).length;
+      //       const before = (ruleset.sources || []).length;
+      //       addOrUpdateSource(ruleset, source);
+      //       const after = (ruleset.sources || []).length;
 
-            if (args.dryRun) {
-              console.log(
-                `[DRY-RUN][MATCH] ${entity.id} ${scored.domainId} <- ${scoredPage.url} (sources ${before} -> ${after}) file=${downloadedFilename}`,
-              );
-            } else {
-              await storage.saveRuleset(ruleset);
-              const metadataPath = path.join(await storage.getPathForDomainAndEntity(ruleset), "metadata.json");
-              console.log(`[UPDATE] ${entity.id} ${scored.domainId} metadata: ${metadataPath}`);
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            console.warn(`[WARN] ${entity.id} failed updating ${scored.domainId} for ${scoredPage.url}: ${message}`);
-          }
-        }
-      } else {
-        console.log(`[INDEX] ${entity.id}: ${scoredPage.url} classified as index (artifacts/history kept, source writes skipped)`);
-      }
+      //       if (args.dryRun) {
+      //         console.log(
+      //           `[DRY-RUN][MATCH] ${entity.id} ${scored.domainId} <- ${scoredPage.url} (sources ${before} -> ${after}) file=${downloadedFilename}`,
+      //         );
+      //       } else {
+      //         await storage.saveRuleset(ruleset);
+      //         const metadataPath = path.join(await storage.getPathForDomainAndEntity(ruleset), "metadata.json");
+      //         console.log(`[UPDATE] ${entity.id} ${scored.domainId} metadata: ${metadataPath}`);
+      //       }
+      //     } catch (error) {
+      //       const message = error instanceof Error ? error.message : String(error);
+      //       console.warn(`[WARN] ${entity.id} failed updating ${scored.domainId} for ${scoredPage.url}: ${message}`);
+      //     }
+      //   }
+      // } else {
+      //   console.log(`[INDEX] ${entity.id}: ${scoredPage.url} classified as index (artifacts/history kept, source writes skipped)`);
+      // }
     }
   };
 
   try {
+    let consecutiveBotRejections = 0;
     while (queue.length > 0 && pages.length < args.maxPages) {
     const task = queue.shift()!;
     const isBaseEntityUrl = task.depth === 0;
@@ -1338,6 +1494,7 @@ async function spiderEntity(
               localMenuUrls,
               entityRecordUrls,
               recrawlDays: args.recrawlDays,
+              verbose: args.verbose,
             });
             if (!evaluatedLink) {
               continue;
@@ -1465,7 +1622,7 @@ async function spiderEntity(
 
     let checker = robotsCheckers.get(host);
     if (!checker) {
-      checker = await readRobotsAllows(`https://${host}`);
+      checker = await readRobotsAllows(`https://${host}`, args.notbot ? GENERIC_USER_AGENT : USER_AGENT);
       robotsCheckers.set(host, checker);
     }
     if (!checker(task.url)) {
@@ -1483,9 +1640,21 @@ async function spiderEntity(
 
     console.log(`[FETCH] ${entity.id} depth=${task.depth} ${task.url}`);
 
-    const fetched = await fetchPageContent(task.url);
-    await delay(REQUEST_DELAY_MS);
+    const fetchResult = await fetchPageWithBotFallback(task.url, consecutiveBotRejections, args.notbot);
+    const fetched = fetchResult.fetched;
+    consecutiveBotRejections = fetchResult.consecutiveBotRejections;
+    let cachedHtmlForBlockedFetch: string | null = null;
     if (!fetched.page) {
+      if (fetched.status === "blocked" && existingHistory) {
+        const cached = await loadCachedPageFromHistory(storage, existingHistory, task.depth);
+        if (cached?.page.htmlContent) {
+          cachedHtmlForBlockedFetch = cached.page.htmlContent;
+          const cacheFile = existingHistory.localFile || existingHistory.localFileText || "(no artifact)";
+          console.log(`[CACHE] fetch blocked for ${task.url}; using cached HTML for link scan file=${cacheFile}`);
+        }
+      }
+
+      if (!cachedHtmlForBlockedFetch) {
       if (!entityRecordUrls.has(normalizedTaskUrl)) {
         upsertHistoryEntry(historyMap, {
           url: normalizedTaskUrl,
@@ -1495,13 +1664,14 @@ async function spiderEntity(
         });
       }
       continue;
+      }
     }
 
-    if (fetched.page.kind === "pdf") {
+    if (fetched.page?.kind === "pdf") {
       const filename = new URL(task.url).pathname.split("/").filter(Boolean).pop() || task.url;
       const title = decodeURIComponent(filename);
       let plainText = "";
-      if (fetched.page.pdfBuffer) {
+      if (fetched.page?.pdfBuffer) {
         plainText = (await pdfToText(fetched.page.pdfBuffer, title, false)).trim();
       }
       pages.push({
@@ -1516,17 +1686,18 @@ async function spiderEntity(
       });
       pagesBySource[task.source] += 1;
     } else {
-      const extracted = extractLinksAndText(task.url, fetched.page.html || "");
+      const extracted = extractLinksAndText(task.url, fetched.page?.html || cachedHtmlForBlockedFetch || "");
       const page: CrawledPage = {
         url: task.url,
         depth: task.depth,
         title: extracted.title,
         headers: extracted.headers,
-        htmlContent: fetched.page.html,
+        htmlContent: fetched.page?.html || cachedHtmlForBlockedFetch || undefined,
         plainText: extracted.plainText,
         textSample: extracted.sample,
         isPdf: false,
         links: extracted.links,
+        ...(cachedHtmlForBlockedFetch ? { fromCache: true } : {}),
       };
       pages.push(page);
       pagesBySource[task.source] += 1;
@@ -1537,9 +1708,9 @@ async function spiderEntity(
 
       let linkCandidatesToEvaluate = extracted.linkCandidates;
       const hostRecord = websitesFile.hosts[getLikelyHostname(task.url)];
-      if (hostRecord?.contentSelector && fetched.page.html) {
+      if (hostRecord?.contentSelector && page.htmlContent) {
         linkCandidatesToEvaluate = extractContentBlockLinkCandidates(
-          fetched.page.html,
+          page.htmlContent,
           task.url,
           hostRecord.contentSelector,
         );
@@ -1554,6 +1725,7 @@ async function spiderEntity(
           localMenuUrls,
           entityRecordUrls,
           recrawlDays: args.recrawlDays,
+          verbose: args.verbose,
         });
         if (!evaluatedLink) {
           continue;
@@ -1779,6 +1951,12 @@ async function runRewriteTextMode(storage: any, targets: Entity[], args: Args): 
       if (entry.localFileText !== txtRelPath) {
         historyMap.set(entry.url, { ...entry, localFileText: txtRelPath });
       }
+
+      const refreshedEntry = historyMap.get(entry.url) || { ...entry, localFileText: txtRelPath };
+      await recordFileSize(storage, historyMap, {
+        ...refreshedEntry,
+        localFileText: txtRelPath,
+      });
     }
 
     if (!args.dryRun) {
@@ -1793,10 +1971,299 @@ async function runRewriteTextMode(storage: any, targets: Entity[], args: Args): 
   );
 }
 
+async function runRelatedWithoutDomainsReport(storage: any, targets: Entity[]): Promise<void> {
+  const relatedWithoutDomainsGlobal: Array<{ entityId: string; url: string }> = [];
+
+  for (const entity of targets) {
+    const historyPath = getHistoryFilePath(storage, entity.id);
+    if (!(await fs.pathExists(historyPath))) {
+      continue;
+    }
+
+    const { historyMap } = await loadHistoryData(storage, entity.id);
+    const relatedWithoutDomainsEntity: string[] = [];
+
+    for (const [url, entry] of historyMap.entries()) {
+      const normalizedUrl = normalizeUrlForMatch(url);
+      if (entry.status === "related" && (!entry.matchedDomainIds || entry.matchedDomainIds.length === 0)) {
+        relatedWithoutDomainsEntity.push(normalizedUrl);
+      }
+    }
+
+    if (relatedWithoutDomainsEntity.length > 0) {
+      relatedWithoutDomainsGlobal.push(...relatedWithoutDomainsEntity.map((url) => ({ entityId: entity.id, url })));
+      console.log(`[REPORT] ${entity.id}: related entries without matchedDomainIds (${relatedWithoutDomainsEntity.length})`);
+      for (const url of relatedWithoutDomainsEntity) {
+        console.log(`  [REPORT][RELATED-WITHOUT-DOMAINS] ${url}`);
+      }
+    }
+  }
+
+  if (relatedWithoutDomainsGlobal.length === 0) {
+    console.log("[REPORT] No related entries without matchedDomainIds found.");
+    return;
+  }
+
+  console.log(`[REPORT] related entries without matchedDomainIds (global: ${relatedWithoutDomainsGlobal.length})`);
+  for (const item of relatedWithoutDomainsGlobal) {
+    console.log(`  [REPORT][RELATED-WITHOUT-DOMAINS] ${item.entityId} ${item.url}`);
+  }
+}
+
+async function runListLocalMode(storage: any, targets: Entity[], args: Args): Promise<void> {
+  const reportPath = path.join(getEntityDownloadsRoot(storage), "FileReport.md");
+  const reportLines: string[] = [
+    "# Entity Local File Report",
+    "",
+    `Generated at: ${new Date().toISOString()}`,
+    "",
+  ];
+
+  let entitiesWithHistory = 0;
+  let totalFiles = 0;
+  let totalSize = 0;
+  let totalUpdatedSizes = 0;
+
+  for (const entity of targets) {
+    const historyPath = getHistoryFilePath(storage, entity.id);
+    if (!(await fs.pathExists(historyPath))) {
+      continue;
+    }
+
+    entitiesWithHistory += 1;
+    const { historyMap, menuLinks } = await loadHistoryData(storage, entity.id);
+    let entityUpdated = false;
+
+    for (const [url, entry] of historyMap.entries()) {
+      if (!entry.localFileText) {
+        continue;
+      }
+      const previousSize = entry.localFileTextSize;
+      const updatedSize = await recordFileSize(storage, historyMap, entry);
+      if (typeof updatedSize === "number" && updatedSize !== previousSize) {
+        entityUpdated = true;
+        totalUpdatedSizes += 1;
+      }
+
+      if (url !== normalizeUrlForMatch(url)) {
+        // Keep key in map normalized if legacy data slipped in.
+        const normalized = normalizeUrlForMatch(url);
+        const normalizedEntry = historyMap.get(url);
+        if (normalizedEntry) {
+          historyMap.delete(url);
+          historyMap.set(normalized, normalizedEntry);
+        }
+      }
+    }
+
+    if (entityUpdated && !args.dryRun) {
+      await saveHistoryData(storage, entity.id, historyMap, menuLinks);
+    }
+
+    const statusCounts = getDetailedStatusCounts(historyMap);
+    const entriesWithFiles = Array.from(historyMap.values())
+      .filter((entry) => Boolean(entry.localFileText) && entry.status === "related")
+      .sort((a, b) => a.url.localeCompare(b.url));
+
+    reportLines.push(`## ${entity.id} (${entity.name})`);
+    reportLines.push("");
+    reportLines.push("### Entity URLs");
+    reportLines.push(`- governingUrl: ${entity.governingUrl || "(none)"}`);
+    reportLines.push(`- mainUrl: ${entity.mainUrl || "(none)"}`);
+    reportLines.push(`- hubUrl: ${entity.hubUrl || "(none)"}`);
+    reportLines.push(`- authorityUrl: ${entity.authorityUrl || "(none)"}`);
+    reportLines.push("");
+
+    reportLines.push("### History Status Summary");
+    reportLines.push("| status | count |");
+    reportLines.push("| --- | ---: |");
+    for (const status of HISTORY_STATUSES) {
+      reportLines.push(`| ${status} | ${statusCounts[status]} |`);
+    }
+    reportLines.push("");
+
+    reportLines.push("### Local Downloaded Files");
+    if (entriesWithFiles.length === 0) {
+      reportLines.push("(none)");
+      reportLines.push("");
+      continue;
+    }
+
+    reportLines.push("| localFileText | url | matchedDomains | age | filesize |");
+    reportLines.push("| --- | --- | --- | --- | ---: |");
+    for (const entry of entriesWithFiles) {
+      const size = typeof entry.localFileTextSize === "number" ? entry.localFileTextSize : 0;
+      totalFiles += 1;
+      totalSize += size;
+      const matchedDomains = entry.matchedDomainIds.length > 0 ? entry.matchedDomainIds.join(", ") : "(none)";
+      reportLines.push(`| ${escapeMarkdownCell(entry.localFileText || "")} | ${escapeMarkdownCell(entry.url)} | ${escapeMarkdownCell(matchedDomains)} | ${formatAgeFromTimestamp(entry.timestamp)} | ${size} |`);
+    }
+    reportLines.push("");
+  }
+
+  reportLines.push("## Totals");
+  reportLines.push("");
+  reportLines.push(`- entitiesWithHistory: ${entitiesWithHistory}`);
+  reportLines.push(`- localTextFiles: ${totalFiles}`);
+  reportLines.push(`- totalTextSize: ${totalSize}`);
+  reportLines.push(`- updatedSizeEntries: ${totalUpdatedSizes}${args.dryRun ? " (dry-run; history not saved)" : ""}`);
+  reportLines.push("");
+
+  await fs.ensureDir(path.dirname(reportPath));
+  await fs.writeFile(reportPath, reportLines.join("\n"), "utf-8");
+  console.log(`[LISTLOCAL] report written: ${reportPath}`);
+}
+
+async function runRefetchMode(storage: any, targets: Entity[], domains: Domain[], args: Args): Promise<void> {
+  const domainsToUse = args.domain
+    ? domains.filter((d) => (d.id || d.name) === args.domain)
+    : domains;
+
+  let totalChecked = 0;
+  let totalRefetched = 0;
+  let totalUpdated = 0;
+
+  for (const entity of targets) {
+    const { historyMap, menuLinks } = await loadHistoryData(storage, entity.id);
+    let entityUpdated = false;
+    let consecutiveBotRejections = 0;
+
+    const relatedEntries = Array.from(historyMap.entries()).filter(([, entry]) => entry.status === "related");
+    console.log(`[REFETCH] ${entity.id}: ${relatedEntries.length} related entries`);
+
+    for (const [normalizedUrl, entry] of relatedEntries) {
+      totalChecked += 1;
+
+      let plainText: string | undefined;
+      let localFile: string | undefined = entry.localFile;
+      let localFileText: string | undefined = entry.localFileText;
+      let localFileTextSize: number | undefined = entry.localFileTextSize;
+      let sizeUpdated = false;
+
+      const hasLocal = localFile
+        ? await fs.pathExists(fromRelativeDownloadsPath(storage, localFile))
+        : false;
+
+      if (!hasLocal) {
+        // Re-download the page
+        console.log(`[REFETCH] ${entry.url}: no local file, re-downloading`);
+        const fetchResult = await fetchPageWithBotFallback(entry.url, consecutiveBotRejections, args.notbot);
+        const fetched = fetchResult.fetched;
+        consecutiveBotRejections = fetchResult.consecutiveBotRejections;
+        if (!fetched.page) {
+          console.log(`[REFETCH] ${entry.url}: fetch failed (${fetched.status}), skipping`);
+          continue;
+        }
+        if (fetched.page.kind === "pdf") {
+          console.log(`[REFETCH] ${entry.url}: PDF, skipping domain re-score`);
+          continue;
+        }
+        const extracted = extractLinksAndText(entry.url, fetched.page.html || "");
+        plainText = extracted.plainText;
+        if (!args.dryRun) {
+          const statusTimestamp = new Date().toISOString();
+          const page: CrawledPage = {
+            url: entry.url,
+            depth: 0,
+            title: extracted.title,
+            headers: extracted.headers,
+            htmlContent: fetched.page.html,
+            plainText,
+            textSample: extracted.sample,
+            isPdf: false,
+            links: extracted.links,
+          };
+          const saved = await saveCrawledArtifacts(storage, entity.id, page, statusTimestamp, {});
+          if (saved.localFile) localFile = saved.localFile;
+          if (saved.localFileText) {
+            localFileText = saved.localFileText;
+            localFileTextSize = await recordFileSize(storage, historyMap, {
+              ...entry,
+              ...(localFile ? { localFile } : {}),
+              localFileText,
+            });
+            sizeUpdated = typeof localFileTextSize === "number" && localFileTextSize !== entry.localFileTextSize;
+          }
+        }
+        totalRefetched += 1;
+      } else {
+        // Read from existing local artifacts
+        if (localFileText) {
+          const txtPath = fromRelativeDownloadsPath(storage, localFileText);
+          if (await fs.pathExists(txtPath)) {
+            plainText = await fs.readFile(txtPath, "utf-8");
+          }
+        }
+        if (!plainText && localFile) {
+          const htmlPath = fromRelativeDownloadsPath(storage, localFile);
+          const html = await fs.readFile(htmlPath, "utf-8");
+          const extracted = extractLinksAndText(entry.url, html);
+          plainText = extracted.plainText;
+        }
+      }
+
+      if (!plainText) {
+        console.log(`[REFETCH] ${entry.url}: no text available, skipping`);
+        continue;
+      }
+
+      // Re-run domain scoring
+      const page: CrawledPage = {
+        url: entry.url,
+        depth: 0,
+        title: "",
+        headers: [],
+        plainText,
+        textSample: plainText.slice(0, 3000),
+        isPdf: false,
+        links: [],
+      };
+
+      const scoredDomains = scoreDomainDetailed(domainsToUse, page, entity.governingBody);
+      const matchedDomainIds = scoredDomains
+        .filter((score) => isDomainScoreMatch(score))
+        .map((score) => score.domainId)
+        .slice(0, MAX_MATCHED_DOMAINS);
+
+      const prevIds = (entry.matchedDomainIds || []).slice().sort().join(",");
+      const newIds = matchedDomainIds.slice().sort().join(",");
+
+      if (prevIds !== newIds) {
+        console.log(`[REFETCH] ${entry.url}: matchedDomainIds [${prevIds || "none"}] -> [${newIds || "none"}]`);
+        upsertHistoryEntry(historyMap, {
+          ...entry,
+          url: normalizedUrl,
+          matchedDomainIds,
+          ...(localFile ? { localFile } : {}),
+          ...(localFileText ? { localFileText } : {}),
+          ...(typeof localFileTextSize === "number" ? { localFileTextSize } : {}),
+        });
+        entityUpdated = true;
+        totalUpdated += 1;
+      } else if (sizeUpdated) {
+        entityUpdated = true;
+      }
+    }
+
+    if (entityUpdated && !args.dryRun) {
+      await saveHistoryData(storage, entity.id, historyMap, menuLinks);
+      console.log(`[REFETCH] ${entity.id}: history saved`);
+    }
+  }
+
+  console.log(
+    `[REFETCH] done. checked=${totalChecked} refetched=${totalRefetched} updated=${totalUpdated}${args.dryRun ? " (dry-run)" : ""}`,
+  );
+}
+
 async function runCleanupMode(storage: any, targets: Entity[], args: Args): Promise<void> {
   let totalScanned = 0;
   let totalFilesDeleted = 0;
   let totalEntriesUpdated = 0;
+  let totalMenuLinksAdded = 0;
+  let totalMenuLinksReduced = 0;
+  let totalMenuWildcardsCreated = 0;
+  const relatedWithoutDomainsGlobal: Array<{ entityId: string; url: string }> = [];
 
   for (const entity of targets) {
     const historyPath = getHistoryFilePath(storage, entity.id);
@@ -1806,6 +2273,98 @@ async function runCleanupMode(storage: any, targets: Entity[], args: Args): Prom
 
     const { historyMap, menuLinks } = await loadHistoryData(storage, entity.id);
     const menuLinkUrls = new Set(menuLinks.urls.map((url) => normalizeUrlForMatch(url)));
+    const wildcardMenuPrefixes = new Set<string>();
+    for (const url of menuLinkUrls) {
+      if (url.endsWith("*")) {
+        wildcardMenuPrefixes.add(url.slice(0, -1));
+      }
+    }
+
+    const isRootUrl = (url: string): boolean => {
+      try {
+        const parsed = new URL(url);
+        return parsed.pathname === "/" || parsed.pathname === "";
+      } catch {
+        return false;
+      }
+    };
+
+    const matchesWildcardMenuPrefix = (url: string): boolean => {
+      if (isRootUrl(url)) {
+        return false;
+      }
+      for (const prefix of wildcardMenuPrefixes) {
+        if (url.startsWith(prefix)) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const relatedUrls = new Set<string>(
+      Array.from(historyMap.entries())
+        .filter(([, entry]) => entry.status === "related")
+        .map(([url]) => normalizeUrlForMatch(url)),
+    );
+
+    let menuLinksChanged = false;
+
+    // Auto-promote menu link prefixes to wildcard when there are no related pages
+    // under that prefix (excluding root URLs).
+    let createdWildcardsHere = 0;
+    const explicitMenuLinks = Array.from(menuLinkUrls).filter((url) => !url.endsWith("*"));
+    for (const baseUrl of explicitMenuLinks) {
+      if (isRootUrl(baseUrl)) {
+        continue;
+      }
+      const hasDescendantMenuLink = explicitMenuLinks.some((candidate) => candidate !== baseUrl && candidate.startsWith(`${baseUrl}/`));
+      if (!hasDescendantMenuLink) {
+        continue;
+      }
+
+      const hasRelatedUnderPrefix = Array.from(relatedUrls).some((relatedUrl) => relatedUrl.startsWith(baseUrl));
+      if (hasRelatedUnderPrefix) {
+        continue;
+      }
+
+      const wildcardUrl = `${baseUrl}*`;
+      if (!menuLinkUrls.has(wildcardUrl)) {
+        if (!args.dryRun) {
+          menuLinkUrls.add(wildcardUrl);
+          wildcardMenuPrefixes.add(baseUrl);
+          menuLinksChanged = true;
+        }
+        createdWildcardsHere += 1;
+      }
+    }
+    totalMenuWildcardsCreated += createdWildcardsHere;
+    if (createdWildcardsHere > 0) {
+      console.log(`[CLEANUP]${args.dryRun ? "[DRY-RUN]" : ""} created ${createdWildcardsHere} wildcard menu link(s) for ${entity.id}`);
+    }
+
+    // Compact explicit menu links that are already covered by wildcard entries,
+    // but never reduce root URLs.
+    if (wildcardMenuPrefixes.size > 0) {
+      let reducedHere = 0;
+      for (const url of Array.from(menuLinkUrls)) {
+        if (url.endsWith("*")) {
+          continue;
+        }
+        if (matchesWildcardMenuPrefix(url)) {
+          if (!args.dryRun) {
+            menuLinkUrls.delete(url);
+            menuLinksChanged = true;
+          }
+          reducedHere += 1;
+        }
+      }
+      totalMenuLinksReduced += reducedHere;
+      if (reducedHere > 0) {
+        console.log(`[CLEANUP]${args.dryRun ? "[DRY-RUN]" : ""} reduced ${reducedHere} menu link(s) using wildcard entries for ${entity.id}`);
+      }
+    }
+
+    const relatedWithoutDomainsEntity: string[] = [];
     const allowedCleanupHosts = new Set<string>([
       normalizeUrl(entity.mainUrl),
       normalizeUrl(entity.governingUrl),
@@ -1856,47 +2415,57 @@ async function runCleanupMode(storage: any, targets: Entity[], args: Args): Prom
         continue;
       }
 
-      if (menuLinkUrls.has(normalizedUrl)) {
+      if (menuLinkUrls.has(normalizedUrl) || matchesWildcardMenuPrefix(normalizedUrl)) {
         await removeHistoryEntryAndArtifacts(url, entry, "menu link");
         continue;
+      }
+
+      if (entry.status === "related" && (!entry.matchedDomainIds || entry.matchedDomainIds.length === 0)) {
+        relatedWithoutDomainsEntity.push(normalizedUrl);
       }
 
       if (entry.status !== "unrelated") {
         continue;
       }
-      if (!entry.localFile && !entry.localFileText) {
-        continue;
-      }
 
-      const pathsToDelete = [entry.localFile, entry.localFileText].filter(Boolean) as string[];
-      for (const relPath of pathsToDelete) {
-        const absPath = fromRelativeDownloadsPath(storage, relPath);
-        if (await fs.pathExists(absPath)) {
-          if (!args.dryRun) {
-            await fs.remove(absPath);
-          }
-          totalFilesDeleted += 1;
-          console.log(`[CLEANUP]${args.dryRun ? "[DRY-RUN]" : ""} deleted ${relPath} (${url})`);
-        } else {
-          console.log(`[CLEANUP] missing artifact (already gone): ${relPath} (${url})`);
+      if (!menuLinkUrls.has(normalizedUrl)) {
+        if (!args.dryRun) {
+          menuLinkUrls.add(normalizedUrl);
+          menuLinksChanged = true;
         }
+        totalMenuLinksAdded += 1;
+        console.log(`[CLEANUP]${args.dryRun ? "[DRY-RUN]" : ""} moved unrelated URL to menuLinks: ${normalizedUrl}`);
       }
 
-      if (!args.dryRun) {
-        const { localFile: _lf, localFileText: _lt, ...rest } = entry;
-        historyMap.set(url, rest as SpiderHistoryEntry);
-      }
-      entityUpdated = true;
-      totalEntriesUpdated += 1;
+      await removeHistoryEntryAndArtifacts(url, entry, "unrelated -> menuLinks");
     }
 
-    if (entityUpdated && !args.dryRun) {
+    if (relatedWithoutDomainsEntity.length > 0) {
+      relatedWithoutDomainsGlobal.push(...relatedWithoutDomainsEntity.map((url) => ({ entityId: entity.id, url })));
+      console.log(`[CLEANUP] ${entity.id}: related entries without matchedDomainIds (${relatedWithoutDomainsEntity.length})`);
+      for (const url of relatedWithoutDomainsEntity) {
+        console.log(`  [CLEANUP][RELATED-WITHOUT-DOMAINS] ${url}`);
+      }
+    }
+
+    if ((entityUpdated || menuLinksChanged) && !args.dryRun) {
+      menuLinks.urls = Array.from(menuLinkUrls);
+      menuLinks.timestamp = new Date().toISOString();
       await saveHistoryData(storage, entity.id, historyMap, menuLinks);
       console.log(`[CLEANUP] saved updated history for ${entity.id}`);
     }
   }
 
-  console.log(`[CLEANUP] done. scanned=${totalScanned} filesDeleted=${totalFilesDeleted} entriesUpdated=${totalEntriesUpdated}${args.dryRun ? " (dry-run)" : ""}`);
+  if (relatedWithoutDomainsGlobal.length > 0) {
+    console.log(`[CLEANUP] related entries without matchedDomainIds (global: ${relatedWithoutDomainsGlobal.length})`);
+    for (const item of relatedWithoutDomainsGlobal) {
+      console.log(`  [CLEANUP][RELATED-WITHOUT-DOMAINS] ${item.entityId} ${item.url}`);
+    }
+  }
+
+  console.log(
+    `[CLEANUP] done. scanned=${totalScanned} filesDeleted=${totalFilesDeleted} entriesUpdated=${totalEntriesUpdated} menuLinksAdded=${totalMenuLinksAdded} menuLinksReduced=${totalMenuLinksReduced} menuWildcardsCreated=${totalMenuWildcardsCreated}${args.dryRun ? " (dry-run)" : ""}`,
+  );
 }
 
 interface ScanSummary {
@@ -2098,7 +2667,11 @@ async function main() {
 
   await ensureEntityDownloadsLayout(storage);
   console.log(`Entity downloads root: ${getEntityDownloadsRoot(storage)}`);
-  console.log(`using USER-AGENT: ${USER_AGENT}`);
+  console.log(`using USER-AGENT: ${args.notbot ? GENERIC_USER_AGENT : USER_AGENT}`);
+  console.log(`bot rejection fallback USER-AGENT: ${GENERIC_USER_AGENT}`);
+  if (args.notbot) {
+    console.log("notbot mode enabled: forcing generic USER-AGENT for fetches");
+  }
 
   const realm = (await storage.getRealmConfig()) as Realm;
   const entities = (await storage.getEntities()) as Entity[];
@@ -2121,6 +2694,21 @@ async function main() {
       ? entities.find((entity) => entity.id === args.entity)
       : undefined;
     await runSpecimenMode(storage, args.specimenUrlsFile, domains, args, specimenEntity);
+    return;
+  }
+
+  if (args.reportRelatedWithoutDomains) {
+    await runRelatedWithoutDomainsReport(storage, targets);
+    return;
+  }
+
+  if (args.listLocal) {
+    await runListLocalMode(storage, targets, args);
+    return;
+  }
+
+  if (args.refetch) {
+    await runRefetchMode(storage, targets, domains, args);
     return;
   }
 

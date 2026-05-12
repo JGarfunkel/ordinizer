@@ -1,7 +1,10 @@
 import dotenv from "dotenv";
 dotenv.config();
+import { pathToFileURL } from "node:url";
 import { getDefaultStorage, getRealmsFromStorage, IStorageReadOnly } from "@civillyengaged/ordinizer-servercore";
-import { getVectorService } from "../services/vectorService.js";
+import { getVectorService, getDocumentKey } from "../services/vectorService.js";
+import { parseCommonCliArgs } from "./scriptArgs.js";
+import { loadHistoryData, getEntityDownloadsRoot } from "./spiderHistory.js";
 
 export interface IndexOptions {
   entity?: string;
@@ -9,6 +12,11 @@ export interface IndexOptions {
   realm?: string;
   verbose?: boolean;
   force?: boolean;
+  list?: boolean;
+  limit?: number;
+  dryRun?: boolean;
+  only?: string;
+  prune?: boolean;
 }
 
 let VERBOSE = false;
@@ -36,69 +44,185 @@ export async function indexEntity(
   options: IndexOptions = {},
 ): Promise<void> {
   VERBOSE = options.verbose ?? VERBOSE;
-  const storage = getDefaultStorage(options.realm || "");
-  const vectorService = getVectorService();
+  if (!options.realm) {
+    throw new Error("Realm is required to index documents");
+  }
+  const storage = getDefaultStorage(options.realm);
+  const vectorService = getVectorService(options.realm);
 
   await vectorService.initializeIndex();
 
-  // --- Statute files (one per domain) ---
-  const domains = options.domain
-    ? [options.domain]
-    : await storage.listDomainIds(options.realm);
+  if (!options.only || options.only === "ruleset") {
+    const domains = options.domain
+        ? [options.domain]
+        : await storage.listDomainIds(options.realm);
 
-  for (const domain of domains) {
-    const statute = await storage.getDocumentText(domain, entityId, options.realm);
-    if (!statute) {
-      log(`No statute found for ${entityId}/${domain}, skipping`);
-      continue;
-    }
-
-    if (!options.force) {
-      const already = await vectorService.hasIndexedDocument(entityId, domain, "statute");
-      if (already) {
-        log(`Statute vectors already exist for ${entityId}/${domain}, skipping (use --force to reindex)`);
+    for (const domain of domains) {
+      const statute = await storage.getDocumentText(domain, entityId, options.realm);
+      if (!statute) {
+        log(`No statute found for ${entityId}/${domain}, skipping`);
         continue;
       }
-    }
 
-    console.log(`📄 ${entityId}/${domain}: Indexing statute...`);
-    await vectorService.indexDocumentInPinecone(statute, entityId, domain, "statute");
-    console.log(`✅ ${entityId}/${domain}: Statute indexed`);
-  }
+      // Fetch Ruleset metadata for provenance
+      let url = undefined;
+      let fetchedAt = undefined;
+      try {
+        const ruleset = await storage.getRuleset(domain, entityId);
+        if (ruleset && Array.isArray(ruleset.sources) && ruleset.sources.length > 0) {
+          url = ruleset.sources[0].sourceUrl;
+          fetchedAt = ruleset.sources[0].downloadedAt;
+        }
+      } catch (e) {
+        log(`Warning: Could not load ruleset for ${entityId}/${domain}: ${errMsg(e)}`);
+      }
 
-  // --- EntityDocuments downloads (multi-domain, from spider history) ---
-  let downloadCount = 0;
-  await storage.processEntityDownloads(entityId, async (content, id, matchedDomainIds) => {
-    // If scoped to a domain, only process docs that match it
-    if (options.domain && !matchedDomainIds.includes(options.domain)) {
-      log(`Skipping download for ${id} — domains ${matchedDomainIds.join(",")} don't include ${options.domain}`);
-      return;
-    }
-
-    // Index once per matched domain so vector filter queries work per domain.
-    // The domainIds array is also stored in metadata for future multi-domain queries.
-    for (const domain of matchedDomainIds) {
-      if (options.domain && domain !== options.domain) continue;
-
+      const prefix = getDocumentKey(entityId, [domain], "statute");
       if (!options.force) {
-        const already = await vectorService.hasIndexedDocument(id, domain, "guidance");
+        const already = await vectorService.hasIndexedDocument(prefix);
         if (already) {
-          log(`Guidance vectors already exist for ${id}/${domain}, skipping`);
+          log(`Statute vectors already exist for ${entityId}/${domain}, skipping (use --force to reindex)`);
           continue;
         }
       }
 
-      console.log(`📎 ${id}/${domain}: Indexing downloaded document (matched domains: ${matchedDomainIds.join(", ")})...`);
-      await vectorService.indexDocumentInPinecone(content, id, domain, "guidance", matchedDomainIds);
-      downloadCount++;
+      console.log(`📄 ${entityId}/${domain}: Indexing statute...`);
+      await vectorService.indexDocumentInPinecone(
+        statute,
+        entityId,
+        domain,
+        "statute",
+        { url: url || "", fileName: "statute.txt", fetchedAt: fetchedAt || "" },
+        options.dryRun
+      );
+      console.log(`✅ ${entityId}/${domain}: Statute indexed`);
     }
-  });
-
-  if (downloadCount > 0) {
-    console.log(`✅ ${entityId}: Indexed ${downloadCount} downloaded document chunk(s) from EntityDocuments`);
-  } else {
-    log(`${entityId}: No EntityDocuments downloads found`);
   }
+
+  if (!options.only || options.only === "general") {
+    // --- EntityDocuments downloads (multi-domain, from spider history) ---
+    let downloadCount = 0;
+    // Load history data once for this entity
+    const { historyMap } = await loadHistoryData(storage, entityId);
+    await storage.processEntityDownloads(entityId, async (content, entityId, matchedDomainIds, filename) => {
+      // If scoped to a domain, only process docs that match it
+      if (options.domain && !matchedDomainIds.includes(options.domain)) {
+        log(`Skipping download for ${entityId} — domains ${matchedDomainIds.join(",")} don't include ${options.domain}`);
+        return;
+      }
+
+      // Scope to the requested domain if provided, then index the document once
+      // with all matching domains so a single set of vectors serves all of them.
+      const domainsToIndex = options.domain
+        ? matchedDomainIds.filter(d => d === options.domain)
+        : matchedDomainIds;
+
+      if (domainsToIndex.length === 0) {
+        log(`Skipping download for ${entityId} — no matching domains after filtering`);
+        return;
+      }
+
+      if (!options.force) {
+        const prefix = getDocumentKey(entityId, ["shared"], "shared");
+        const already = await vectorService.hasIndexedDocument(prefix);
+        if (already) {
+          log(`Guidance vectors already exist for ${entityId}/"shared", skipping`);
+          return;
+        }
+      }
+
+      // Find the matching SpiderHistoryEntry for provenance
+      let url = undefined;
+      let fetchedAt = undefined;
+      if (historyMap) {
+        for (const entry of historyMap.values()) {
+          const fileMatch = entry.localFileText || entry.localFile;
+          if (fileMatch && fileMatch.split("/").pop() === filename) {
+            url = entry.url;
+            fetchedAt = entry.timestamp;
+            break;
+          }
+        }
+      }
+
+      console.log(`📎 ${entityId}: Indexing downloaded document (domains: ${domainsToIndex.join(", ")})...`);
+      await vectorService.indexDocumentInPinecone(
+        content,
+        entityId,
+        domainsToIndex,
+        "shared",
+        { url: url || "", fileName: filename, fetchedAt: fetchedAt || "" },
+        options.dryRun
+      );
+      downloadCount++;
+    });
+
+    if (downloadCount > 0) {
+        console.log(`✅ ${entityId}: Indexed ${downloadCount} downloaded document chunk(s) from EntityDownloads`);
+    } else {
+        log(`${entityId}: No EntityDocuments downloads found`);
+    }
+  }
+}
+
+/**
+ * Prune vector chunks for history entries with status "unrelated" or "index".
+ * These entries should not be in the vector database.
+ */
+export async function pruneUnrelatedDocuments(options: IndexOptions = {}): Promise<void> {
+  VERBOSE = options.verbose ?? VERBOSE;
+  if (!options.realm) {
+    throw new Error("Realm is required to prune documents");
+  }
+  const storage = getDefaultStorage(options.realm);
+  const vectorService = getVectorService(options.realm);
+
+  await vectorService.initializeIndex();
+
+  const entityIds = options.entity
+    ? [options.entity]
+    : await storage.getEntityIds(options.domain);
+
+  console.log(`🔍 Scanning ${entityIds.length} entities for unrelated/index entries to prune...`);
+
+  let totalPruned = 0;
+  let totalSkipped = 0;
+
+  for (const entityId of entityIds) {
+    const { historyMap } = await loadHistoryData(storage, entityId);
+    const entriesToPrune = [...historyMap.values()].filter(
+      (entry) => entry.status === "unrelated" || entry.status === "index"
+    );
+
+    if (entriesToPrune.length === 0) {
+      log(`${entityId}: No unrelated/index entries found`);
+      continue;
+    }
+
+    for (const entry of entriesToPrune) {
+      const rawFile = entry.localFileText ?? entry.localFile;
+      const filename = rawFile ? rawFile.split("/").pop() : undefined;
+      if (!filename) {
+        log(`${entityId}: Entry ${entry.url} has no localFileText/localFile, skipping`);
+        totalSkipped++;
+        continue;
+      }
+
+      const prefix = getDocumentKey(entityId, ["shared"], "shared", filename);
+      log(`${entityId}: Checking prefix "${prefix}" (status=${entry.status})`);
+
+      if (options.dryRun) {
+        console.log(`🔍 [dry-run] Would delete chunks for ${entityId} — ${filename} (status=${entry.status})`);
+        totalPruned++;
+      } else {
+        console.log(`🗑️  ${entityId}: Deleting chunks for ${filename} (status=${entry.status})...`);
+        await vectorService.deleteIndexedChunksForDocument(prefix);
+        totalPruned++;
+      }
+    }
+  }
+
+  console.log(`\n✅ Prune complete: ${totalPruned} document(s) pruned, ${totalSkipped} skipped (no filename).`);
 }
 
 /**
@@ -106,11 +230,14 @@ export async function indexEntity(
  */
 export async function indexAll(options: IndexOptions = {}): Promise<void> {
   VERBOSE = options.verbose ?? VERBOSE;
-  const storage = getDefaultStorage(options.realm || "");
-  const vectorService = getVectorService();
+  if (!options.realm) {
+    throw new Error("Realm is required to index documents");
+  }
+  const storage = getDefaultStorage(options.realm);
+  const vectorService = getVectorService(options.realm);
 
   await vectorService.initializeIndex();
-  console.log(`🗂️  Starting document indexing for realm: ${options.realm || "default"}`);
+  console.log(`🗂️  Starting document indexing for realm: ${options.realm}`);
 
   const entityIds = options.entity
     ? [options.entity]
@@ -136,6 +263,37 @@ export async function indexAll(options: IndexOptions = {}): Promise<void> {
 
 // ─── CLI ───────────────────────────────────────────────────────────────────
 
+/**
+ * List documents currently in the Pinecone index, up to options.limit (default 100).
+ */
+export async function listDocuments(options: IndexOptions = {}): Promise<void> {
+    if (!options.realm) {
+        throw new Error("Realm is required to list indexed documents");
+    }
+    const vectorService = getVectorService(options.realm);
+    const limit = options.limit ?? 100;
+    const entityFilter = options.entity ? ` for entity "${options.entity}"` : "";
+    console.log(`📋 Listing up to ${limit} indexed documents${entityFilter}...\n`);
+
+    const prefix = options.entity ? options.entity : undefined;
+    const docs = await vectorService.listIndexedDocuments(limit, prefix);
+
+    if (docs.length === 0) {
+        console.log("No indexed documents found.");
+        return;
+    }
+
+    for (const doc of docs) {
+        const domains = doc.domainIds.join(", ");
+        const indexed = doc.indexedAt ? new Date(doc.indexedAt).toLocaleString() : "(unknown)";
+        console.log(`  ${doc.id}  [${doc.documentType}]  domains: ${domains}  indexed: ${indexed}`);
+    }
+
+    console.log(`\nTotal: ${docs.length} document(s)`);
+}
+
+// ─── CLI ───────────────────────────────────────────────────────────────────
+
 function showHelp(): void {
   console.log(`
 📦 Index documents into the Pinecone vector database
@@ -152,6 +310,7 @@ Options:
   --domain <id>     Scope indexing to one domain (e.g., "trees")
   --realm <id>      Realm to use (defaults to CURRENT_REALM env var or default realm)
   --force           Re-index even if vectors already exist
+  --prune           Delete vector chunks for history entries with status=unrelated or status=index
   --verbose, -v     Enable detailed logging
   --help, -h        Show this help message
 
@@ -178,43 +337,47 @@ async function parseArgs(): Promise<IndexOptions> {
   const args = process.argv.slice(2);
   const options: IndexOptions = {};
 
-  if (process.env.CURRENT_REALM) {
-    options.realm = process.env.CURRENT_REALM;
-    console.log(`📖 Using CURRENT_REALM: ${options.realm}`);
-  }
+  const { common, rest } = parseCommonCliArgs(args);
+  options.entity = common.entity;
+  options.domain = common.domain;
+  options.realm = common.realm;
+  options.force = common.force;
+  options.dryRun = common.dryRun;
 
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
+  for (let i = 0; i < rest.length; i++) {
+    switch (rest[i]) {
       case "--help":
       case "-h":
         showHelp();
         process.exit(0);
         break;
-      case "--entity":
-        options.entity = args[++i];
-        break;
-      case "--domain":
-        options.domain = args[++i];
-        break;
-      case "--realm":
-        options.realm = args[++i];
-        process.env.CURRENT_REALM = options.realm;
-        console.log(`💾 Set CURRENT_REALM: ${options.realm}`);
-        break;
-      case "--force":
-        options.force = true;
-        break;
       case "--verbose":
       case "-v":
         options.verbose = true;
         break;
+      case "--list":
+        options.list = true;
+        break;
+      case "--limit":
+        options.limit = parseInt(rest[++i], 10);
+        break;
+      case "--only":
+        options.only = rest[++i];
+        break;
+      case "--prune":
+        options.prune = true;
+        break;
       default:
-        if (args[i].startsWith("-")) {
-          console.error(`Unknown option: ${args[i]}`);
+        if (rest[i].startsWith("-")) {
+          console.error(`Unknown option: ${rest[i]}`);
           showHelp();
           process.exit(1);
         }
     }
+  }
+
+  if (options.realm) {
+    process.env.CURRENT_REALM = options.realm;
   }
 
   if (!options.realm) {
@@ -238,10 +401,20 @@ async function parseArgs(): Promise<IndexOptions> {
   return options;
 }
 
-if (require.main === module) {
+const isEntrypoint = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (isEntrypoint) {
   (async () => {
     const options = await parseArgs();
-    await indexAll(options);
+    if (options.list) {
+      await listDocuments(options);
+    } else if (options.prune) {
+      await pruneUnrelatedDocuments(options);
+    } else {
+      await indexAll(options);
+    }
   })().catch((error) => {
     console.error("❌ Fatal error:", error);
     process.exit(1);

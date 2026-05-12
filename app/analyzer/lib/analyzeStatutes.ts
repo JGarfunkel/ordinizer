@@ -1,25 +1,28 @@
 ﻿import dotenv from "dotenv";
 dotenv.config();
-import OpenAI from "openai";
 import {
-  loadModelConfig, setCurrentModel, checkRateLimit, recordTokenUsage,
-  getCurrentTokenUsage, estimateTokens, sleep, QUESTION_PAUSE_MS, QUESTION_SET_PAUSE_MS,
-  getModelRateLimit, extractSectionReferences,
+  loadModelConfig, setCurrentModel,
+  getCurrentTokenUsage, estimateTokens, sleep, QUESTION_SET_PAUSE_MS,
+  getModelRateLimit,
   setVerbose as setOpenaiVerbose,
-  answerQuestionDirectly, analyzeQuestionsWithFullStatute, generateGapAnalysis,
-  loadMetaAnalysis,
-} from "../services/openai.js";
+  createChatCompletion,
+} from "../services/aiService.js";
 import { calculateAnswerScore, calculateNormalizedScores } from "./scoring.js";
-import { getVectorService, VectorService } from "../services/vectorService.js";
-import { Analysis, MetaAnalysis, getDefaultStorage, getRealmsFromStorage, IStorage, FileStat 
+import { getVectorService, VectorService, getDocumentKey, DocumentType } from "../services/vectorService.js";
+import { Analysis, Ruleset, MetaAnalysis, getDefaultStorage, getRealmsFromStorage, IStorage, FileStat 
 
 } from "@civillyengaged/ordinizer-servercore";
 
 import { generateMetaAnalysis } from "./createMetaAnalysis.js";
 import { indexEntity } from "./indexDocumentService.js";
+import { generateGapAnalysis, loadMetaAnalysis } from "./analysisHelpers.js";
+import { analyzeQuestions } from "./analyzeQuestions.js";
+import { parseCommonCliArgs } from "./scriptArgs.js";
 
 // TODO - put this into a config file or environment variable
 const GRADING_ID = process.env.GRADING_ID || "${GRADING_ID}";
+const MAX_WORDS_FOR_DIRECT_ANALYSIS = parseInt(process.env.MAX_WORDS_FOR_DIRECT_ANALYSIS || "1000", 10); // If statute text is under this word count, analyze directly without chunking
+const USE_CONVERSATION = true;
 
 
 // Storage singleton — initialized lazily with the correct data directory.
@@ -30,9 +33,6 @@ async function getStorage(options: AnalyzeOptions): Promise<IStorage> {
   }
   return _storage;
 }
-
-// Initialize clients
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 export interface AnalyzeOptions {
   domain?: string;
@@ -50,6 +50,7 @@ export interface AnalyzeOptions {
   skipRecent?: string; // New: Skip analysis if generated within specified time (e.g., "15m", "2h", "1d")
   generateScoreOnly?: boolean; // New: Only calculate and update normalized scores without re-analyzing
   generateQuestions?: boolean; // New: Generate questions.json using AI if it doesn't exist
+  dryRun?: boolean; // Perform a dry-run: load and plan analysis without making OpenAI calls or writing files
 }
 
 // Global verbose flag
@@ -63,8 +64,43 @@ function log(message: string, ...args: any[]) {
 }
 
 // Safe error message extraction
-function errMsg(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function errMsg(error: unknown, withStack: boolean = false): string {
+  if (error instanceof Error) {
+    return withStack ? error.stack || error.message : error.message;
+  }
+  return String(error);
+}
+
+async function getVisibleDomainIds(
+  st: IStorage,
+  requestedDomain?: string,
+): Promise<string[]> {
+  const domains = await st.getDomains();
+  const visibleDomains = domains.filter((domain) => domain.show !== false);
+
+  if (!requestedDomain) {
+    return visibleDomains.map((domain) => domain.id);
+  }
+
+  const requestedVisibleDomain = visibleDomains.find(
+    (domain) => domain.id === requestedDomain || domain.name === requestedDomain,
+  );
+  if (requestedVisibleDomain) {
+    return [requestedVisibleDomain.id];
+  }
+
+  const requestedDomainConfig = domains.find(
+    (domain) => domain.id === requestedDomain || domain.name === requestedDomain,
+  );
+  if (requestedDomainConfig && requestedDomainConfig.show === false) {
+    console.warn(
+      `⚠️  Domain ${requestedDomain} is hidden (show=false); skipping per visible-domain filtering.`,
+    );
+  } else {
+    console.warn(`⚠️  Domain ${requestedDomain} not found in realm domains config; skipping.`);
+  }
+
+  return [];
 }
 
 // Add meta-analysis comparison to existing analysis
@@ -194,8 +230,8 @@ function orderAnswersByQuestions(
 async function setGradesFromMetadata(options: AnalyzeOptions) {
   const st = await getStorage(options);
   const domains = options.domain
-    ? [options.domain]
-    : await st.listDomainIds(options.realm);
+    ? await getVisibleDomainIds(st, options.domain)
+    : await getVisibleDomainIds(st);
 
   let totalUpdated = 0;
   let totalProcessed = 0;
@@ -255,8 +291,8 @@ async function fixQuestionOrder(options: AnalyzeOptions) {
 
   const storage = await getStorage(options);
   const domains = options.domain
-    ? [options.domain]
-    : await storage.listDomainIds(options.realm);
+    ? await getVisibleDomainIds(storage, options.domain)
+    : await getVisibleDomainIds(storage);
 
   let totalFixed = 0;
   let totalProcessed = 0;
@@ -429,7 +465,10 @@ function compareQuestions(
 
 export async function analyzeStatutes(options: AnalyzeOptions = {}) {
   VERBOSE = options.verbose || false;
-  const vectorService = getVectorService();
+  if (!options.realm) {
+    throw new Error(" Realm is required to analyze the statutes");
+  }
+  const vectorService = getVectorService(options.realm);
   vectorService.setVerbose(VERBOSE);
   setOpenaiVerbose(VERBOSE);
 
@@ -477,16 +516,13 @@ export async function analyzeStatutes(options: AnalyzeOptions = {}) {
   const st = await getStorage(options);
 
   const domains = options.domain
-    ? [options.domain]
-    : await st.listDomainIds(options.realm);
+    ? await getVisibleDomainIds(st, options.domain)
+    : await getVisibleDomainIds(st);
 
   log(`Found ${domains.length} domains to process:`, domains);
 
   for (const domain of domains) {
     console.log(`\n📁 Processing domain: ${domain}`);
-
-    // Generate questions if they don't exist
-    await generateQuestionsIfNeeded(domain, options);
 
     // Get entities to process
     const entities = await getRequestedEntityIds(options, st, domain);
@@ -547,94 +583,6 @@ async function getRequestedEntityIds(options: AnalyzeOptions, st: IStorage, doma
   return options.entity
     ? [options.entity]
     : await st.getEntityIds(domain);
-}
-
-async function generateQuestionsIfNeeded(domain: string, options: AnalyzeOptions = {}) {
-  const st = await getStorage(options);
-  const hasQuestions = await st.questionsExist(domain, options.realm);
-  log(`Checking for questions for domain: ${domain}`);
-
-  if (hasQuestions) {
-    console.log(`✅ Questions already exist for ${domain}`);
-    const questionsArray = await st.getQuestionsByDomain(domain, options.realm);
-    log(`Loaded ${questionsArray.length} existing questions for ${domain}`);
-    return;
-  }
-
-  if (!options.generateQuestions) {
-    log(`No questions.json found for ${domain} and --generate-questions not set, skipping`);
-    return;
-  }
-
-  console.log(`🤖 Generating questions for ${domain} using AI...`);
-
-  // Sample up to 3 statute files from the domain directory
-  const entityIds = await st.listEntityIds(domain, options.realm);
-  const sampleStatutes: string[] = [];
-  for (const entityId of entityIds) {
-    if (sampleStatutes.length >= 3) break;
-    const content = await st.getDocumentText(domain, entityId, options.realm);
-    if (content && content.trim()) sampleStatutes.push(content);
-  }
-
-  if (sampleStatutes.length === 0) {
-    console.warn(`⚠️  No statute files found for ${domain}, cannot generate questions`);
-    return;
-  }
-
-  const domainDisplayNames: Record<string, string> = {
-    Trees: "Trees & Urban Forestry - Tree removal, planting, and maintenance regulations",
-    Zoning: "Zoning & Land Use - Land use regulations and zoning ordinances",
-    Parking: "Parking Regulations - Parking rules and enforcement",
-    Noise: "Noise Control - Noise ordinances and quiet hours",
-    Building: "Building Codes - Construction and building regulations",
-    Environmental: "Environmental Protection - Environmental protection and conservation",
-    Business: "Business Licensing - Business permits and licensing requirements",
-  };
-
-  const description = domainDisplayNames[domain] || `${domain} municipal regulations`;
-
-  const prompt = `You are analyzing municipal statutes for the domain "${domain}" (${description}).
-
-Based on the following sample statutes, generate a comprehensive list of plain-language questions that would help residents understand the key differences between entities in this domain.
-
-Sample statutes:
-${sampleStatutes.map((statute, i) => `--- Sample ${i + 1} ---\n${statute.substring(0, 2000)}`).join("\n\n")}
-
-Generate 5-10 important questions that would reveal meaningful differences between entities. Focus on practical aspects that residents care about like:
-- Requirements and procedures
-- Fees and penalties
-- Restrictions and permissions
-- Timelines and processes
-- Exceptions and exemptions
-
-Return your response as JSON in this format:
-{
-  "questions": [
-    {
-      "id": 1,
-      "question": "What are the permit requirements for tree removal on private property?",
-      "category": "permits"
-    }
-  ]
-}`;
-
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o",
-    messages: [{ role: "user", content: prompt }],
-    response_format: { type: "json_object" },
-  });
-
-  const result = JSON.parse(response.choices[0].message.content || "{}");
-  const generatedQuestions = (result.questions || []).map((q: any, index: number) => ({
-    id: q.id?.toString() ?? (index + 1).toString(),
-    question: q.question || q.text || "",
-    category: q.category || "general",
-  }));
-
-  const questionsData = { questions: generatedQuestions };
-  await st.writeQuestions(domain, questionsData, options.realm);
-  console.log(`✅ Generated ${generatedQuestions.length} questions for ${domain}`);
 }
 
 // Returns true if there are no questions or the array is empty
@@ -749,66 +697,73 @@ async function processEntity(
     // Check if required files exist
     const hasMetadata = await st.rulesetExists(domain, entity);
     const hasDocument = await st.documentExists(domain, entity);
-    if (!hasMetadata || !hasDocument) {
-      console.log(
-        `⚠️  ${entity}: Missing metadata or statute file, skipping`,
-      );
-      log(
-        `Metadata exists: ${hasMetadata}, Document exists: ${hasDocument}`,
-      );
-      return false; // No OpenAI calls made
-    }
+    // if (!hasMetadata || !hasDocument) {
+    //   console.log(
+    //     `⚠️  ${entity}: Missing metadata or statute file, skipping`,
+    //   );
+    //   log(
+    //     `Metadata exists: ${hasMetadata}, Document exists: ${hasDocument}`,
+    //   );
+    //   return false; // No OpenAI calls made
+    // }
 
-    const metadata = await st.getRuleset(domain, entity) as any;
+    let metadata = await st.getRuleset(domain, entity) as Ruleset;
     log(
       `Loaded metadata for ${entity}:`,
       JSON.stringify(metadata, null, 2),
     );
 
+    // create metadata if it doesn't exist (to avoid errors in analysis)
+    if (!metadata) {
+      const entityObj = await st.getEntity(entity);
+      if (!entityObj) {
+        log(`Entity object not found for ${entity}, creating metadata with limited info`);
+        throw new Error(`Metadata not found for ${entity} and entity object could not be loaded`);
+      }
+      metadata = {
+        entityId: entity,
+        domainId: domain,
+        domain: domain,
+        sources: [],
+        metadataCreated: new Date().toISOString(),
+        homePage: "",
+        municipality: entityObj.name,
+        municipalityType: entityObj.type
+      };
+      await st.saveRuleset(metadata);
+      log(`Created default metadata for ${entity}`);
+    }
+
     const questionsArray = await st.getQuestionsByDomain(domain, options.realm);
     log(`Loaded ${questionsArray.length} questions for domain ${domain}`);
 
     // Check if this uses state code or local ordinance
-    const isStateCode = metadata?.sourceUrl?.includes(
-      "up.codes/viewer/new_york/ny-property-maintenance-code-2020",
+    // const isStateCode = metadata?.sourceUrl?.includes(
+    //   "up.codes/viewer/new_york/ny-property-maintenance-code-2020",
+    // );
+    // log(`Entity ${entity} uses state code: ${isStateCode}`);
+
+    let analysis: GeneratedAnalysisResult;
+
+    // Process with vector analysis for local ordinances
+    analysis = await generateVectorAnalysis(
+      entity,
+      domain,
+      metadata,
+      questionsArray,
+      vectorService,
+      options,
     );
-    log(`Entity ${entity} uses state code: ${isStateCode}`);
-
-    let analysis;
-
-    if (domain === "property-maintenance" && isStateCode) {
-      // Deprecated: State code analysis block moved to local helper for clarity
-      analysis = await handleStateCodeAnalysis({
-        st,
-        domain,
-        entity,
-        metadata,
-        questionsArray,
-        force,
-        questionId,
-      });
-
-    } else {
-      // Process with vector analysis for local ordinances
-      analysis = await generateVectorAnalysis(
-        entity,
-        domain,
-        metadata,
-        questionsArray,
-        vectorService,
-        options,
-      );
-    }
 
     // Add meta-analysis comparison if requested
     if (useMeta) {
       const metaAnalysis = await loadMetaAnalysis(domain);
       if (metaAnalysis) {
-        analysis = await addMetaAnalysisComparison(
-          analysis,
+        analysis = (await addMetaAnalysisComparison(
+          analysis as Analysis,
           metaAnalysis,
           entity,
-        );
+        )) as GeneratedAnalysisResult;
         console.log(`🎯 ${entity}: Added meta-analysis comparison`);
       } else {
         console.log(
@@ -817,7 +772,12 @@ async function processEntity(
       }
     }
 
-    await st.saveAnalysis(analysis);
+    if (options.dryRun) {
+      console.log(`🧪 ${entity}: Dry-run mode active, skipping analysis save`);
+      return false;
+    }
+
+    await st.saveAnalysis(analysis as Parameters<IStorage["saveAnalysis"]>[0]);
     console.log(`✅ ${entity}: Analysis complete`);
     return true; // OpenAI calls were made
   } catch (error) {
@@ -827,7 +787,7 @@ async function processEntity(
         `   Please run convertHtmlToText.ts on this statute file first.`,
       );
     } else {
-      console.error(`❌ Failed to process ${entity}:`, errMsg(error));
+      console.error(`❌ Failed to process ${entity}:`, errMsg(error, true));
     }
     return false; // No successful OpenAI calls made
   }
@@ -940,304 +900,337 @@ async function processEntity(
 
 
 interface AnalysisContent {
-  method: "direct" | "conversation" | "vector";
-  text: string;
+  includeFullStatuteText: boolean;
+  statuteText: string;
+  authoritativeDocumentType?: DocumentType;
 }
 
-/**
- * Fetches and validates the statute text, triggers any necessary reindexing,
- * and determines which analysis mode to use:
- *   "direct"       — statute < 1000 words; pass full text to LLM directly
- *   "conversation" — statute ≤ 50 000 chars; pass full text in a single LLM conversation
- *   "vector"       — statute > 50 000 chars; query Pinecone per question
- */
-async function prepareAnalysisContent(
+type GeneratedAnalysisResult = {
+  entityId: string;
+  domainId: string;
+  entity: { id: string; displayName: string };
+  domain: string | { id: string; displayName: string };
+  questions: any[];
+  scores?: any;
+  overallScore?: number;
+  averageConfidence?: number;
+  questionsAnswered?: number;
+  totalQuestions?: number;
+  analyzedAt?: string;
+  lastUpdated?: string;
+  processingMethod?: string;
+  usesStateCode?: boolean;
+  grades?: { [key: string]: string | null };
+  gapAnalysis?: string;
+};
+
+async function buildAnswersFromResults(
   entity: string,
   domain: string,
-  vectorService: VectorService,
-  options: AnalyzeOptions,
-): Promise<AnalysisContent> {
-  const st = await getStorage(options);
-  const text = await st.getDocumentText(domain, entity, options.realm);
-  if (!text) {
-    throw new Error(`No document text found for ${entity} in domain ${domain}`);
-  }
-
-  if (isHtmlContent(text)) {
-    throw new Error(
-      `Statute file contains HTML content instead of plain text. File needs to be converted from HTML to text before analysis.`,
-    );
-  }
-
-  if (text.length > 5000000) {
-    throw new Error(
-      `Statute file is too large (${text.length} bytes). This may indicate a corrupted file.`,
-    );
-  }
-
-  const binaryContentRegex = /[\x00-\x08\x0E-\x1F\x7F-\x9F\u2000-\u200F\uFEFF]/;
-  if (binaryContentRegex.test(text.substring(0, 1000))) {
-    throw new Error(
-      `Statute file appears to contain binary data instead of text. File may be corrupted.`,
-    );
-  }
-
-  if (options.reindex) {
-    await indexEntity(entity, { ...options, force: true });
-  }
-
-  const wordCount = text.trim().split(/\s+/).length;
-  if (wordCount < 1000) {
-    return { method: "direct", text };
-  }
-
-  if (text.length <= 50000) {
-    return { method: "conversation", text };
-  }
-
-  // Vector mode — make sure Pinecone has vectors for this entity/domain before querying
-  if (!options.reindex) {
-    const hasStatuteVectors = await vectorService.hasIndexedDocument(entity, domain, "statute");
-    if (!hasStatuteVectors) {
-      console.log(`🔄 ${entity}: No statute vectors found for ${domain}; auto-reindexing before analysis...`);
-      await indexEntity(entity, options);
-    }
-  }
-
-  return { method: "vector", text };
-}
-
-async function generateVectorAnalysis(
-  entity: string,
-  domain: string,
-  metadata: any,
-  questions: any[],
-  vectorService: VectorService,
-  options: AnalyzeOptions = {},
-) {
-  const st = await getStorage(options);
-  const force = options.force || false;
-  const questionId = options.questionId;
-
-  const content = await prepareAnalysisContent(entity, domain, vectorService, options);
-  const statute = content.text;
-
-  if (content.method === "direct") {
-    const wordCount = statute.trim().split(/\s+/).length;
-    console.log(`📝 ${entity}: Statute is short (${wordCount} words < 1000), using direct analysis instead of vector search`);
-    return await generateDirectAnalysis(entity, domain, metadata, questions, statute, options);
-  }
-
-  const wordCount = statute.trim().split(/\s+/).length;
-  console.log(`🔍 ${entity}: Statute is long (${wordCount} words), using ${content.method} analysis`);
-
-  let existingAnalysis = await st.getAnalysis(domain, entity);
-
-  if (force && !questionId) {
-    console.log(
-      `🔄 ${entity}: Force mode - clearing existing analysis and reanalyzing all questions`,
-    );
-    log(
-      `Force mode enabled - ignoring existing analysis.json for vector analysis`,
-    );
-    existingAnalysis = null;
-  } else if (force && questionId) {
-    console.log(
-      `🎯 ${entity}: Force mode with specific question - targeting question ${questionId} only`,
-    );
-    log(
-      `Force mode enabled for specific question ${questionId} - preserving other questions`,
-    );
-  }
-
-  // Perform intelligent question comparison
-  const { questionsToAnalyze, questionsToKeep, questionsToRemove } =
-    compareQuestions(
-      questions,
-      force && !questionId ? [] : existingAnalysis?.questions || [],
-      entity,
-      questionId,
-    );
-
-  // Choose analysis method based on content prepared by prepareAnalysisContent
-  const statuteSize = statute.length;
-  const useConversationMode = content.method === "conversation";
-
-  // Track token usage for efficiency analysis
-  let totalVectorTokens = 0;
-  const statuteTokens = estimateTokens(statute);
-
-  const startTokenUsage = getCurrentTokenUsage();
-
+  questionsToAnalyze: any[],
+  results: Array<{
+    answer: string;
+    confidence: number;
+    sourceRefs?: string[];
+    vectorTokensUsed?: number;
+    researchSuggestions?: string[];
+  }>,
+  model: AnalyzeOptions["model"],
+  includeAnalyzedAt: boolean,
+  dryRun: boolean,
+): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
   const newAnswers: any[] = [];
+  let totalVectorTokens = 0;
 
-  if (useConversationMode && questionsToAnalyze.length > 1) {
-    console.log(
-      `💬 ${entity}: Using conversation mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
-    );
+  for (let i = 0; i < questionsToAnalyze.length; i++) {
+    const question = questionsToAnalyze[i];
+    const result = results[i];
 
-    const conversationStartTokens = getCurrentTokenUsage();
-    const additionalSources = await st.getAdditionalSources(domain, entity, options.realm);
-
-    const questionTexts = questionsToAnalyze.map((q) => q.question);
-    const municipalityDisplayName = entity
-      .replace("NY-", "")
-      .replace("-", " ");
-
-    const conversationResults = await analyzeQuestionsWithFullStatute(
-      questionTexts,
-      statute,
-      municipalityDisplayName,
-      domain,
-      questionsToAnalyze,
-      options.model,
-      additionalSources,
-      metadata,
-    );
-
-    const conversationEndTokens = getCurrentTokenUsage();
-    const conversationTokensUsed =
-      conversationEndTokens - conversationStartTokens;
-
-    if (VERBOSE) {
-      log(
-        `Conversation mode analysis: ${conversationTokensUsed} tokens for ${questionsToAnalyze.length} questions`,
-      );
+    if (result.vectorTokensUsed) {
+      totalVectorTokens += result.vectorTokensUsed;
     }
 
-    for (let i = 0; i < questionsToAnalyze.length; i++) {
-      const question = questionsToAnalyze[i];
-      const result = conversationResults[i];
-
-      const score = calculateAnswerScore(result.answer, result.confidence);
-
-      const gap = await generateGapAnalysis(
+    const score = calculateAnswerScore(result.answer, result.confidence);
+    let gap: string | null = null;
+    if (!dryRun) {
+      gap = await generateGapAnalysis(
         question.question,
         result.answer,
         result.confidence,
         entity,
         domain,
         calculateAnswerScore,
-        options.model,
+        model,
       );
-
-      const newAnswer: any = {
-        id: question.id,
-        question: question.question,
-        answer: result.answer,
-        confidence: result.confidence,
-        sourceRefs: result.sourceRefs || [],
-        score: parseFloat(score.toFixed(2)),
-      };
-
-      if (gap) {
-        newAnswer.gap = gap;
-      }
-
-      newAnswers.push(newAnswer);
     }
-  } else {
-    console.log(
-      `🔍 ${entity}: Using vector mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
-    );
 
-    for (const question of questionsToAnalyze) {
+    const newAnswer: any = {
+      id: question.id,
+      question: question.question,
+      answer: result.answer,
+      confidence: result.confidence,
+      sourceRefs: result.sourceRefs || [],
+      score: parseFloat(score.toFixed(2)),
+    };
+
+    if (result.researchSuggestions && result.researchSuggestions.length > 0) {
+      newAnswer.vectorResearchSuggestions = result.researchSuggestions;
       console.log(
-        `🔎 ${entity}: Analyzing question "${question.question.substring(0, 60)}..."`,
+        `🧭 ${entity}: Question ${question.id} suggests further vector research: ${result.researchSuggestions.join(", ")}`,
       );
-
-      const existingAnswersContext =
-        questionsToKeep.length > 0
-          ? `\n\nNOTE: Other questions in this analysis have already covered these topics:\n${questionsToKeep.map((q) => `- Q${q.id}: ${q.answer.substring(0, 100)}...`).join("\n")}\n\nProvide unique information that doesn't repeat what's already been covered.`
-          : "";
-
-      const answer = await vectorService.answerQuestionWithVector(
-        question.question,
-        entity,
-        domain,
-        existingAnswersContext,
-        question.scoreInstructions,
+    } else if (
+      /further research|additional (?:research|documents|sources)|need more information|look for documents/i.test(
+        result.answer || "",
+      )
+    ) {
+      console.log(
+        `🧭 ${entity}: Question ${question.id} answer suggests further vector research.`,
       );
-
-      if (answer.vectorTokensUsed) {
-        totalVectorTokens += answer.vectorTokensUsed;
-      }
-      const score = calculateAnswerScore(answer.answer, answer.confidence);
-
-      const gap = await generateGapAnalysis(
-        question.question,
-        answer.answer,
-        answer.confidence,
-        entity,
-        domain,
-        calculateAnswerScore,
-        options.model,
-      );
-
-      const newAnswer: any = {
-        id: question.id,
-        question: question.question,
-        answer: answer.answer,
-        confidence: answer.confidence,
-        sourceRefs: answer.sourceRefs || [],
-        score: parseFloat(score.toFixed(2)),
-        analyzedAt: new Date().toISOString(),
-      };
-
-      if (gap) {
-        newAnswer.gap = gap;
-      }
-
-      newAnswers.push(newAnswer);
     }
+
+    if (includeAnalyzedAt) {
+      newAnswer.analyzedAt = new Date().toISOString();
+    }
+
+    if (gap) {
+      newAnswer.gap = gap;
+    }
+
+    newAnswers.push(newAnswer);
   }
 
-  const endTokenUsage = getCurrentTokenUsage();
-  const municipalityTokensUsed = endTokenUsage - startTokenUsage;
+  return {
+    newAnswers,
+    totalVectorTokens,
+  };
+}
 
-  const analysisMethod = useConversationMode
-    ? questionsToAnalyze.length > 1
-      ? "conversation"
-      : "direct"
-    : "vector";
-  console.log(
-    `📊 ${entity}: Token usage summary (${analysisMethod} mode):`,
-  );
-  console.log(
-    `   Total tokens used: ${municipalityTokensUsed.toLocaleString()}`,
-  );
-  console.log(`   Statute size: ${statuteTokens.toLocaleString()} tokens`);
-  console.log(`   Questions analyzed: ${questionsToAnalyze.length}`);
+async function getPrioritizedDiscoveredChunks(
+  vectorService: VectorService,
+  questionText: string,
+  entity: string,
+  domain: string,
+  domainForEntityText: string,
+  isGeneralDomain: boolean,
+  authoritativeDocumentType: DocumentType | undefined,
+): Promise<{ chunks: string[]; sourceRefs: string[]; tokenUsage: number }> {
+  const uniqueRefs = new Set<string>();
+  let tokenUsage = 0;
 
+  const mergeRefs = (refs: string[] | undefined) => {
+    for (const ref of refs || []) {
+      if (ref) uniqueRefs.add(ref);
+    }
+  };
+
+  if (isGeneralDomain) {
+    const sharedOnly = await vectorService.getRelevantChunksForQuestion(
+      questionText,
+      entity,
+      domain,
+      5,
+      "shared",
+    );
+    tokenUsage += sharedOnly.tokenUsage;
+    mergeRefs(sharedOnly.sourceRefs);
+    return {
+      chunks: sharedOnly.chunks,
+      sourceRefs: [...uniqueRefs],
+      tokenUsage,
+    };
+  }
+
+  const authoritative = authoritativeDocumentType
+    ? await vectorService.getRelevantChunksForQuestion(
+        questionText,
+        entity,
+        domain,
+        5,
+        authoritativeDocumentType,
+      )
+    : { chunks: [], sourceRefs: [], tokenUsage: 0 };
+
+  tokenUsage += authoritative.tokenUsage;
+  mergeRefs(authoritative.sourceRefs);
+
+  const shared = await vectorService.getRelevantChunksForQuestion(
+    questionText,
+    entity,
+    domain,
+    5,
+    "shared",
+  );
+
+  tokenUsage += shared.tokenUsage;
+  mergeRefs(shared.sourceRefs);
+
+  if (authoritative.chunks.length > 0 && shared.chunks.length > 0) {
+    return {
+      chunks: [...authoritative.chunks, ...shared.chunks],
+      sourceRefs: [...uniqueRefs],
+      tokenUsage,
+    };
+  }
+
+  if (authoritative.chunks.length > 0) {
+    return {
+      chunks: authoritative.chunks,
+      sourceRefs: [...uniqueRefs],
+      tokenUsage,
+    };
+  }
+
+  if (shared.chunks.length > 0) {
+    // Optionally prepend a notice chunk
+    return {
+      chunks: [`There are no known statutes for ${domainForEntityText}.`, ...shared.chunks],
+      sourceRefs: [...uniqueRefs],
+      tokenUsage,
+    };
+  }
+
+  return {
+    chunks: [],
+    sourceRefs: [],
+    tokenUsage,
+  };
+}
+
+/**
+ * Run conversation-mode analysis for questions
+ */
+async function runConversationAnalysis(
+  domain: string,
+  entity: string,
+  domainForEntityText: string,
+  questionsToAnalyze: any[],
+  statute: string | undefined,
+  statuteSize: number,
+  isGeneralDomain: boolean,
+  vectorService: VectorService,
+  authoritativeDocumentType: DocumentType | undefined,
+  questionsToKeep: any[],
+  options: AnalyzeOptions,
+): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
+  console.log(
+    `💬 ${entity}: Using conversation mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
+  );
+
+  const conversationStartTokens = getCurrentTokenUsage();
+  const conversationResults = await analyzeQuestions({
+    mode: statute ? "full" : "chunks",
+    domain,
+    entity,
+    domainForEntityText,
+    questions: questionsToAnalyze,
+    model: options.model,
+    verbose: options.verbose,
+    dryRun: options.dryRun,
+    isGeneralDomain,
+    fullText: statute,
+    getDiscoveredChunks: async (questionText: string) => {
+      return getPrioritizedDiscoveredChunks(
+        vectorService,
+        questionText,
+        entity,
+        domain,
+        domainForEntityText,
+        isGeneralDomain,
+        authoritativeDocumentType,
+      );
+    },
+    existingAnswersContextBuilder: () =>
+      questionsToKeep.length > 0
+        ? `\n\nNOTE: Other questions in this analysis have already covered these topics:\n${questionsToKeep.map((q) => `- Q${q.id}: ${q.answer.substring(0, 100)}...`).join("\n")}\n\nProvide unique information that doesn't repeat what's already been covered.`
+        : "",
+  });
+
+  const conversationEndTokens = getCurrentTokenUsage();
+  const conversationTokensUsed = conversationEndTokens - conversationStartTokens;
   if (VERBOSE) {
-    log(
-      `Entity analysis: ${municipalityTokensUsed} tokens for ${questionsToAnalyze.length} questions using ${analysisMethod} mode`,
-    );
+    log(`Conversation mode analysis: ${conversationTokensUsed} tokens for ${questionsToAnalyze.length} questions`);
   }
 
-  if (!useConversationMode && questionsToAnalyze.length > 0) {
-    const vectorEfficiency = (
-      (totalVectorTokens / statuteTokens) *
-      100
-    ).toFixed(1);
-    const worthIt = totalVectorTokens < statuteTokens * 0.8;
+  return buildAnswersFromResults(
+    entity,
+    domain,
+    questionsToAnalyze,
+    conversationResults,
+    options.model,
+    false,
+    options.dryRun || false,
+  );
+}
 
-    console.log(
-      `   Vector chunks used: ${totalVectorTokens.toLocaleString()} tokens (${vectorEfficiency}% of statute)`,
-    );
-    console.log(
-      `   Vector approach: ${worthIt ? "✅ Efficient" : "⚠️  Consider conversation mode"} (${worthIt ? "Used less than 80%" : "Used more than 80%"} of statute tokens)`,
-    );
+/**
+ * Run vector-mode analysis for questions
+ */
+async function runVectorAnalysis(
+  domain: string,
+  entity: string,
+  domainForEntityText: string,
+  questionsToAnalyze: any[],
+  questionsToKeep: any[],
+  statuteSize: number,
+  isGeneralDomain: boolean,
+  authoritativeDocumentType: DocumentType | undefined,
+  vectorService: VectorService,
+  options: AnalyzeOptions,
+): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
+  console.log(
+    `🔍 ${entity}: Using vector mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars), authoritativeDocumentType=${authoritativeDocumentType || "undefined"}`,
+  );
 
-    if (VERBOSE) {
-      log(
-        `Vector efficiency: ${vectorEfficiency}% - Statute: ${statuteTokens} tokens, Vector chunks: ${totalVectorTokens} tokens`,
+  const chunkResults = await analyzeQuestions({
+    mode: "chunks",
+    domain,
+    entity,
+    domainForEntityText,
+    questions: questionsToAnalyze,
+    model: options.model,
+    verbose: options.verbose,
+    dryRun: options.dryRun,
+    isGeneralDomain,
+    getDiscoveredChunks: async (questionText: string) => {
+      return getPrioritizedDiscoveredChunks(
+        vectorService,
+        questionText,
+        entity,
+        domain,
+        domainForEntityText,
+        isGeneralDomain,
+        authoritativeDocumentType,
       );
-    }
-  }
+    },
+    existingAnswersContextBuilder: () =>
+      questionsToKeep.length > 0
+        ? `\n\nNOTE: Other questions in this analysis have already covered these topics:\n${questionsToKeep.map((q) => `- Q${q.id}: ${q.answer.substring(0, 100)}...`).join("\n")}\n\nProvide unique information that doesn't repeat what's already been covered.`
+        : "",
+  });
 
-  // Add gap analysis to existing questions that don't have it
+  return buildAnswersFromResults(
+    entity,
+    domain,
+    questionsToAnalyze,
+    chunkResults,
+    options.model,
+    true,
+    options.dryRun || false,
+  );
+}
+
+/**
+ * Enhance existing questions with gap analysis where needed
+ */
+async function enhanceQuestionsWithGapAnalysis(
+  entity: string,
+  domain: string,
+  questionsToKeep: any[],
+  questionId: string | undefined,
+  options: AnalyzeOptions,
+): Promise<any[]> {
   const enhancedQuestionsToKeep: any[] = [];
+
   for (const existingQuestion of questionsToKeep) {
     const score =
       existingQuestion.score !== undefined
@@ -1249,7 +1242,7 @@ async function generateVectorAnalysis(
             ).toFixed(2),
           );
 
-    if (!questionId && !existingQuestion.gap && score < 1.0) {
+    if (!options.dryRun && !questionId && !existingQuestion.gap && score < 1.0) {
       console.log(
         `🔎 ${entity}: Adding missing gap analysis for question ${existingQuestion.id} (score: ${score.toFixed(2)})`,
       );
@@ -1290,12 +1283,291 @@ async function generateVectorAnalysis(
     }
   }
 
+  return enhancedQuestionsToKeep;
+}
+
+/**
+ * Log token usage details for analysis
+ */
+function logTokenUsageSummary(
+  entity: string,
+  useConversationMode: boolean,
+  questionsToAnalyze: any[],
+  municipalityTokensUsed: number,
+  statuteTokens: number,
+  totalVectorTokens: number,
+): string {
+  const analysisMethod = useConversationMode
+    ? questionsToAnalyze.length > 1
+      ? "conversation"
+      : "direct"
+    : "vector";
+
+  console.log(
+    `📊 ${entity}: Token usage summary (${analysisMethod} mode):`,
+  );
+  console.log(
+    `   Total tokens used: ${municipalityTokensUsed.toLocaleString()}`,
+  );
+  console.log(`   Statute size: ${statuteTokens.toLocaleString()} tokens`);
+  console.log(`   Questions analyzed: ${questionsToAnalyze.length}`);
+
+  if (VERBOSE) {
+    log(
+      `Entity analysis: ${municipalityTokensUsed} tokens for ${questionsToAnalyze.length} questions using ${analysisMethod} mode`,
+    );
+  }
+
+  if (!useConversationMode && questionsToAnalyze.length > 0) {
+    const denominator = statuteTokens > 0 ? statuteTokens : Math.max(totalVectorTokens, 1);
+    const vectorEfficiency = (
+      (totalVectorTokens / denominator) *
+      100
+    ).toFixed(1);
+    const worthIt = statuteTokens > 0 ? totalVectorTokens < statuteTokens * 0.8 : true;
+
+    console.log(
+      `   Vector chunks used: ${totalVectorTokens.toLocaleString()} tokens (${vectorEfficiency}% of statute)`,
+    );
+    if (statuteTokens > 0) {
+      console.log(
+        `   Vector approach: ${worthIt ? "✅ Efficient" : "⚠️  Consider conversation mode"} (${worthIt ? "Used less than 80%" : "Used more than 80%"} of statute tokens)`,
+      );
+    }
+
+    if (VERBOSE) {
+      log(
+        `Vector efficiency: ${vectorEfficiency}% - Statute: ${statuteTokens} tokens, Vector chunks: ${totalVectorTokens} tokens`,
+      );
+    }
+  }
+
+  return analysisMethod;
+}
+
+const newLocal = 1000;
+/**
+ * Fetches and validates the statute text, triggers any necessary reindexing,
+ * and determines which analysis mode to use:
+ *   "direct"       — statute < 1000 words; pass full text to LLM directly
+ *   "conversation" — statute ≤ 50 000 chars; pass full text in a single LLM conversation
+ *   "vector"       — statute > 50 000 chars; query Pinecone per question
+ */
+async function prepareAnalysisContent(
+  entity: string,
+  domain: string,
+  vectorService: VectorService,
+  options: AnalyzeOptions,
+): Promise<AnalysisContent> {
+  const st = await getStorage(options);
+  const domainConfig = await st.getDomain(domain);
+  const realmConfig = options.realm ? await st.getRealm(options.realm) : undefined;
+  const isGeneralDomain = domainConfig?.type === "general";
+  const authoritativeDocumentType: DocumentType = realmConfig?.ruleType === "policy" ? "policy" : "statute";
+
+  if (options.reindex) {
+      await indexEntity(entity, { ...options, force: true });
+  }
+
+  if (isGeneralDomain) {
+    return {
+      includeFullStatuteText: false,
+      statuteText: "",
+    };
+  }
+
+  // for statute files
+  const ruleset = st.getRuleset(domain, entity); // will throw if ruleset/metadata.json is missing, which is required for analysis
+
+  const text = await st.getDocumentText(domain, entity, options.realm);
+  if (!text) {
+    console.log("No text found in statute document, but we can use other documents.");
+    return {
+      includeFullStatuteText: false,
+      statuteText: "",
+      authoritativeDocumentType,
+    };
+  }
+
+   // Unsure if need the below - these were guards for an earlier time
+  // if (isHtmlContent(text)) {
+  //   throw new Error(
+  //     `Statute file contains HTML content instead of plain text. File needs to be converted from HTML to text before analysis.`,
+  //   );
+  // }
+
+  // if (text.length > 5000000) {
+  //   throw new Error(
+  //     `Statute file is too large (${text.length} bytes). This may indicate a corrupted file.`,
+  //   );
+  // }
+
+  // const binaryContentRegex = /[\x00-\x08\x0E-\x1F\x7F-\x9F\u2000-\u200F\uFEFF]/;
+  // if (binaryContentRegex.test(text.substring(0, 1000))) {
+  //   throw new Error(
+  //     `Statute file appears to contain binary data instead of text. File may be corrupted.`,
+  //   );
+  // }
+
+  const wordCount = text.trim().split(/\s+/).length;
+  if (wordCount < MAX_WORDS_FOR_DIRECT_ANALYSIS) {
+    return {
+      includeFullStatuteText: true,
+      statuteText: text,
+      authoritativeDocumentType,
+    };
+  }
+
+  // For longer statutes, rely on vector retrieval for both statutes and EntityDownloads.
+  console.log(`[DEBUG] prepareAnalysisContent for ${entity}/${domain}: statute is ${wordCount.toLocaleString()} words (>= ${MAX_WORDS_FOR_DIRECT_ANALYSIS}), using vector retrieval`);
+  return {
+    includeFullStatuteText: false,
+    statuteText: "",
+    authoritativeDocumentType,
+  };
+}
+
+async function generateVectorAnalysis(
+  entity: string,
+  domain: string,
+  metadata: Ruleset,
+  questions: any[],
+  vectorService: VectorService,
+  options: AnalyzeOptions = {},
+): Promise<GeneratedAnalysisResult> {
+  const st = await getStorage(options);
+  const force = options.force || false;
+  const questionId = options.questionId;
+
+  const content = await prepareAnalysisContent(entity, domain, vectorService, options);
+  const statute = content.statuteText;
+  const domainConfig = await st.getDomain(domain);
+  const isGeneralDomain = domainConfig?.type === "general";
+
+  // Log domain analysis method
+  if (isGeneralDomain) {
+    console.log(`🔍 ${entity}: Domain ${domain} is general; using vector search only`);
+  } else if (content.includeFullStatuteText) {
+    const wordCount = statute.trim().split(/\s+/).length;
+    console.log(
+      `🔍 ${entity}: Statute is short (${wordCount} words < ${MAX_WORDS_FOR_DIRECT_ANALYSIS}), using full statute text + EntityDownloads vectors`,
+    );
+  } else {
+    console.log(`🔍 ${entity}: Using vector retrieval for statutes and EntityDownloads`);
+  }
+
+  // Determine which questions need analysis
+  let existingAnalysis = await st.getAnalysis(domain, entity);
+
+  if (force && !questionId) {
+    console.log(
+      `🔄 ${entity}: Force mode - clearing existing analysis and reanalyzing all questions`,
+    );
+    log(
+      `Force mode enabled - ignoring existing analysis.json for vector analysis`,
+    );
+    existingAnalysis = null;
+  } else if (force && questionId) {
+    console.log(
+      `🎯 ${entity}: Force mode with specific question - targeting question ${questionId} only`,
+    );
+    log(
+      `Force mode enabled for specific question ${questionId} - preserving other questions`,
+    );
+  }
+
+  const { questionsToAnalyze, questionsToKeep, questionsToRemove } =
+    compareQuestions(
+      questions,
+      force && !questionId ? [] : existingAnalysis?.questions || [],
+      entity,
+      questionId,
+    );
+
+  // Prepare analysis parameters
+  const statuteSize = statute.length;
+  const useConversationMode = USE_CONVERSATION;
+  const statuteTokens = statute ? estimateTokens(statute) : 0;
+  const startTokenUsage = getCurrentTokenUsage();
+
+  // Run appropriate analysis mode
+  let newAnswers: any[] = [];
+  let totalVectorTokens = 0;
+
+  const domainObj = await st.getDomain(domain);
+  const entityObj = await st.getEntity(entity);
+  if (!domainObj) {
+    throw new Error(`Domain object not found for ${domain}`);
+  }
+  if (!entityObj) {
+    throw new Error(`Entity object not found for ${entity}`);
+  }
+  const domainForEntityText = domainObj.displayName || domain + " applying to " + entityObj.displayName;
+
+
+  if (useConversationMode) {
+    const result = await runConversationAnalysis(
+      domain,
+      entity,
+      domainForEntityText,
+      questionsToAnalyze,
+      content.includeFullStatuteText ? statute : undefined,
+      statuteSize,
+      isGeneralDomain,
+      vectorService,
+      content.authoritativeDocumentType,
+      questionsToKeep,
+      options,
+    );
+    newAnswers = result.newAnswers;
+    totalVectorTokens = result.totalVectorTokens;
+  } else {
+    const result = await runVectorAnalysis(
+      domain,
+      entity,
+      domainForEntityText,
+      questionsToAnalyze,
+      questionsToKeep,
+      statuteSize,
+      isGeneralDomain,
+      content.authoritativeDocumentType,
+      vectorService,
+      options,
+    );
+    newAnswers = result.newAnswers;
+    totalVectorTokens = result.totalVectorTokens;
+  }
+
+  const endTokenUsage = getCurrentTokenUsage();
+  const municipalityTokensUsed = endTokenUsage - startTokenUsage;
+
+  // Log token usage
+  const analysisMethod = logTokenUsageSummary(
+    entity,
+    useConversationMode,
+    questionsToAnalyze,
+    municipalityTokensUsed,
+    statuteTokens,
+    totalVectorTokens,
+  );
+
+  // Enhance existing questions with gap analysis
+  const enhancedQuestionsToKeep = await enhanceQuestionsWithGapAnalysis(
+    entity,
+    domain,
+    questionsToKeep,
+    questionId,
+    options,
+  );
+
+  // Combine and order final answers
   const allAnswers = orderAnswersByQuestions(
     questions,
     enhancedQuestionsToKeep,
     newAnswers,
   );
 
+  // Log analysis summary
   if (questionsToAnalyze.length === 0 && questionsToRemove.length === 0) {
     console.log(
       `✅ ${entity}: No changes needed - all ${questionsToKeep.length} questions are up to date`,
@@ -1307,20 +1579,6 @@ async function generateVectorAnalysis(
   }
 
   const grades: { [key: string]: string | null } = {};
-
-  if (metadata.originalCellValue) {
-    const gradeMatch = metadata.originalCellValue.match(/^([A-Z][+-]?)\s/);
-    if (gradeMatch) {
-      grades[GRADING_ID] = gradeMatch[1];
-      log(`Extracted ${GRADING_ID} grade from originalCellValue: ${grades[GRADING_ID]}`);
-    }
-  }
-
-  if (!grades[GRADING_ID] && metadata.grade) {
-    grades[GRADING_ID] = metadata.grade;
-    log(`Using metadata.grade as ${GRADING_ID} grade: ${grades[GRADING_ID]}`);
-  }
-
   const scores = calculateNormalizedScores(allAnswers, questions);
 
   return {
@@ -1328,7 +1586,7 @@ async function generateVectorAnalysis(
     domainId: domain,
     entity: {
       id: entity,
-      displayName: `${metadata.entity || "Unknown"} - ${metadata.municipalityType || "Entity"}`,
+      displayName: `${metadata.municipality} - ${metadata.municipalityType}`,
     },
     domain: {
       id: domain,
@@ -1478,14 +1736,18 @@ function createEmptyAnswer(question: any, error: unknown) {
 }
 
 async function evaluateQuestion(questionText: any, statute: string, domain: string, entity: string, question: any, options: AnalyzeOptions) {
-  const result = await answerQuestionDirectly(
-    questionText,
-    statute,
+  const [result] = await analyzeQuestions({
+    mode: "full",
     domain,
     entity,
-    question.scoreInstructions,
-    options.model
-  );
+    domainForEntityText: `${domain} applying to ${entity}`,
+    questions: [{ question: questionText, scoreInstructions: question.scoreInstructions }],
+    model: options.model,
+    verbose: options.verbose,
+    dryRun: options.dryRun,
+    fullText: statute,
+    additionalSources: { data: [] },
+  });
 
   const questionScore = calculateAnswerScore(
     result.answer,
@@ -1514,8 +1776,8 @@ async function generateScoresOnly(options: AnalyzeOptions) {
   const st = await getStorage(options);
 
   const domainsToProcess = options.domain
-    ? [options.domain]
-    : await st.listDomainIds(options.realm);
+    ? await getVisibleDomainIds(st, options.domain)
+    : await getVisibleDomainIds(st);
 
   for (const domainId of domainsToProcess) {
     console.log(`\n📊 Processing domain: ${domainId}`);
@@ -1676,7 +1938,9 @@ Usage:
 Options:
   --domain <name>           Process specific domain only (e.g., "property-maintenance")
   --entity <id>       Process specific entity only (e.g., "NY-Bedford-Town")
+  --realm <id>              Target realm (or set CURRENT_REALM env var)
   --force                   Force re-analysis even if recent analysis exists
+  --dry-run                 Plan analysis without making OpenAI calls or writing files
   --reindex                 Re-upload document chunks to Pinecone vector database
   --verbose, -v             Enable detailed logging of processing steps
   --fixorder                Fix question order in existing analysis.json files to match questions.json
@@ -1752,43 +2016,32 @@ Processing Details:
 
 // CLI argument parsing
 async function parseArgs() {
-  const args = process.argv.slice(2);
-  const options: AnalyzeOptions = {};
-
   // Load environment variables from .env file
   dotenv.config();
 
-  // First check CURRENT_REALM environment variable
-  if (process.env.CURRENT_REALM) {
-    options.realm = process.env.CURRENT_REALM;
-    console.log(
-      `📖 Using CURRENT_REALM environment variable: ${options.realm}`,
-    );
+  // Delegate common flags (--realm, --domain, --entity, --force, --dry-run, --data-root)
+  // to the shared helper; remaining args are script-specific.
+  const { common, rest } = parseCommonCliArgs(process.argv.slice(2));
+
+  const options: AnalyzeOptions = {
+    realm: common.realm,
+    domain: common.domain,
+    entity: common.entity,
+    force: common.force,
+    dryRun: common.dryRun,
+  };
+
+  if (common.realm) {
+    process.env.CURRENT_REALM = common.realm;
+    console.log(`📖 Using realm: ${common.realm}`);
   }
 
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
+  for (let i = 0; i < rest.length; i++) {
+    switch (rest[i]) {
       case "--help":
       case "-h":
         showHelp();
         process.exit(0);
-        break;
-      case "--domain":
-        options.domain = args[++i];
-        break;
-      case "--entity":
-        options.entity = args[++i];
-        break;
-      case "--realm":
-        options.realm = args[++i];
-        // Set environment variable when --realm is provided
-        process.env.CURRENT_REALM = options.realm;
-        console.log(
-          `💾 Set CURRENT_REALM environment variable from --realm parameter: ${options.realm}`,
-        );
-        break;
-      case "--force":
-        options.force = true;
         break;
       case "--reindex":
         options.reindex = true;
@@ -1813,33 +2066,21 @@ async function parseArgs() {
         options.generateQuestions = true;
         break;
       case "--questionId":
-        options.questionId = args[++i];
+        options.questionId = rest[++i];
         break;
       case "--skip-recent":
-        options.skipRecent = args[++i];
+        options.skipRecent = rest[++i];
         break;
       case "--generate-score-only":
         options.generateScoreOnly = true;
         break;
       case "--model":
-        options.model = args[++i] as any;
+        options.model = rest[++i] as any;
         break;
       default:
-        if (args[i].startsWith("-")) {
-          // Handle --realm=value format
-          if (args[i].startsWith("--realm=")) {
-            options.realm = args[i].split("=")[1];
-            // Set environment variable when --realm is provided
-            process.env.CURRENT_REALM = options.realm;
-            console.log(
-              `💾 Set CURRENT_REALM environment variable from --realm parameter: ${options.realm}`,
-            );
-          } else {
-            console.error(`Unknown option: ${args[i]}`);
-            showHelp();
-            process.exit(1);
-          }
-        }
+        console.error(`Unknown option: ${rest[i]}`);
+        showHelp();
+        process.exit(1);
     }
   }
 
@@ -1890,12 +2131,12 @@ async function parseArgs() {
 }
 
 
-// Run the script
-if (require.main === module) {
-  (async () => {
+// // Run the script
+// if (require.main === module) {
+//   (async () => {
     const options = await parseArgs();
     analyzeStatutes(options).catch(console.error);
-  })();
-}
+//   })();
+// }
 
 
