@@ -104,6 +104,16 @@ export interface RulesetSource {
   downloadedFilename?: string; // Relative path to the downloaded artifact (HTML or TXT file)
 }
 
+/** 
+ * TODO: merge with RulesetSource
+ */
+export interface LinkedResource {
+  url: string;
+  title: string;
+  matchedDomainIds: string[];
+  timestamp: string;
+}
+
 export interface DomainWithQuestions {
   id: string;
   name: string;
@@ -116,7 +126,6 @@ export interface DomainWithQuestions {
 export interface Question {
   id: number; // Changed: used as number in storage.ts
   domainId: string;
-  title?: string;
   question: string; // TODO consider changing to something else to avoid question.question redundancy
   category?: string;
   order: string;
@@ -169,6 +178,11 @@ export interface Analysis {
   lastUpdated?: string; // String format
   processingMethod?: string;
   gapAnalysis?: string; // Added: used in home.tsx for gap analysis summary
+  sources: SourceLink[]; // Added: used in home.tsx to display source links
+}
+
+// TODO: extend this
+export interface SourceLink extends UrlAndTitle {
 }
 
 export interface AnalysisVersionRef {
@@ -179,28 +193,17 @@ export interface AnalysisVersionRef {
   isCurrent: boolean;
 }
 
-export interface AnalysisAnswer {
-	id: number;
-	question: string;
-	answer: string;
-	confidence: number;
-	score: number;
-	gap?: string;
-	sourceRefs: string[];
-	relevantSections?: string[];
-}
-
 export interface BestPractice {
 	questionId: number;
 	question: string;
-	bestAnswer: string;
-	bestScore: number;
-	bestEntity: {
+	bestAnswer?: string;
+	bestScore?: number;
+	bestEntity?: {
 		id: string;
 		displayName: string;
 	};
 	quantitativeHighlights?: string[]; // New field for specific numbers/measurements
-	supportingExamples: Array<{ // Up to 3 municipal references
+	supportingExamples?: Array<{ // Up to 3 municipal references
 		municipality: {
 			id: string;
 			displayName: string;
@@ -209,7 +212,7 @@ export interface BestPractice {
 		confidence: number;
 	}>;
   improvementSuggestions?: string[]; // Actionable recommendations
-	commonGaps: string[];
+	commonGaps?: string[];
 }
 
 export interface MetaAnalysis {
@@ -293,15 +296,32 @@ export interface DataSourcesResponse {
   sources: DataSource[];
 }
 
-// UNUSED: QuestionWithScore is not used in the codebase
+export interface UrlAndTitle {
+  url: string;
+  title: string;
+}
+
+export type SourceMapLink = UrlAndTitle;
+
+export interface SourceMapEntity {
+  entityId: string;
+  displayName: string;
+  domains: Record<string, SourceMapLink[]>;
+}
+
 export interface QuestionWithScore {
-  id: number;
-  question: string;
-  answer: string;
-  score: number; // Individual score 0.0 - 1.0
-  weight: number; // Question weight (default 1)
-  weightedScore: number; // score * weight
-  maxWeightedScore: number; // weight (max possible for this question)
+  id: string | number;
+  question?: string;
+  answer?: string;
+  /** Individual question score, 0–1 scale */
+  score: number;
+  /** Question weight (default 1) */
+  weight: number;
+  /** score × weight */
+  weightedScore: number;
+  /** Maximum possible weighted score (equals weight) */
+  maxWeightedScore: number;
+  /** Confidence level, 0–100 */
   confidence: number;
 }
 
@@ -426,6 +446,8 @@ export interface AnalyzedQuestion {
   gapAnalysis?: string; // Library format: gap analysis
   /** Per-question timestamp set when the question was last analysed */
   analyzedAt?: string;
+  /** AI-suggested next research prompts for this question */
+  nextPrompts?: string[];
 }
 
 export interface SourceRef {

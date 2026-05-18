@@ -1,4 +1,8 @@
 import { AlertCircle, HelpCircle, FileText } from "lucide-react";
+import { SourcesPopup, SourcesIconButton } from "../../components/SourcesPopup";
+import { useState } from "react";
+import { useQuery } from '@tanstack/react-query';
+import { apiPath } from "../../lib/apiConfig";
 import { Card, CardContent } from "../../ui";
 import StatuteLink from "../../components/StatuteLink";
 import { ScoreVisualization } from "../../components/ScoreVisualization";
@@ -41,6 +45,23 @@ export function SidebarAnalysis({
   currentRealm,
   onQuestionMarkClick,
 }: SidebarAnalysisProps) {
+
+  // State for sources popup
+  const [selectedSources, setSelectedSources] = useState<{
+    entity: string;
+    domainName: string;
+    sources: { url: string; title: string }[];
+  } | null>(null);
+
+  // Fetch datasources for the current realm
+  const realmId = currentRealm?.id;
+  const { data: datasources } = useQuery<Record<string, any>>({
+    queryKey: [apiPath(`realms/${realmId}/datasources`)],
+    enabled: !!realmId,
+    staleTime: 1000 * 60 * 5,
+    refetchOnWindowFocus: true,
+  });
+
   return (
     <Card className="shadow-sm border border-gray-200">
       <CardContent className="p-4">
@@ -57,8 +78,30 @@ export function SidebarAnalysis({
                   ? municipalities?.find((m) => m.id === selectedEntityId)?.displayName
                   : analysisData?.municipality?.displayName}
               </h3>
-              <h4 className="text-base text-civic-blue capitalize">
+              <h4 className="text-base text-civic-blue capitalize flex items-center justify-center gap-2">
                 {analysisData?.domain?.displayName} Regulations
+                {(() => {
+                  if (!datasources || !selectedEntityId || !analysisData?.domain?.id) return null;
+                  const entitySources = datasources[selectedEntityId]?.domains?.[analysisData.domain.id];
+                  if (entitySources && entitySources.length > 0) {
+                    return (
+                      <SourcesIconButton
+                        onClick={() => {
+                          setSelectedSources({
+                            entity:
+                              (usesStateCode
+                                ? municipalities?.find((m) => m.id === selectedEntityId)?.displayName
+                                : analysisData?.municipality?.displayName) || "",
+                            domainName: analysisData?.domain?.displayName || "",
+                            sources: entitySources,
+                          });
+                        }}
+                        count={entitySources.length}
+                      />
+                    );
+                  }
+                  return null;
+                })()}
               </h4>
               {usesStateCode ? (
                 <div className="inline-flex items-center px-3 py-2 mt-2 rounded-full text-sm font-medium bg-blue-600 text-white">
@@ -332,6 +375,16 @@ export function SidebarAnalysis({
             <AlertCircle className="mx-auto mb-2" size={20} />
             Analysis not available for this selection.
           </div>
+        )}
+        {/* Sources Popup */}
+        {selectedSources && (
+          <SourcesPopup
+            entity={selectedSources.entity}
+            domainName={selectedSources.domainName}
+            sources={selectedSources.sources}
+            open={!!selectedSources}
+            onOpenChange={(open) => !open && setSelectedSources(null)}
+          />
         )}
       </CardContent>
     </Card>

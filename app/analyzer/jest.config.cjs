@@ -24,6 +24,6 @@ module.exports = {
     '^@ordinizer/servercore(.*)$': '<rootDir>/../../packages/servercore/src$1',
     '^@civillyengaged/ordinizer-servercore(.*)$': '<rootDir>/../../packages/servercore/src$1',
     // Shim the pure-ESM @exodus/bytes sub-paths so jsdom loads in Jest CJS mode
-    '^@exodus/bytes/(.*)$': '<rootDir>/jest-mocks/exodus-bytes-encoding-lite.js',
+    '^@exodus/bytes/(.*)$': '<rootDir>/jest-mocks/exodus-bytes-encoding-lite.cjs',
   },
 };

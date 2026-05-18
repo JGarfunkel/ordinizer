@@ -32,9 +32,42 @@
       "outputCostPer1MTokens": 4.5,
       "maxTokens": 128000,
       "recommended": "default for balanced quality, speed, and cost"
+    },
+    "claude-opus-4-7": {
+      "name": "Claude Opus 4.7",
+      "description": "Anthropic's most capable model for complex reasoning and analysis",
+      "tokensPerMinute": 20000,
+      "costPer1kTokens": 0.045,
+      "inputCostPer1MTokens": 15,
+      "cachedInputCostPer1MTokens": 1.5,
+      "outputCostPer1MTokens": 75,
+      "maxTokens": 200000,
+      "recommended": "highest capability for complex legal reasoning"
+    },
+    "claude-sonnet-4-6": {
+      "name": "Claude Sonnet 4.6",
+      "description": "Anthropic's mid-tier model balancing capability and cost",
+      "tokensPerMinute": 40000,
+      "costPer1kTokens": 0.009,
+      "inputCostPer1MTokens": 3,
+      "cachedInputCostPer1MTokens": 0.3,
+      "outputCostPer1MTokens": 15,
+      "maxTokens": 200000,
+      "recommended": "strong quality with better cost efficiency"
+    },
+    "claude-haiku-4-5-20251001": {
+      "name": "Claude Haiku 4.5",
+      "description": "Anthropic's fastest and most affordable model",
+      "tokensPerMinute": 100000,
+      "costPer1kTokens": 0.00125,
+      "inputCostPer1MTokens": 0.8,
+      "cachedInputCostPer1MTokens": 0.08,
+      "outputCostPer1MTokens": 4,
+      "maxTokens": 200000,
+      "recommended": "default for balanced quality, speed, and cost"
     }
   },
   "defaultModel": "gpt-5.4-mini",
   "rateLimitBuffer": 0.8,
-  "description": "Configuration for OpenAI models used in statute analysis"
+  "description": "Configuration for OpenAI and Anthropic models used in statute analysis"
 }

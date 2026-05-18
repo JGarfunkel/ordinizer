@@ -3,7 +3,35 @@
  * Extracted from analyzeStatutes.ts.
  */
 
+import type { AnalyzedQuestion, Question, QuestionWithScore } from "@civillyengaged/ordinizer-core";
+export type { QuestionWithScore };
+
+export interface ScoreBreakdown {
+  /** Per-question raw scores, 0–1 scale */
+  questionScores: number[];
+  /** Mean of questionScores, 0–1 scale */
+  averageQuestionScore: number;
+  /** Normalized weighted average of all question scores, 0–1 scale */
+  weightedScore: number;
+  totalWeightedScore: number;
+  totalPossibleWeight: number;
+  questionsWithScores: QuestionWithScore[];
+}
+
+export interface NormalizedScores {
+  /** Same as normalizedScore; 0–10 scale */
+  overallScore: number;
+  /** Weighted normalized score, 0–10 scale */
+  normalizedScore: number;
+  /** Mean confidence across all answers, 0–100 */
+  averageConfidence: number;
+  questionsAnswered: number;
+  totalQuestions: number;
+  scoreBreakdown: ScoreBreakdown;
+}
+
 /**
+ * @deprecated
  * Calculate an environmental protection score (0.1–1.0) based on answer content.
  * Higher scores reflect more specific, enforceable regulations.
  */
@@ -72,22 +100,23 @@ export function calculateAnswerScore(answer: string, confidence: number): number
 
 /**
  * Calculate weighted normalized scores across all Q&A pairs.
- * Returns a scores object with a `normalizedScore` scaled 0–10.
+ * Individual question scores (answer.score) are on a 0–1 scale.
+ * The returned normalizedScore / overallScore are on a 0–10 scale.
  */
-export function calculateNormalizedScores(answers: any[], questions: any[]): any {
-  const scores = {
+export function calculateNormalizedScores(answers: AnalyzedQuestion[], questions: Question[], verbose?: boolean): NormalizedScores {
+  const scores: NormalizedScores = {
     overallScore: 0,
     normalizedScore: 0,
     averageConfidence: 0,
     questionsAnswered: 0,
     totalQuestions: answers.length,
     scoreBreakdown: {
-      questionScores: [] as number[],
+      questionScores: [],
       averageQuestionScore: 0,
       weightedScore: 0,
       totalWeightedScore: 0,
       totalPossibleWeight: 0,
-      questionsWithScores: [] as any[],
+      questionsWithScores: [],
     },
   };
 
@@ -100,18 +129,18 @@ export function calculateNormalizedScores(answers: any[], questions: any[]): any
 
   let totalWeightedScore = 0;
   let totalPossibleWeight = 0;
-  const questionsWithScores: any[] = [];
+  const questionsWithScores: QuestionWithScore[] = [];
 
   for (const answer of answers) {
     const question = questionMap.get(String(answer.questionId ?? answer.id));
     const weight = question?.weight ?? 1;
     const score = answer.score ?? 0;
-    const weightedScore = score * weight;
+    const weightedScore = roundToDecimal(score * weight, 2);
 
     questionsWithScores.push({
       id: String(answer.questionId ?? answer.id),
-      question: answer.question || question?.question || question?.text || '',
-      answer: answer.answer || "Not analyzed",
+      // question: answer.question || question?.question || question?.text || '',
+      // answer: answer.answer || "Not analyzed",
       score,
       weight,
       weightedScore,
@@ -124,16 +153,30 @@ export function calculateNormalizedScores(answers: any[], questions: any[]): any
   }
 
   scores.scoreBreakdown.questionScores = answers.map(a => a.score || 0);
-  scores.scoreBreakdown.averageQuestionScore =
-    scores.scoreBreakdown.questionScores.reduce((s, v) => s + v, 0) / answers.length;
+  scores.scoreBreakdown.averageQuestionScore = roundToDecimal(
+    scores.scoreBreakdown.questionScores.reduce((s, v) => s + v, 0) / answers.length,
+    2
+  );
   scores.scoreBreakdown.totalWeightedScore = totalWeightedScore;
   scores.scoreBreakdown.totalPossibleWeight = totalPossibleWeight;
   scores.scoreBreakdown.questionsWithScores = questionsWithScores;
 
   const normalized = totalPossibleWeight > 0 ? totalWeightedScore / totalPossibleWeight : 0;
-  scores.scoreBreakdown.weightedScore = parseFloat(normalized.toFixed(4));
-  scores.normalizedScore = parseFloat((normalized * 10).toFixed(2));
+  scores.scoreBreakdown.weightedScore = roundToDecimal(normalized, 4);
+  scores.normalizedScore = roundToDecimal(normalized * 10, 2);
   scores.overallScore = scores.normalizedScore;
 
+  if (verbose) {
+    console.log(`[VERBOSE] scoring: normalizedScore=${scores.normalizedScore} = ${totalWeightedScore}/${totalPossibleWeight}  , questionsAnswered=${scores.questionsAnswered}/${scores.totalQuestions}`);
+    for (const q of scores.scoreBreakdown.questionsWithScores) {
+      console.log(`[VERBOSE]   Q${q.id}: score=${q.score} weight=${q.weight} weighted=${q.weightedScore}`);
+    }
+  }
+
   return scores;
+}
+
+function roundToDecimal(num: number, decimals: number): number {
+  const factor = Math.pow(10, decimals);
+  return Math.round(num * factor) / factor;
 }

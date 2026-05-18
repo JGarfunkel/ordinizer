@@ -1,15 +1,27 @@
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from "../ui";
-import { getEnvironmentalScoreLegend } from '../lib/scoreColors';
+import { getEnvironmentalScoreLegend, getEnvironmentalScoreColor } from '../lib/scoreColors';
 import { Button } from "../ui";
 import { Badge } from "../ui";
-import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Files } from 'lucide-react';
 import { apiPath } from "../lib/apiConfig";
 import { Link, useParams } from 'wouter';
 import { useEffect, useState } from 'react';
 import { getDefaultRealmId } from '../lib/realmUtils';
 import { useBasePath } from '../contexts/BasePathContext';
 import { useRealms } from '../hooks/useRealms';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "../ui";
+import { SourceMapEntity, SourceMapLink } from '@civillyengaged/ordinizer-core';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui";
+import { SourcesPopup, SourcesIconButton } from "../components/SourcesPopup";
+
 
 interface CombinedMatrixData {
   domains: Array<{
@@ -33,6 +45,15 @@ interface CombinedMatrixData {
     }>;
   }>;
 }
+
+interface SourcesPopupProps {
+  entity: string;
+  domainName: string;
+  sources: SourceMapLink[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
 
 export default function CombinedMatrix() {
   const params = useParams();
@@ -67,6 +88,19 @@ export default function CombinedMatrix() {
     queryKey: [apiPath('realms'), realmId, 'combined-matrix'],
     enabled: !!realmId, // Only query when realmId is available
     staleTime: 1000 * 60 * 5 // Cache for 5 minutes
+  });
+
+  const [selectedSources, setSelectedSources] = useState<{
+    entity: string;
+    domainName: string;
+    sources: SourceMapLink[];
+  } | null>(null);
+
+  const { data: datasources } = useQuery<Record<string, SourceMapEntity>>({
+    queryKey: [apiPath(`realms/${realmId}/datasources`)],
+    enabled: !!realmId,
+    staleTime: 1000 * 60 * 5, // Cache for 5 minutes
+    refetchOnWindowFocus: true,
   });
 
   if (isLoading) {
@@ -178,7 +212,7 @@ export default function CombinedMatrix() {
                       {/* Domain Cells */}
                       {matrixData.domains.map((domain) => {
                         const domainData = entityRow.domains[domain.id];
-                        
+
                         // State Code Reference
                         if (domainData?.referencesStateCode) {
                           return (
@@ -194,7 +228,7 @@ export default function CombinedMatrix() {
                             </td>
                           );
                         }
-                        
+
                         // No {documentTypeCapitalized}
                         if (!domainData?.hasStatute) {
                           return (
@@ -208,14 +242,14 @@ export default function CombinedMatrix() {
                             </td>
                           );
                         }
-                        
+
                         // Has {documentTypeCapitalized}
                         return (
                           <td 
                             key={domain.id}
                             className="px-2 py-2 border-r last:border-r-0"
                             style={{ 
-                              backgroundColor: domainData.scoreColor || '#e2e8f0' // Light gray for data without score
+                              backgroundColor: domainData.score !== undefined ? getEnvironmentalScoreColor(domainData.score) : (domainData.scoreColor || '#e2e8f0')
                             }}
                             data-testid={`cell-${entityRow.entity.id}-${domain.id}`}
                           >
@@ -238,11 +272,35 @@ export default function CombinedMatrix() {
                                 )}
                                 <ExternalLink className="w-3 h-3 text-gray-500 flex-shrink-0" />
                               </a>
-                              
+                              {/* Sources Button */}
+                              {datasources && datasources[entityRow.entity.id]?.domains[domain.id] && (
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button
+                                        onClick={() => setSelectedSources({
+                                          entity: entityRow.entity.displayName,
+                                          domainName: domain.displayName,
+                                          sources: datasources[entityRow.entity.id].domains[domain.id] || []
+                                        })}
+                                        className="inline-flex items-center justify-center text-civic-blue hover:text-civic-blue-dark mt-0.5 cursor-pointer"
+                                        data-testid={`button-sources-${entityRow.entity.id}`}
+                                        aria-label="Show sources"
+                                      >
+                                        <Files className="w-4 h-4" />
+                                        <span className="sr-only">Show sources</span>
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" align="center">
+                                      Show sources
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              )}
                               {/* Environmental Score on separate line - Links to analysis page */}
                               {domainData.score !== undefined && (
                                 <Link 
-                                  href={buildPath(`/${domain.id}/${entityRow.entity.id}`)}
+                                  href={buildPath(`/realm/${realmId}/${domain.id}/${entityRow.entity.id}`)}
                                   className="block text-sm font-bold text-gray-900 hover:opacity-80 transition-opacity"
                                   data-testid={`score-link-${entityRow.entity.id}-${domain.id}`}
                                 >
@@ -261,6 +319,17 @@ export default function CombinedMatrix() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Sources Popup (single, after table) */}
+      {selectedSources && (
+        <SourcesPopup
+          entity={selectedSources.entity}
+          domainName={selectedSources.domainName}
+          sources={selectedSources.sources}
+          open={!!selectedSources}
+          onOpenChange={(open) => !open && setSelectedSources(null)}
+        />
+      )}
 
       {/* Legend */}
       <Card className="mt-6">
@@ -300,3 +369,5 @@ export default function CombinedMatrix() {
     </div>
   );
 }
+
+

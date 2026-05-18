@@ -1,48 +1,47 @@
-/**
- * AI Service
- * 
- * This module provides a wrapper around the OpenAI API for use in the Ordinizer Analyzer.
- * It includes functions for creating chat completions, estimating token usage, and managing rate limits.
- * It also handles loading model configurations and provides utilities for verbose logging and token usage tracking.
- * 
- * The service is designed to be flexible and easily replaceable if we want to switch to a different AI provider in the future.
- */
 import fs from "fs/promises";
 import path from "path";
-import OpenAI from "openai";
+import { generateText, generateObject } from "ai";
+import { z } from "zod";
+import { createOpenAI } from "@ai-sdk/openai";
+import { createAnthropic } from "@ai-sdk/anthropic";
 
-let openai: OpenAI | null = null;
+// --- Provider detection ---
 
-export { openai };
-
-function getOpenAI(): OpenAI {
-  if (!openai) {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error("OPENAI_API_KEY is required");
-    }
-    openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  }
-  return openai;
+// Derive the provider from the model string: claude-* → anthropic, everything else → openai.
+function detectProvider(modelId: string): "openai" | "anthropic" {
+  return modelId.startsWith("claude-") ? "anthropic" : "openai";
 }
+
+export function buildLanguageModel(modelId: string) {
+  const provider = detectProvider(modelId);
+  if (provider === "anthropic") {
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is required");
+    return createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY })(modelId);
+  }
+  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is required");
+  return createOpenAI({ apiKey: process.env.OPENAI_API_KEY })(modelId);
+}
+
+// --- Token usage & rate limiting ---
 
 interface TokenUsage {
   timestamp: number;
   tokens: number;
-  estimated?: number; // Track estimated vs actual
+  estimated?: number;
 }
 
 let tokenUsageHistory: TokenUsage[] = [];
-export let currentModel = "gpt-5.4-mini";
+export let currentModel = process.env.DEFAULT_AI_MODEL || "claude-sonnet-4-6";
+console.log("Using default model:", currentModel);
 export function setCurrentModel(model: string) { currentModel = model; }
 let modelConfig: any = null;
 
-// Rate limit statistics tracking
 let rateLimitStats = {
   totalWaits: 0,
   totalWaitMs: 0,
   lastWaitTime: 0,
-  lastWaitLog: 0, // Throttle wait logs
 };
+
 export const QUESTION_PAUSE_MS = 200;
 export const QUESTION_SET_PAUSE_MS = 1000;
 
@@ -64,11 +63,11 @@ export async function loadModelConfig() {
       modelConfig = JSON.parse(await fs.readFile(configPath, "utf-8"));
       validateModelConfig(modelConfig);
     } catch (error) {
-      console.warn("Could not load AI-models.json, using default rate limits", error instanceof Error ? error.message : error);
+      console.warn("Could not load AI-models.json, using defaults", error instanceof Error ? error.message : error);
       modelConfig = {
         models: {
-          "gpt-5.5": { tokensPerMinute: 30000 },
-          "gpt-5.4": { tokensPerMinute: 30000 },
+          "gpt-5.5":      { tokensPerMinute: 30000 },
+          "gpt-5.4":      { tokensPerMinute: 30000 },
           "gpt-5.4-mini": { tokensPerMinute: 200000 },
         },
         rateLimitBuffer: 0.8,
@@ -79,29 +78,23 @@ export async function loadModelConfig() {
 }
 
 function validateModelConfig(config: any): void {
-  if (!config || !config.models) {
-    console.warn("Invalid config: missing models object");
-    return;
-  }
-  
+  if (!config?.models) { console.warn("Invalid config: missing models"); return; }
   const buffer = config.rateLimitBuffer ?? 0.8;
   if (buffer < 0.5 || buffer > 1.0) {
-    console.warn(`Invalid rateLimitBuffer: ${buffer}. Expected 0.5-1.0. Using 0.8 as fallback.`);
+    console.warn(`Invalid rateLimitBuffer ${buffer}. Using 0.8.`);
     config.rateLimitBuffer = 0.8;
   }
-  
-  for (const [modelName, modelData] of Object.entries(config.models)) {
-    const md = modelData as any;
-    if (!md.tokensPerMinute || md.tokensPerMinute <= 0) {
-      console.warn(`Invalid tokensPerMinute for ${modelName}: ${md.tokensPerMinute}. Must be > 0.`);
-    }
+  for (const [name, data] of Object.entries(config.models)) {
+    const d = data as any;
+    if (!d.tokensPerMinute || d.tokensPerMinute <= 0)
+      console.warn(`Invalid tokensPerMinute for ${name}: ${d.tokensPerMinute}`);
   }
 }
 
 export function getModelRateLimit(): number {
-  const baseLimit = modelConfig?.models?.[currentModel]?.tokensPerMinute ?? 30000;
+  const base = modelConfig?.models?.[currentModel]?.tokensPerMinute ?? 30000;
   const buffer = modelConfig?.rateLimitBuffer ?? 0.8;
-  return Math.floor(baseLimit * buffer);
+  return Math.floor(base * buffer);
 }
 
 export function estimateTokens(text: string): number {
@@ -124,42 +117,27 @@ export function getCurrentTokenUsage(): number {
 }
 
 export async function checkRateLimit(estimatedTokens: number): Promise<void> {
-  // Guard: ignore zero or negative token estimates
-  if (estimatedTokens <= 0) {
-    return;
-  }
-  
+  if (estimatedTokens <= 0) return;
   const now = Date.now();
-  const oneMinuteAgo = now - 60000;
-  
-  // Filter once and reuse
-  const recentUsage = tokenUsageHistory.filter(u => u.timestamp > oneMinuteAgo);
+  const recentUsage = tokenUsageHistory.filter(u => u.timestamp > now - 60000);
   const currentUsage = recentUsage.reduce((sum, u) => sum + u.tokens, 0);
   const rateLimit = getModelRateLimit();
-  
   if (currentUsage + estimatedTokens > rateLimit) {
     const oldest = recentUsage[0];
     let waitTime = oldest ? oldest.timestamp + 60000 - now : 60000;
-    
-    // Cap wait time at 5 minutes to prevent infinite waits
     const MAX_WAIT_MS = 5 * 60 * 1000;
     if (waitTime > MAX_WAIT_MS) {
-      console.warn(`⚠️ Rate limit wait time capped at 5 minutes (calculated: ${(waitTime / 1000).toFixed(1)}s). This may indicate config issues.`);
+      console.warn(`⚠️ Rate limit wait capped at 5min (calculated: ${(waitTime / 1000).toFixed(1)}s)`);
       waitTime = MAX_WAIT_MS;
     }
-    
     if (waitTime > 0) {
-      const utilizationPercent = Math.round((currentUsage / rateLimit) * 100);
-      const now_timestamp = new Date().toLocaleTimeString();
-      console.log(`⏳ [${now_timestamp}] Rate limit approaching for ${currentModel}. Usage: ${currentUsage}/${rateLimit} tokens (${utilizationPercent}%), Estimated next: ${estimatedTokens}`);
-      console.log(`⏳ Waiting ${(waitTime / 1000).toFixed(1)}s before next API call...`);
-      
+      const pct = Math.round((currentUsage / rateLimit) * 100);
+      console.log(`⏳ [${new Date().toLocaleTimeString()}] Rate limit: ${currentUsage}/${rateLimit} tokens (${pct}%), next: ${estimatedTokens}`);
+      console.log(`⏳ Waiting ${(waitTime / 1000).toFixed(1)}s...`);
       rateLimitStats.totalWaits++;
       rateLimitStats.totalWaitMs += waitTime;
       rateLimitStats.lastWaitTime = waitTime;
-      
       await sleep(waitTime);
-      
       const newNow = Date.now();
       tokenUsageHistory = tokenUsageHistory.filter(u => u.timestamp > newNow - 60000);
     }
@@ -167,15 +145,12 @@ export async function checkRateLimit(estimatedTokens: number): Promise<void> {
 }
 
 let _verbose = false;
-export let VERBOSE: boolean = false;
+export let VERBOSE = false;
 export function setVerbose(v: boolean) { _verbose = v; VERBOSE = v; }
 export function log(message: string, ...args: any[]) {
   if (_verbose) console.log(`[VERBOSE] ${message}`, ...args);
 }
 
-/**
- * Get statistics on rate limit behavior
- */
 export function getRateLimitStats(): {
   tokensUsed: number;
   tokensLimit: number;
@@ -185,11 +160,9 @@ export function getRateLimitStats(): {
   averageWaitMs: number;
 } {
   const now = Date.now();
-  const oneMinuteAgo = now - 60000;
-  const recentUsage = tokenUsageHistory.filter(u => u.timestamp > oneMinuteAgo);
+  const recentUsage = tokenUsageHistory.filter(u => u.timestamp > now - 60000);
   const tokensUsed = recentUsage.reduce((sum, u) => sum + u.tokens, 0);
   const tokensLimit = getModelRateLimit();
-  
   return {
     tokensUsed,
     tokensLimit,
@@ -200,57 +173,48 @@ export function getRateLimitStats(): {
   };
 }
 
-/**
- * Get statistics on token estimation accuracy
- */
 export function getTokenEstimationAccuracy(): {
   estimatedTotal: number;
   actualTotal: number;
   differencePct: number;
   samplesWithEstimates: number;
 } {
-  const samplesWithEstimates = tokenUsageHistory.filter(u => u.estimated !== undefined).length;
-  const estimatedTotal = tokenUsageHistory
-    .filter(u => u.estimated !== undefined)
-    .reduce((sum, u) => sum + (u.estimated || 0), 0);
-  const actualTotal = tokenUsageHistory
-    .filter(u => u.estimated !== undefined)
-    .reduce((sum, u) => sum + u.tokens, 0);
-  
-  const differencePct = actualTotal > 0 
-    ? Math.round(((estimatedTotal - actualTotal) / actualTotal) * 100)
-    : 0;
-  
+  const samples = tokenUsageHistory.filter(u => u.estimated !== undefined);
+  const estimatedTotal = samples.reduce((sum, u) => sum + (u.estimated || 0), 0);
+  const actualTotal = samples.reduce((sum, u) => sum + u.tokens, 0);
   return {
     estimatedTotal,
     actualTotal,
-    differencePct,
-    samplesWithEstimates,
+    differencePct: actualTotal > 0 ? Math.round(((estimatedTotal - actualTotal) / actualTotal) * 100) : 0,
+    samplesWithEstimates: samples.length,
   };
 }
 
-/**
- * Log rate limit statistics (for debugging and monitoring)
- */
 export function logRateLimitStats(): void {
   if (!_verbose) return;
-  
   const stats = getRateLimitStats();
   const accuracy = getTokenEstimationAccuracy();
-  
-  console.log(`[VERBOSE] Rate Limit Stats for ${currentModel}:`);
-  console.log(`  Current 60s window: ${stats.tokensUsed}/${stats.tokensLimit} tokens (${stats.utilizationPercent}%)`);
-  console.log(`  Total waits: ${stats.totalWaits} (${stats.totalWaitSeconds}s cumulative, avg ${stats.averageWaitMs}ms)`);
-  
+  console.log(`[VERBOSE] Rate Limit Stats for ${currentModel} (${detectProvider(currentModel)}):`);
+  console.log(`  60s window: ${stats.tokensUsed}/${stats.tokensLimit} (${stats.utilizationPercent}%)`);
+  console.log(`  Waits: ${stats.totalWaits} (${stats.totalWaitSeconds}s total, avg ${stats.averageWaitMs}ms)`);
   if (accuracy.samplesWithEstimates > 0) {
-    const diffDirection = accuracy.differencePct > 0 ? 'over' : 'under';
-    console.log(`  Estimation accuracy: ${accuracy.samplesWithEstimates} samples, ${Math.abs(accuracy.differencePct)}% ${diffDirection}-estimated`);
+    const dir = accuracy.differencePct > 0 ? "over" : "under";
+    console.log(`  Estimation: ${accuracy.samplesWithEstimates} samples, ${Math.abs(accuracy.differencePct)}% ${dir}-estimated`);
   }
 }
 
-type ChatResponseFormat = { type: "text" } | { type: "json_object" };
+// --- Chat completions ---
 
-export interface ChatDefaultsOptions {
+export interface ChatResult {
+  text: string;
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+}
+
+export interface ChatOptions {
   format?: "text" | "json";
   system?: string;
   temperature?: number;
@@ -261,45 +225,91 @@ export interface ChatDefaultsOptions {
 
 export async function createChatCompletion(
   userPrompt: string,
-  options: ChatDefaultsOptions = {}
-) {
+  options: ChatOptions = {}
+): Promise<ChatResult> {
   const {
     format = "json",
     system,
-    temperature = 0.2,
     model = currentModel,
     maxCompletionTokens,
     messages,
   } = options;
-
-  const responseFormat: ChatResponseFormat = format === "json"
-    ? { type: "json_object" }
-    : { type: "text" };
+  const temperature = options.temperature ?? (model === "gpt-5.5" ? 1 : 0.3);
 
   const systemPrompt = format === "json"
     ? (system ? `${system} Output strict JSON only.` : "Output strict JSON only.")
-    : system || "";
+    : (system ?? "");
 
   const resolvedMessages = messages || [
     { role: "system" as const, content: systemPrompt },
     { role: "user" as const, content: userPrompt },
   ];
 
-  return await getOpenAI().chat.completions.create({
-    model,
-    messages: resolvedMessages,
-    response_format: responseFormat,
-    temperature,
-    ...(maxCompletionTokens != null
-      ? { max_completion_tokens: maxCompletionTokens }
-      : {}),
-  });
+  try {
+    const result = await generateText({
+      model: buildLanguageModel(model),
+      messages: resolvedMessages,
+      temperature,
+      maxOutputTokens: maxCompletionTokens,
+    });
+    if (VERBOSE) {
+      console.log(`[VERBOSE] Raw response:`, result.text);
+    }
+    // Strip markdown fences that some models wrap JSON in
+    const text = format === "json"
+      ? result.text.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim()
+      : result.text;
+    const promptTokens = result.usage.inputTokens ?? 0;
+    const completionTokens = result.usage.outputTokens ?? 0;
+    return {
+      text,
+      usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`AI completion failed (model: ${model}): ${message}`);
+  }
 }
 
-export async function fetchChatResponse(model: string, prompt: string, temperature = 0.1, maxTokens = 150) {
-  return createChatCompletion(prompt, {
-    model,
-    temperature,
-    maxCompletionTokens: maxTokens,
-  });
+export async function fetchChatResponseInJSON(
+  prompt: string,
+  model?: string,
+  temperature = 0.3,
+  maxTokens = 500
+): Promise<ChatResult> {
+  return createChatCompletion(prompt, { model, temperature, maxCompletionTokens: maxTokens });
+}
+
+export interface ObjectResult<T> {
+  object: T;
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+}
+
+export async function createResponseObjectWithAi<T>(
+  systemPrompt: string,
+  userPrompt: string,
+  schema: z.ZodType<T>,
+  options: { model?: string; temperature?: number; maxCompletionTokens?: number } = {}
+): Promise<ObjectResult<T>> {
+  const model = options.model ?? currentModel;
+  const temperature = options.temperature ?? 0.1;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    const result = await generateObject({
+      model: buildLanguageModel(model),
+      schema,
+      messages: [
+        { role: "system" as const, content: systemPrompt },
+        { role: "user" as const, content: userPrompt },
+      ],
+      temperature,
+      maxOutputTokens: options.maxCompletionTokens,
+    });
+    const promptTokens = result.usage.inputTokens ?? 0;
+    const completionTokens = result.usage.outputTokens ?? 0;
+    return { object: result.object, usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens } };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`AI object generation failed (model: ${model}): ${message}`);
+  }
 }

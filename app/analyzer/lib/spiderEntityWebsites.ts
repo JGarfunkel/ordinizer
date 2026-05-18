@@ -24,7 +24,7 @@ import {
 } from "./domainScoring.js";
 import {
   type HistoryStatus,
-  type SpiderHistoryEntry,
+  type SpiderDownloadRecord,
   type SpiderMenuLinkInfo,
   type WebsiteHostRecord,
   type WebsitesEntityFile,
@@ -56,6 +56,7 @@ import {
   saveCrawledArtifacts,
   cleanupArtifactsForHistoryEntry,
   extractLinksAndText,
+  extractDocumentTitleWithCache,
   loadCachedPageFromHistory,
   fetchPageContent,
 } from "./spiderHistory.js";
@@ -114,6 +115,7 @@ interface Args {
   listLocal: boolean;
   reportRelatedWithoutDomains: boolean;
   refetch: boolean;
+  generateSummary: boolean;
   force: boolean;
 }
 
@@ -122,7 +124,7 @@ type ReviewStatus = "related" | "index" | "unrelated";
 interface LinkCandidateEvaluation {
   normalizedLinkUrl: string;
   hostname: string;
-  existingLinkHistory?: SpiderHistoryEntry;
+  existingLinkHistory?: SpiderDownloadRecord;
 }
 
 interface StatusCounts {
@@ -146,7 +148,7 @@ const HISTORY_STATUSES: HistoryStatus[] = [
 const SPIDER_LOG_FILE = path.resolve(process.cwd(), "spider.log");
 let spiderLogInitialized = false;
 
-function getStatusCounts(historyMap: Map<string, SpiderHistoryEntry>): StatusCounts {
+function getStatusCounts(historyMap: Map<string, SpiderDownloadRecord>): StatusCounts {
   let related = 0;
   let index = 0;
   let unrelated = 0;
@@ -173,7 +175,7 @@ function formatContentSelectorValue(values: string[]): string {
   return values.length > 0 ? values.join(",") : "(none)";
 }
 
-function getDetailedStatusCounts(historyMap: Map<string, SpiderHistoryEntry>): Record<HistoryStatus, number> {
+function getDetailedStatusCounts(historyMap: Map<string, SpiderDownloadRecord>): Record<HistoryStatus, number> {
   const counts = Object.fromEntries(HISTORY_STATUSES.map((status) => [status, 0])) as Record<HistoryStatus, number>;
   for (const entry of historyMap.values()) {
     counts[entry.status] += 1;
@@ -258,7 +260,7 @@ async function appendEntitySummaryMarkdown(entityId: string, fields: {
 
 async function hasCachedHtmlArtifact(
   storage: any,
-  historyMap: Map<string, SpiderHistoryEntry>,
+  historyMap: Map<string, SpiderDownloadRecord>,
   url: string,
 ): Promise<boolean> {
   const existing = historyMap.get(normalizeUrlForMatch(url));
@@ -472,6 +474,7 @@ function parseArgs(args: string[]): Args {
     listLocal: false,
     reportRelatedWithoutDomains: false,
     refetch: false,
+    generateSummary: false,
     force: false,
   };
 
@@ -582,6 +585,10 @@ function parseArgs(args: string[]): Args {
       options.refetch = true;
       continue;
     }
+    if (arg === "--generateSummary") {
+      options.generateSummary = true;
+      continue;
+    }
     if (arg === "--force") {
       options.force = true;
       continue;
@@ -590,24 +597,32 @@ function parseArgs(args: string[]): Args {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  if (!options.cleanup && !options.rewriteText && !options.listLocal && !options.reportRelatedWithoutDomains && !options.refetch && !options.all && !options.entity && !options.specimenUrlsFile) {
+  if (options.generateSummary && !options.all && !options.entity) {
+    options.all = true;
+  }
+
+  if (!options.cleanup && !options.rewriteText && !options.listLocal && !options.reportRelatedWithoutDomains && !options.refetch && !options.generateSummary && !options.all && !options.entity && !options.specimenUrlsFile) {
     throw new Error("Specify --entity <id>, --all, or --specimenUrlsFile <path>");
   }
 
-  if (options.scan && (options.cleanup || options.rewriteText || options.listLocal || options.reportRelatedWithoutDomains || options.refetch || Boolean(options.specimenUrlsFile))) {
-    throw new Error("--scan/--nospider cannot be combined with --cleanup, --rewriteText, --listlocal, --report-related-without-domains, --refetch, or --specimenUrlsFile");
+  if (options.scan && (options.cleanup || options.rewriteText || options.listLocal || options.reportRelatedWithoutDomains || options.refetch || options.generateSummary || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--scan/--nospider cannot be combined with --cleanup, --rewriteText, --listlocal, --report-related-without-domains, --refetch, --generateSummary, or --specimenUrlsFile");
   }
 
-  if (options.listLocal && (options.cleanup || options.rewriteText || options.scan || options.reportRelatedWithoutDomains || options.refetch || Boolean(options.specimenUrlsFile))) {
-    throw new Error("--listlocal cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --report-related-without-domains, --refetch, or --specimenUrlsFile");
+  if (options.listLocal && (options.cleanup || options.rewriteText || options.scan || options.reportRelatedWithoutDomains || options.refetch || options.generateSummary || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--listlocal cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --report-related-without-domains, --refetch, --generateSummary, or --specimenUrlsFile");
   }
 
-  if (options.reportRelatedWithoutDomains && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.refetch || Boolean(options.specimenUrlsFile))) {
-    throw new Error("--report-related-without-domains cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --refetch, or --specimenUrlsFile");
+  if (options.reportRelatedWithoutDomains && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.refetch || options.generateSummary || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--report-related-without-domains cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --refetch, --generateSummary, or --specimenUrlsFile");
   }
 
-  if (options.refetch && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.reportRelatedWithoutDomains || Boolean(options.specimenUrlsFile))) {
-    throw new Error("--refetch cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --report-related-without-domains, or --specimenUrlsFile");
+  if (options.refetch && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.reportRelatedWithoutDomains || options.generateSummary || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--refetch cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --report-related-without-domains, --generateSummary, or --specimenUrlsFile");
+  }
+
+  if (options.generateSummary && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.reportRelatedWithoutDomains || options.refetch || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--generateSummary cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --report-related-without-domains, --refetch, or --specimenUrlsFile");
   }
 
   if (options.interactiveHonorHistory) {
@@ -835,7 +850,7 @@ function evaluateLinkCandidate(
   context: {
     visited: Set<string>;
     queuedNormalizedUrls: Set<string>;
-    historyMap: Map<string, SpiderHistoryEntry>;
+    historyMap: Map<string, SpiderDownloadRecord>;
     allowedHosts: Set<string>;
     localMenuUrls: Set<string>;
     entityRecordUrls: Set<string>;
@@ -954,6 +969,7 @@ async function runSpecimenMode(
       console.log(`[ERROR] Could not fetch or parse URL (${status})`);
       upsertHistoryEntry(historyMap, {
         url: normalizedUrl,
+        title: normalizedUrl,
         entityId: specimenEntityId,
         matchedDomainIds: [],
         status,
@@ -995,8 +1011,10 @@ async function runSpecimenMode(
       .slice(0, MAX_MATCHED_DOMAINS);
 
     status = matchedDomainIds.length > 0 ? "related" : "unrelated";
+    const specimenTitle = page.title?.trim() || undefined;
     upsertHistoryEntry(historyMap, {
       url: normalizedUrl,
+      title: specimenTitle || normalizedUrl,
       entityId: specimenEntityId,
       matchedDomainIds,
       status,
@@ -1326,12 +1344,20 @@ async function spiderEntity(
       // For entityUrl (depth=0), always save artifacts regardless of classification.
       // This ensures the main entry point can always be loaded from cache on subsequent runs.
       const isEntityUrl = page.depth === 0;
+      const extractedTitle = await extractDocumentTitleWithCache(
+        storage,
+        historyMap,
+        normalizedPageUrl,
+        scoredPage.htmlContent,
+      );
+      const resourceTitle = (extractedTitle || scoredPage.title || normalizedPageUrl).trim();
 
       if (finalStatus === "unrelated" && !isEntityUrl) {
         await cleanupArtifactsForHistoryEntry(storage, priorEntry);
         if (!entityRecordUrls.has(normalizedPageUrl)) {
           upsertHistoryEntry(historyMap, {
             url: normalizedPageUrl,
+            title: resourceTitle,
             entityId: entity.id,
             matchedDomainIds: [],
             status: finalStatus,
@@ -1371,6 +1397,7 @@ async function spiderEntity(
           localFileText = saved.localFileText;
           localFileTextSize = await recordFileSize(storage, historyMap, {
             url: normalizedPageUrl,
+            title: resourceTitle,
             entityId: entity.id,
             matchedDomainIds,
             status: finalStatus,
@@ -1391,6 +1418,7 @@ async function spiderEntity(
       if (!entityRecordUrls.has(normalizedPageUrl)) {
         upsertHistoryEntry(historyMap, {
           url: normalizedPageUrl,
+          title: resourceTitle,
           entityId: entity.id,
           matchedDomainIds,
           status: finalStatus,
@@ -2375,7 +2403,7 @@ async function runCleanupMode(storage: any, targets: Entity[], args: Args): Prom
 
     const removeHistoryEntryAndArtifacts = async (
       url: string,
-      entry: SpiderHistoryEntry,
+      entry: SpiderDownloadRecord,
       reason: string,
     ): Promise<void> => {
       const pathsToDelete = [entry.localFile, entry.localFileText].filter(Boolean) as string[];
@@ -2658,6 +2686,66 @@ async function runScanMode(storage: any, targets: Entity[], domains: Domain[], a
   );
 }
 
+async function runGenerateSummaryMode(storage: any, targets: Entity[]): Promise<void> {
+  const summaryPath = path.join(storage.getRealmDir(), "downloadSummary.json");
+  const summary = [] as Array<{
+    id: string;
+    name: string;
+    displayName: string;
+    linkedResources: Array<{
+      url: string;
+      title: string;
+      matchedDomainIds: string[];
+      timestamp: string;
+    }>;
+  }>;
+
+  for (const entity of targets) {
+    const historyPath = getHistoryFilePath(storage, entity.id);
+    if (!(await fs.pathExists(historyPath))) {
+      summary.push({
+        id: entity.id,
+        name: entity.name || entity.id,
+        displayName: entity.displayName || entity.name || entity.id,
+        linkedResources: [],
+      });
+      continue;
+    }
+
+    const { historyMap } = await loadHistoryData(storage, entity.id);
+    const linkedResources: Array<{
+      url: string;
+      title: string;
+      matchedDomainIds: string[];
+      timestamp: string;
+    }> = [];
+
+    const records = Array.from(historyMap.values())
+      .filter((entry) => Boolean(entry.localFile || entry.localFileText))
+      .sort((a, b) => a.url.localeCompare(b.url));
+
+    for (const entry of records) {
+      const resolvedTitle = (entry.title && entry.title !== entry.url) ? entry.title : await extractDocumentTitleWithCache(storage, historyMap, entry.url);
+      linkedResources.push({
+        url: entry.url,
+        title: resolvedTitle,
+        matchedDomainIds: Array.isArray(entry.matchedDomainIds) ? entry.matchedDomainIds : [],
+        timestamp: entry.timestamp,
+      });
+    }
+
+    summary.push({
+      id: entity.id,
+      name: entity.name || entity.id,
+      displayName: entity.displayName || entity.name || entity.id,
+      linkedResources,
+    });
+  }
+
+  await fs.writeJson(summaryPath, summary, { spaces: 2 });
+  console.log(`[SUMMARY] wrote ${summaryPath} with ${summary.length} entities`);
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const dataRoot = resolveDataRoot(args.dataRoot);
@@ -2724,6 +2812,11 @@ async function main() {
 
   if (args.scan) {
     await runScanMode(storage, targets, domains, args);
+    return;
+  }
+
+  if (args.generateSummary) {
+    await runGenerateSummaryMode(storage, targets);
     return;
   }
 

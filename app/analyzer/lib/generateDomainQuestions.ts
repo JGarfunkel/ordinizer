@@ -156,11 +156,11 @@ Requirements:
     temperature: 0.4,
   });
 
-  recordTokenUsage(response.usage?.total_tokens || estimatedTokens);
+  recordTokenUsage(response.usage?.totalTokens || estimatedTokens);
 
-  const content = response.choices[0]?.message?.content;
+  const content = response.text;
   if (!content) {
-    throw new Error("OpenAI response was empty");
+    throw new Error("AI response was empty");
   }
 
   const parsed = JSON.parse(content) as { questions?: GeneratedQuestion[] };

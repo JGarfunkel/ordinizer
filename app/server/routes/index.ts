@@ -27,5 +27,6 @@ export function registerAllRoutes(app: Express, apiPrefix = "/api") {
   registerMetaAnalysisRoutes(app, apiPrefix);
   registerCombinedMatrixRoutes(app, apiPrefix);
   // registerJurisdictionRoutes(app, apiPrefix);
+
   // Do NOT register vector routes in main app unless desired
 }

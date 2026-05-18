@@ -3,7 +3,7 @@
  * Includes methods for initializing the index, chunking statute text, generating embeddings, indexing statutes, and searching for relevant sections.
  * Designed for use in the ordinance analysis process to enable efficient retrieval of relevant statute sections based on user questions.	
  */
-import { Pinecone } from '@pinecone-database/pinecone';
+import { Pinecone, Index } from '@pinecone-database/pinecone';
 import OpenAI from 'openai';
 import {
   checkRateLimit,
@@ -13,6 +13,8 @@ import {
 
 //TODO define DocumentType as a union type and use it consistently across the application
 export type DocumentType = "statute" | "guidance" | "general" | "policy" | "shared";
+
+const DELETE_MANY_SUPPORTED = false; // this should work, but it doesn't seem to be deleting vectors as expected, so we are falling back to deleteOne for now while we investigate
 
 /**
  * Extract Section reference from the text
@@ -324,36 +326,52 @@ export class VectorService {
 		try {
 			const index = this.getIndex();
 
+			console.log(`[deleteIndexedChunks] Listing vectors with prefix: "${prefix}"`);
 			const ids: string[] = [];
 			const listResponse = await index.listPaginated({ prefix });
+			console.log(`[deleteIndexedChunks] listPaginated returned ${listResponse.vectors?.length ?? 0} vector(s)`);
 			if (listResponse.vectors && listResponse.vectors.length > 0) {
 				ids.push(...listResponse.vectors.map(v => v.id!).filter(Boolean));
 			}
 			const uniqueIds = [...new Set(ids)];
-      
+			console.log(`[deleteIndexedChunks] Unique IDs to delete: ${uniqueIds.length}`);
 			if (uniqueIds.length > 0) {
-        
+				uniqueIds.forEach(id => console.log(`[deleteIndexedChunks]   - ${id}`));
+			}
+
+			if (uniqueIds.length > 0) {
 				// Delete in small batches to avoid Pinecone API limits
 				const batchSize = 10;
 				for (let i = 0; i < uniqueIds.length; i += batchSize) {
 					const batch = uniqueIds.slice(i, i + batchSize);
-					try {
-						await index.deleteMany({ ids: batch });
-					} catch (batchError) {
-						// Try individual deletion if batch fails
-						for (const id of batch) {
-							try {
-								await index.deleteMany({ ids: [id] });
-							} catch (singleError) {
-								// Skip individual errors - might be inconsistent state
-							}
+					if (DELETE_MANY_SUPPORTED) {
+						try {
+							await index.deleteMany({ ids: batch });
+							console.log(`[deleteIndexedChunks] Deleted batch of ${batch.length}`);
+						} catch (batchError) {
+							console.error(`[deleteIndexedChunks] Batch delete failed, retrying individually:`, batchError);
+							await this.deleteIndexedChunksByIds(index, batch);
 						}
+					} else {
+						await this.deleteIndexedChunksByIds(index, batch);
 					}
 				}
-				// Deleted chunks silently
+			} else {
+				console.log(`[deleteIndexedChunks] No vectors found for prefix "${prefix}" — nothing deleted`);
 			}
 		} catch (error) {
-			// Skip deletion errors - might be first time indexing
+			console.error(`[deleteIndexedChunks] Error during deletion for prefix "${prefix}":`, error);
+		}
+	}
+
+	async deleteIndexedChunksByIds(index: Index, batch: string[]) {
+		for (const id of batch) {
+			try {
+				await index.deleteOne(id);
+				console.log(`[deleteIndexedChunks] Deleted individually: ${id}`);
+			} catch (singleError) {
+				console.error(`[deleteIndexedChunks] Failed to delete ${id}:`, singleError);
+			}
 		}
 	}
 
@@ -692,7 +710,7 @@ export class VectorService {
 				const text = m.metadata?.content || "";
 				// Log metadata and preview for debugging
 				console.log(`[VECTOR CHUNK] idx=${idx} score=${m.score?.toFixed(3)} chunkIndex=${m.metadata?.chunkIndex} refs=${JSON.stringify(extractSectionReferences(text))} 
-								preview="${text.substring(0, 60).replace(/\n/g, ' ')}"`);
+								key="${m.id}" preview="${text.substring(0, 60).replace(/\n/g, ' ')}"`);
 
 				// let's add the url to the text for better provenance in the analysis chain - we can experiment with different formats here but the goal is to make sure the model has access to the source url in a consistent way that it can learn to recognize and use effectively
 				if (m.metadata?.url) {

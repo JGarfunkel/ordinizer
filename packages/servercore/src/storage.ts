@@ -14,7 +14,7 @@ import type {
   InsertEntity, InsertDomain, InsertQuestion, InsertAnalysis,
   Realm, Ruleset,
   EntityCollection, Entity,
-  DomainSummaryRow, CombinedMatrixRow, SectionIndexEntry, DataSourcesConfig,
+  DomainSummaryRow, CombinedMatrixRow, SectionIndexEntry, DataSourcesConfig, SourceMapEntity,
 } from "@civillyengaged/ordinizer-core";
 import { log } from "util";
 import { getEntityId } from "./utils";
@@ -208,8 +208,11 @@ export interface IStorageReadOnly {
 
 
   // Data Sources
-  getDataSources(): Promise<DataSourcesConfig | null>;
-  getSourceData(sourceId: string): Promise<{ source: any; data: any } | null>;
+  // getDataSources(): Promise<DataSourcesConfig | null>;
+  // getSourceData(sourceId: string): Promise<{ source: any; data: any } | null>;
+
+  getSourceMap(): Promise<Map<string, SourceMapEntity>>;
+  getSourcesForEntity(entityId: string): Promise<SourceMapEntity | undefined>;
 
   // Section Index
   getSectionIndex(): Promise<SectionIndexEntry[]>;
@@ -253,9 +256,16 @@ export interface IStorage extends IStorageReadOnly {
   // createStatute(statute: InsertStatute): Promise<Statute>;
   // updateStatute(id: string, updates: Partial<InsertStatute>): Promise<Statute | undefined>;
 
+  createFoldersForDomain(domain: string): Promise<void>;
+
   createQuestion(question: InsertQuestion): Promise<Question>;
 
   saveAnalysis(analysis: InsertAnalysis): Promise<Analysis>;
+
+  /**
+   * Save the meta-analysis for a domain (writes meta-analysis.json)
+   */
+  saveMetaAnalysis(domainId: string, meta: import("@civillyengaged/ordinizer-core").MetaAnalysis): Promise<void>;
 
     // Domain creation (should only be in IStorage, but present in base class)
   createDomain(domain: InsertDomain): Promise<Domain>;
@@ -268,6 +278,9 @@ export interface IStorage extends IStorageReadOnly {
 
   deleteAnalysisBackups(domainId: string, entityId: string): Promise<number>;
   deleteMetadataBackups(domainId: string, entityId: string): Promise<number>;
+
+  pruneAnalysisBackups(domainId: string, entityId: string): Promise<number>;
+  pruneMetadataBackups(domainId: string, entityId: string): Promise<number>;
 
 }
 
@@ -295,6 +308,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   protected mapBoundaries: any | null = null;
   protected questionCache: Map<string, Question[]> = new Map();
   protected entityDomainCache: Map<string, EntityDomain[]> = new Map();
+  protected sourceMapCache: Map<string, SourceMapEntity> | null = null;
 
   constructor(realmId: string) {
     this.realmId = realmId;
@@ -332,12 +346,6 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
   public getRealmDir(): string {
     return this.realmDir;
-  }
-
-  async getDataSources(): Promise<DataSourcesConfig | null> {
-    const file = path.join(this.realmDir, "datasources.json");
-    if (!await fs.pathExists(file)) return null;
-    return fs.readJson(file);
   }
 
   // -------------------------------------------------------------------------
@@ -938,18 +946,65 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     }
   }
 
+  // /**
+  //  * Read a specific data source's data file (referenced from datasources.json).
+  //  */
+  // async getSourceData(sourceId: string): Promise<{ source: any; data: any } | null> {
+  //   const config = await this.getDataSources();
+  //   if (!config) return null;
+  //   const sourceConfig = config.sources.find((s: any) => s.id === sourceId);
+  //   if (!sourceConfig || !sourceConfig.dataFile) return null;
+  //   const dataPath = path.join(this.realmDir, sourceConfig.dataFile);
+  //   if (!await fs.pathExists(dataPath)) return null;
+  //   const data = await fs.readJson(dataPath);
+  //   return { source: sourceConfig, data };
+  // }
+
   /**
-   * Read a specific data source's data file (referenced from datasources.json).
+   * This builds a sourcemap for all of the sources referenced in the downloadSummary.json
    */
-  async getSourceData(sourceId: string): Promise<{ source: any; data: any } | null> {
-    const config = await this.getDataSources();
-    if (!config) return null;
-    const sourceConfig = config.sources.find((s: any) => s.id === sourceId);
-    if (!sourceConfig || !sourceConfig.dataFile) return null;
-    const dataPath = path.join(this.realmDir, sourceConfig.dataFile);
-    if (!await fs.pathExists(dataPath)) return null;
-    const data = await fs.readJson(dataPath);
-    return { source: sourceConfig, data };
+  async getSourceMap(): Promise<Map<string, SourceMapEntity>> {
+    if (this.sourceMapCache) {
+      return this.sourceMapCache;
+    }
+
+    const sourceMap = new Map<string, SourceMapEntity>();
+    const summaryPath = path.join(this.realmDir, "downloadSummary.json");
+    console.log("Not found in cache, so loading from " + summaryPath);
+    if (!await fs.pathExists(summaryPath)) {
+      console.error("Could not find " + summaryPath);
+      this.sourceMapCache = sourceMap;
+      return sourceMap;
+    }
+
+    const data = await fs.readJson(summaryPath);
+    for (const entityRecord of data) {
+      const domainMap: Record<string, { url: string; title: string }[]> = {};
+      for (const link of entityRecord.linkedResources ?? []) {
+        for (const domainId of link.matchedDomainIds ?? []) {
+          domainMap[domainId] ||= [];
+          domainMap[domainId].push({
+            url: link.url,
+            title: link.title,
+          });
+        }
+      }
+
+      sourceMap.set(entityRecord.id, {
+        entityId: entityRecord.id,
+        displayName: entityRecord.displayName,
+        domains: domainMap
+      });
+    }
+
+    console.log("Loaded source map with " + sourceMap.size + " entities");
+    this.sourceMapCache = sourceMap;
+    return sourceMap;
+  }
+
+  async getSourcesForEntity(entityId: string): Promise<SourceMapEntity | undefined> {
+    const sourceMap = await this.getSourceMap();
+    return sourceMap.get(entityId);
   }
 
   /**
@@ -1177,6 +1232,13 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 }
 
 export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage {
+  /**
+   * Save the meta-analysis for a domain (writes meta-analysis.json)
+   */
+  async saveMetaAnalysis(domainId: string, meta: import("@civillyengaged/ordinizer-core").MetaAnalysis): Promise<void> {
+    const file = path.join(this.getRealmDir(), domainId, "meta-analysis.json");
+    await fs.writeJson(file, meta, { spaces: 2 });
+  }
 
   constructor(realmId: string) {
     super(realmId);
@@ -1215,6 +1277,11 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
    * Returns the backup path and the original file's mtime, or null when no analysis exists.
    */
   async saveAnalysisBackup(domainId: string, entityId: string): Promise<BackupResult | null> {
+    if (!domainId || !entityId) {
+        console.warn("Cannot save analysis backup without domainId and entityId. Received domainId:", domainId, "entityId:", entityId);
+        return null;
+    }
+    
     const file = path.join(this.getRealmDir(), domainId, entityId, "analysis.json");
     return this.saveJsonBackup(file);
   }
@@ -1252,6 +1319,41 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
 
   async deleteMetadataBackups(domainId: string, entityId: string): Promise<number> {
     return this.deleteBackupFiles(domainId, entityId, "metadata-backup-");
+  }
+
+  private async pruneBackupFiles(domainId: string, entityId: string, prefix: string): Promise<number> {
+    const directoryPath = path.join(this.getRealmDir(), domainId, entityId);
+    if (!await fs.pathExists(directoryPath)) return 0;
+
+    const files = await fs.readdir(directoryPath);
+    const backupFiles = files.filter(f => f.startsWith(prefix) && f.endsWith(".json")).sort();
+
+    // Group files by calendar day (YYYY-MM-DD prefix of the timestamp)
+    const byDay = new Map<string, string[]>();
+    for (const file of backupFiles) {
+      const match = file.match(/(\d{4}-\d{2}-\d{2})/);
+      if (!match) continue;
+      const day = match[1];
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day)!.push(file);
+    }
+
+    // For each day, keep only the last (lexicographically greatest) file
+    const toDelete: string[] = [];
+    for (const dayFiles of byDay.values()) {
+      toDelete.push(...dayFiles.slice(0, -1));
+    }
+
+    await Promise.all(toDelete.map(f => fs.remove(path.join(directoryPath, f))));
+    return toDelete.length;
+  }
+
+  async pruneAnalysisBackups(domainId: string, entityId: string): Promise<number> {
+    return this.pruneBackupFiles(domainId, entityId, "analysis-backup-");
+  }
+
+  async pruneMetadataBackups(domainId: string, entityId: string): Promise<number> {
+    return this.pruneBackupFiles(domainId, entityId, "metadata-backup-");
   }
 
   async createAnalysis(analysis: InsertAnalysis): Promise<Analysis> {
@@ -1316,5 +1418,19 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
     console.log("saved ruleset at path:", file);
     return ruleset;
   }
+
+  async createFoldersForDomain(domainId: string): Promise<void> {
+      const allEntities = await this.getEntities();
+      // Create entities logic here
+      allEntities.forEach(async (entity) => {
+        const entityPath = path.join(await this.getRealmDir(), domainId, entity.id);
+        if (!await fs.pathExists(entityPath)) {
+          await fs.ensureDir(entityPath);
+          console.log(`📂 Created folder for entity: ${entity.id}`) 
+        }else {
+          console.log(`📂 Folder already exists for entity: ${entity.id}`)
+        };
+      });
+    }
 
 }

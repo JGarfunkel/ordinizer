@@ -1,9 +1,11 @@
-import { Analysis, AnalysisAnswer, BestPractice, MetaAnalysis } from "@civillyengaged/ordinizer-core";
+import { Analysis, BestPractice, MetaAnalysis, AnalyzedQuestion, Question } from "@civillyengaged/ordinizer-core";
 import {
- checkRateLimit, recordTokenUsage, estimateTokens, sleep, fetchChatResponse
+ checkRateLimit, recordTokenUsage, estimateTokens, sleep, createChatCompletion
 } from "../services/aiService.js";
 import { getDefaultStorage, IStorage} from "@civillyengaged/ordinizer-servercore";
+import { NO_SOURCES_AVAILABLE, NOT_SPECIFIED } from "./analyzeQuestions.js";
 import { analyzeGapText } from './gapAnalysis'
+import { ensurePdfParseCompatibility } from "./extractionUtils.js";
 
 
 const SYNTHESIS_PAUSE_MS = 300; // 300ms pause between synthesis calls
@@ -182,22 +184,24 @@ async function extractQuantitativeData(fullAnswer: string, questionText: string)
 /**
  * Synthesizes insights from top 5 scoring municipalities using OpenAI
  */
-async function synthesizeTopAnswers(topAnswers: Array<{entity: Analysis['entity']; answer: AnalysisAnswer;}>, questionText: string): Promise<string> {
+async function synthesizeTopAnswers(topAnswers: Array<{entity: Analysis['entity']; answer: AnalyzedQuestion;}>, questionText: string): Promise<string> {
   if (topAnswers.length === 0) return "Not specified in the statute.";
   
   // If only one answer, use the condensed version
-  if (topAnswers.length === 1) {
-    return await condenseAnswerToEssence(topAnswers[0].answer.answer, questionText);
-  }
+  // if (topAnswers.length === 1) {
+  //   return await condenseAnswerToEssence(topAnswers[0].answer.answer, questionText);
+  // }
   
   // Prepare context for OpenAI synthesis
   const entityData = topAnswers.map((qa, index) => {
     const displayName = qa.entity?.displayName || 'N/A';
     return `entity ${index + 1}: ${displayName} (Score: ${qa.answer.score}, Confidence: ${qa.answer.confidence}%)\nAnswer: ${qa.answer.answer}`;
   }).join("\n\n---\n\n");
-  const prompt = `You are synthesizing municipal environmental protection best practices. Based on the following top-scoring entity responses to the question "${questionText}", create a comprehensive best practice summary.
+  const systemPrompt = `You are synthesizing municipal environmental protection best practices. Given top-scoring entity responses to a question, produce a 2-3 sentence best practice summary. Use language like "The statute should require..." or "Best practices include...". Extract specific quantitative thresholds where present.`;
 
-TOP entity RESPONSES:
+  const userPrompt = `Question: "${questionText}"
+
+TOP ENTITY RESPONSES:
 ${entityData}
 
 SYNTHESIS INSTRUCTIONS:
@@ -205,26 +209,27 @@ SYNTHESIS INSTRUCTIONS:
 2. Combine the most protective requirements into a cohesive best practice
 3. Extract specific quantitative thresholds (fees, sizes, timeframes, penalties)
 4. Focus on actionable requirements rather than descriptive text
-5. Use language like "The statute should require..." or "Best practices include..."
-6. Keep the synthesis concise (2-3 sentences maximum)
-7. Prioritize elements that appear in multiple municipalities or have the highest scores
-
-Synthesized best practice:`;
+5. Keep the synthesis concise (2-3 sentences maximum)
+6. Prioritize elements that appear in multiple municipalities or have the highest scores`;
 
   try {
-    // Rate limiting for synthesis
-    const estimatedTokens = estimateTokens(prompt) + 200; // Add max_completion_tokens estimate
+    const estimatedTokens = estimateTokens(systemPrompt + userPrompt) + 400;
     await checkRateLimit(estimatedTokens);
-    
+
     console.log(`🤖 Synthesizing best practice from ${topAnswers.length} top municipalities for question: ${questionText.substring(0, 80)}...`);
-    
-    const response = await fetchChatResponse("gpt-4o", prompt, 0.1, 200);
+
+    const response = await createChatCompletion(userPrompt, {
+      format: "text",
+      system: systemPrompt,
+      temperature: 0.1,
+      maxCompletionTokens: 400,
+    });
     
     // Record actual token usage
-    const actualTokens = response.usage?.total_tokens || estimatedTokens;
+    const actualTokens = response.usage?.totalTokens || estimatedTokens;
     recordTokenUsage(actualTokens);
-    
-    const synthesized = response.choices[0].message.content?.trim() || "Not specified in the statute.";
+
+    const synthesized = response.text?.trim() || "Not specified in the statute.";
     
     // Clean up the response to remove any redundant prefixes
     const cleanedSynthesis = synthesized.replace(/^(Synthesized best practice:\s*|Best practice:\s*)/i, '').trim();
@@ -258,301 +263,310 @@ async function loadAllAnalyses(storage: IStorage, domainId: string, realm?: stri
   return analyses;
 }
 
-async function findBestPracticesForQuestion(questionId: number, analyses: Analysis[]): Promise<BestPractice | null> {
-  const questionAnswers: Array<{
-    entity: Analysis['entity'];
-    answer: AnalysisAnswer;
-  }> = [];
-  
-  let questionText = '';
-  
-  // Collect all answers for this question across municipalities
+async function findBestPracticesForQuestion(questionId: number, analyses: Analysis[], verbose?: boolean): Promise<BestPractice | null> {
+  // Gather all answers for this question, excluding NO_SOURCES_AVAILABLE
+  const answers: Array<{ entity: Analysis['entity']; analyzedQuestion: AnalyzedQuestion }> = [];
   for (const analysis of analyses) {
-    const question = analysis.questions.find(q => q.id === questionId);
-    if (question && typeof question.id === 'number') {
-      questionText = question.question;
-      // Cast to AnalysisAnswer (if needed, copy only the compatible fields)
-      const answer: AnalysisAnswer = {
-        id: question.id,
-        answer: question.answer,
-        score: question.score,
-        confidence: question.confidence,
-        gap: question.gap,
-        question: question.question,
-        sourceRefs: (question as any).sourceRefs || []
-      };
-      questionAnswers.push({
-        entity: analysis.entity,
-        answer
-      });
-    }
-  }
-  
-  if (questionAnswers.length === 0) return null;
-  
-  // Find the best scoring answers - get top 5 for synthesis
-  const sortedAnswers = questionAnswers
-    .filter(qa => qa.answer.score > 0) // Exclude unscored answers
-    .sort((a, b) => {
-      // Primary sort: score (descending)
-      if (b.answer.score !== a.answer.score) {
-        return b.answer.score - a.answer.score;
-      }
-      // Secondary sort: confidence (descending)
-      return b.answer.confidence - a.answer.confidence;
+    const q = analysis.questions.find(q => {
+      // Support both number and string IDs
+      const qid = typeof q.id === 'number' ? q.id : Number(q.id);
+      return qid === questionId;
     });
-  
-  // Special case: if no scored answers but many "Not specified" answers exist,
-  // create a gap-focused best practice for the few municipalities that do have answers
-  if (sortedAnswers.length === 0) {
-    const notSpecifiedCount = questionAnswers.filter(qa => 
-      qa.answer.answer === "Not specified in the statute."
-    ).length;
-    
-    const substantiveAnswers = questionAnswers.filter(qa => 
-      qa.answer.answer !== "Not specified in the statute." && qa.answer.confidence > 40
-    );
-    
-    // If most are "Not specified" but some have substantive answers, highlight the gap
-    if (notSpecifiedCount >= questionAnswers.length * 0.7 && substantiveAnswers.length > 0) {
-      const best = substantiveAnswers.sort((a, b) => b.answer.confidence - a.answer.confidence)[0];
-      const bestEntity = best.entity ? { id: best.entity.id, displayName: best.entity.displayName } : { id: '', displayName: '' };
-      return {
-        questionId,
-        question: questionText,
-        bestEntity,
-        bestAnswer: await condenseAnswerToEssence(best.answer.answer, questionText),
-        bestScore: 0.5, // Moderate score since it's rare
-        supportingExamples: [{
-          municipality: bestEntity,
-          score: 0.5,
-          confidence: best.answer.confidence
-        }],
-        commonGaps: [
-          "Missing regulatory framework",
-          "Lack of data collection requirements", 
-          "No public reporting mandates"
-        ]
-      };
+    if (q && q.answer && q.answer !== NO_SOURCES_AVAILABLE) {
+      answers.push({ entity: analysis.entity, analyzedQuestion: q });
     }
-    return null;
   }
-  
-  // Get top 5 scoring municipalities for synthesis (or all if fewer than 5)
-  const top5Answers = sortedAnswers.slice(0, 5);
-  const best = top5Answers[0]; // Still track the absolute best for metadata
-  
-  // Use external gap analysis mapping
-  const gapTypes = new Map<string, number>();
-  questionAnswers.forEach(qa => {
-    if (qa.answer.score < 1.0 && qa.answer.gap) {
-      const categories = analyzeGapText(qa.answer.gap);
-      for (const category of categories) {
-        gapTypes.set(category, (gapTypes.get(category) || 0) + 1);
-      }
-    }
-  });
-  
-  // Convert to sorted array of most common gaps
-  const commonGaps = Array.from(gapTypes.entries())
-    .sort((a, b) => b[1] - a[1]) // Sort by frequency
-    .slice(0, 3) // Top 3 most common
-    .map(([gap]) => gap);
-  
-  // Use OpenAI to synthesize the top 5 answers into a comprehensive best practice
-  const synthesizedAnswer = await synthesizeTopAnswers(top5Answers, questionText);
-  
-  // Extract quantitative data from all top answers for comprehensive highlights
-  const allQuantitativeData: string[] = [];
-  for (const topAnswer of top5Answers) {
-    const quantData = await extractQuantitativeData(topAnswer.answer.answer, questionText);
-    allQuantitativeData.push(...quantData);
-  }
-  
-  // Remove duplicates and keep most specific measurements
-  const uniqueQuantitativeData = [...new Set(allQuantitativeData)]
-    .sort((a, b) => b.length - a.length) // Prefer more specific measurements
-    .slice(0, 3); // Keep top 3 most informative
-  
-  // Get up to 3 supporting examples from the top answers
-  const supportingExamples = top5Answers.slice(0, 3).map(example => {
-    const municipality = example.entity ? { id: example.entity.id, displayName: example.entity.displayName } : { id: '', displayName: '' };
-    return {
-      municipality,
-      score: example.answer.score,
-      confidence: example.answer.confidence
-    };
-  });
 
-  const bestEntity = best.entity ? { id: best.entity.id, displayName: best.entity.displayName } : { id: '', displayName: '' };
+  if (answers.length === 0) return null;
+
+  // Sort by answer length (descending), take top K=8
+  const topK = 8;
+  const topAnswers = answers
+    .map(a => ({ ...a, length: a.analyzedQuestion.answer.length }))
+    .sort((a, b) => b.length - a.length)
+    .slice(0, topK)
+    .map(({ entity, analyzedQuestion }) => ({ entity, answer: analyzedQuestion }));
+
+  // Get the question text from the first available answer
+  const questionText = topAnswers[0].answer.question;
+
+  // Synthesize best practice using the top answers
+  const bestAnswer = await synthesizeTopAnswers(topAnswers, questionText);
+
+  // Optionally extract quantitative highlights
+  let highlights: string[] = [];
+  for (const ans of topAnswers) {
+    const qHighlights = await extractQuantitativeData(ans.answer.answer, questionText);
+    highlights = highlights.concat(qHighlights);
+  }
+  highlights = Array.from(new Set(highlights)); // Deduplicate
 
   return {
     questionId,
     question: questionText,
-    bestAnswer: synthesizedAnswer,
-    bestScore: best.answer.score,
-    bestEntity,
-    quantitativeHighlights: uniqueQuantitativeData,
-    supportingExamples, // Up to 3 municipal references
-    commonGaps
+    bestAnswer,
+    quantitativeHighlights: highlights
   };
 }
 
-async function generateMetaAnalysis(st: IStorage, domainId: string = 'trees', realm?: string): Promise<void> {
-  console.log(`🚀 Generating meta-analysis for ${domainId} domain...`);
-  
-  // Load all analyses
-  const analyses = await loadAllAnalyses(st, domainId);
-  console.log(`📊 Loaded ${analyses.length} entity analyses`);
-  
-  if (analyses.length === 0) {
-    console.error('❌ No analyses found to process');
+export async function enrichEntityAnalysis(
+  st: IStorage,
+  entityId: string,
+  domainId: string,
+  verbose?: boolean,
+  bestPractices?: BestPractice[]
+) {
+  const analysis = await st.getAnalysis(domainId, entityId);
+  if (!analysis) return;
+
+  if (!bestPractices) {
+    const metaAnalysis = await st.getMetaAnalysisByDomain(domainId);
+    bestPractices = metaAnalysis?.bestPractices || [];
+  }
+
+  if (!bestPractices || bestPractices.length === 0) {
+    if (verbose) {
+      console.warn(`No best practices available for domain ${domainId} to enrich analysis for entity ${entityId}`);
+    }
     return;
   }
-  
-  // Calculate overall statistics - handle analyses with or without overallScore
-  let validAnalyses = analyses.filter(a => typeof a.overallScore === 'number' && !isNaN(a.overallScore));
-  
-  // If no overall scores available, calculate them from question scores
-  if (validAnalyses.length === 0) {
-    console.log('🔄 No overallScore found, calculating from individual question scores...');
-    
-    for (const analysis of analyses) {
-      if (analysis.questions && analysis.questions.length > 0) {
-        // Calculate overall score from question scores (if they exist)
-        const scoredQuestions = analysis.questions.filter(q => 
-          typeof q.score === 'number' && !isNaN(q.score)
-        );
-        
-        if (scoredQuestions.length > 0) {
-          const totalScore = scoredQuestions.reduce((sum, q) => sum + q.score, 0);
-          analysis.overallScore = totalScore / scoredQuestions.length;
-          validAnalyses.push(analysis);
-        } else {
-          // No numeric scores, estimate based on confidence and answer quality
-          const substantiveQuestions = analysis.questions.filter(q => 
-            q.answer !== "Not specified in the statute." && q.confidence > 50
-          );
-          
-          if (substantiveQuestions.length > 0) {
-            // Score based on how many questions have substantive answers
-            analysis.overallScore = substantiveQuestions.length / analysis.questions.length;
-            validAnalyses.push(analysis);
-          }
+
+  enrichEntityAnalysesWithAI(st, domainId, [analysis], bestPractices, verbose); // Pass empty bestPractices since we only want to enrich gaps/scores  
+
+}
+
+const ENRICHMENT_MAX_TOKENS = 400;
+
+async function enrichAnalysisQuestion(
+  question: AnalyzedQuestion,
+  bestPractice: BestPractice,
+  verbose?: boolean
+): Promise<boolean> {
+  const prompt = `You are an expert policy analyst. Given the following:
+
+- The question: "${question.question}"
+- This municipality's answer: "${question.answer}"
+- The synthesized best practice for this question: "${bestPractice.bestAnswer}"
+
+Evaluate the answer and provide:
+1. gap: 1–2 sentences describing what is missing or could be improved, or "No gap" if the answer fully matches the best practice.
+2. score: A normalized score from 0.0 (no alignment) to 1.0 (perfect alignment).
+3. nextPrompts: Up to 2 short research prompts (max 12 words each), or [] if not needed.
+
+Respond in JSON:
+{
+  "gap": string,
+  "score": number,
+  "nextPrompts": string[]
+}`;
+
+  const estimatedTokens = estimateTokens(prompt) + ENRICHMENT_MAX_TOKENS;
+  await checkRateLimit(estimatedTokens);
+  if (verbose) {
+    console.log(`🤖 Enriching Q${question.id} "${question.question.substring(0, 60)}..."`);
+  }
+  const response = await createChatCompletion(prompt, {
+    format: "json",
+    maxCompletionTokens: ENRICHMENT_MAX_TOKENS,
+    temperature: 0.1,
+  });
+  recordTokenUsage(response.usage?.totalTokens || estimatedTokens);
+  const content = response.text?.trim() || '{}';
+  try {
+    const enrichment = JSON.parse(content);
+    if (enrichment.gap !== undefined) question.gap = enrichment.gap;
+    if (enrichment.score !== undefined) question.score = enrichment.score;
+    if (enrichment.nextPrompts !== undefined) question.nextPrompts = enrichment.nextPrompts;
+    return true;
+  } catch (error) {
+    if (verbose) {
+      console.error(`Error parsing enrichment response for Q${question.id} — got: ${content}`, error);
+    }
+    return false;
+  }
+}
+
+function isAnswerSubstantive(answer: string): boolean {
+  return (answer && answer!== NO_SOURCES_AVAILABLE && answer !== NOT_SPECIFIED) ? true : false;
+}
+
+/**
+ * After meta-analysis, enrich each entity's analysis.json with updated gap, score, and nextPrompts fields.
+ */
+async function enrichEntityAnalysesWithAI(
+  st: IStorage,
+  domainId: string,
+  analyses: Analysis[],
+  bestPractices: BestPractice[],
+  verbose?: boolean
+) {
+  for (const analysis of analyses) {
+    let updated = false;
+    for (const question of analysis.questions) {
+      // Find the corresponding best practice for this question
+      const bestPractice = bestPractices.find(bp => bp.questionId === question.id);
+      if (!bestPractice) continue;
+      // Skip enrichment if already done during the analysis pass (gap was computed in the same AI call)
+      if (question.score !== undefined) {
+        if (verbose) {
+          console.log(`Skipping enrichment for question ${question.id} — already enriched during analysis`);
         }
+        continue;
+      }
+      // skip enrichment if there is no answer or if the answer is "Not specified in the statute." to avoid generating gaps/scores for unanswered questions
+      if (isAnswerSubstantive(question.answer)) {
+        const enriched = await enrichAnalysisQuestion(question, bestPractice, verbose);
+        if (enriched) updated = true;
+      } else {
+        question.gap = "";
+        question.score = 0;
+        question.nextPrompts = [];
+      }
+    }
+    if (updated) {
+      await st.saveAnalysis(analysis);
+      if (verbose) {
+        console.log(`✅ Enriched analysis for entity ${analysis.entity?.id}`);
       }
     }
   }
-  
-  if (validAnalyses.length === 0) {
-    console.error('❌ No valid analyses found to process (no scores or substantive answers)');
-    return;
+}
+
+/**
+ * Returns the question IDs whose best practices need (re)generating:
+ * - questions present in currentQuestions but missing from the existing meta
+ * - questions whose wording has changed since the meta was last generated
+ */
+export function bestPracticesToUpdate(
+  existingMeta: MetaAnalysis | null | undefined,
+  currentQuestions: Question[],
+): number[] {
+  if (!existingMeta?.bestPractices?.length) {
+    return currentQuestions.map(q => q.id);
   }
-  
-  console.log(`📊 Processing ${validAnalyses.length} analyses with calculated scores`);
-  
-  const totalScore = validAnalyses.reduce((sum, analysis) => sum + (analysis.overallScore ?? 0), 0);
-  const averageScore = totalScore / validAnalyses.length;
-  
-  const highestScoring = validAnalyses.reduce((best, current) => {
-    if ((current.overallScore ?? 0) > (best.overallScore ?? 0)) {
-      return current;
+  const bpMap = new Map(existingMeta.bestPractices.map(bp => [bp.questionId, bp]));
+  const toUpdate: number[] = [];
+  for (const q of currentQuestions) {
+    const existing = bpMap.get(q.id);
+    if (!existing) {
+      toUpdate.push(q.id); // new question
+    } else if (existing.question !== q.question) {
+      toUpdate.push(q.id); // wording changed
     }
-    return best;
-  });
-  
-  // Find unique questions across all analyses
-  const questionIds = new Set<number>();
-  analyses.forEach(analysis => {
-    analysis.questions.forEach(q => {
-      if (typeof q.id === 'number') questionIds.add(q.id);
-    });
-  });
-  
-  console.log(`📝 Processing ${questionIds.size} unique questions...`);
-  
-  // Generate best practices for each question
+  }
+  return toUpdate;
+}
+
+/**
+ * Regenerates best practices only for the given question IDs, merges them into
+ * the existing meta-analysis, and saves.
+ */
+async function updateMetaBestPractices(
+  st: IStorage,
+  domainId: string,
+  existingMeta: MetaAnalysis,
+  analyses: Analysis[],
+  questionIdsToUpdate: number[],
+  verbose?: boolean,
+): Promise<void> {
+  const updateSet = new Set(questionIdsToUpdate);
+  const retained = existingMeta.bestPractices.filter(bp => !updateSet.has(bp.questionId));
+
+  const regenerated: BestPractice[] = [];
+  for (const questionId of questionIdsToUpdate) {
+    const bp = await findBestPracticesForQuestion(questionId, analyses, verbose);
+    if (bp) {
+      regenerated.push(bp);
+      if (verbose) console.log(`[VERBOSE] Updated best practice for question ${questionId}`);
+    }
+  }
+
+  existingMeta.bestPractices = [...retained, ...regenerated].sort((a, b) => a.questionId - b.questionId);
+  existingMeta.analysisDate = new Date().toISOString();
+  existingMeta.totalMunicipalitiesAnalyzed = analyses.length;
+  await st.saveMetaAnalysis(domainId, existingMeta);
+}
+
+async function createMetaAnalysisForDomain(st: IStorage, domainId: string, analyses: Analysis[], verbose?: boolean) {
   const bestPractices: BestPractice[] = [];
-  for (const questionId of Array.from(questionIds).sort()) {
-    const bestPractice = await findBestPracticesForQuestion(questionId, analyses);
-    if (bestPractice) {
-      bestPractices.push(bestPractice);
-      // Use bestEntity for logging if available
-      const bestEntityName = bestPractice.bestEntity?.displayName || 'N/A';
-      console.log(`✅ Q${questionId}: Synthesized best practice from top municipalities (best: ${bestEntityName}, score: ${bestPractice.bestScore.toFixed(1)})`);
+
+
+  // 2. For each question, synthesize best practices
+  const allQuestionIds = Array.from(
+    new Set(analyses.flatMap(a => a.questions.map(q => typeof q.id === 'number' ? q.id : Number(q.id)).filter(Boolean)))
+  );
+  for (const questionId of allQuestionIds) {
+    const bp = await findBestPracticesForQuestion(questionId, analyses, verbose);
+    if (verbose) {
+      console.log(`Best practice found for question ${questionId}:`, bp);
     }
+    if (bp) bestPractices.push(bp);
   }
-  
-  // Generate overall recommendations
-  const commonWeaknesses: string[] = [];
-  const keyImprovements: string[] = [];
-  const modelMunicipalities: string[] = [];
-  
-  // Identify common patterns
-  const lowScoringQuestions = bestPractices.filter(bp => bp.bestScore < 0.8);
-  if (lowScoringQuestions.length > 0) {
-    commonWeaknesses.push(`${lowScoringQuestions.length} questions consistently score below 0.8 across municipalities`);
-  }
-  
-  // High-performing municipalities
-  const topMunicipalities = validAnalyses
-    .filter(a => (a.overallScore ?? 0) >= averageScore * 1.1)
-    .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))
-    .slice(0, 5)
-    .map(a => a.entity?.displayName || '');
-  
-  modelMunicipalities.push(...topMunicipalities);
-  
-  // Key improvements from best practices
-  const allImprovements = bestPractices
-    .flatMap(bp => bp.commonGaps)
-    .filter((improvement, index, arr) => arr.indexOf(improvement) === index)
-    .slice(0, 10);
-  
-  keyImprovements.push(...allImprovements);
-  
-  // Create meta-analysis object
-  const metaAnalysis: MetaAnalysis = {
+
+  // 3. Build meta-analysis object
+  const meta: MetaAnalysis = {
     domain: {
       id: domainId,
-      displayName: analyses[0]?.domain?.displayName || domainId
+      displayName: domainId,
     },
     analysisDate: new Date().toISOString(),
     totalMunicipalitiesAnalyzed: analyses.length,
-    averageScore: Number(averageScore.toFixed(2)),
-    highestScoringEntity: {
-      id: highestScoring.entity?.id || '',
-      displayName: highestScoring.entity?.displayName || '',
-      score: Number((highestScoring.overallScore ?? 0).toFixed(2))
-    },
+    averageScore: analyses.length
+      ? analyses.reduce((sum, a) => sum + (a.questions.reduce((s, q) => s + (q.score || 0), 0) / (a.questions.length || 1)), 0) / analyses.length
+      : 0,
+    highestScoringEntity: (() => {
+      let best: { id: string; displayName: string; score: number } = { id: '', displayName: '', score: 0 };
+      for (const a of analyses) {
+        const avg = a.questions.length ? a.questions.reduce((s, q) => s + (q.score || 0), 0) / a.questions.length : 0;
+        if (avg > best.score) best = { id: a.entity?.id || '', displayName: a.entity?.displayName || '', score: avg };
+      }
+      return best;
+    })(),
     bestPractices,
     overallRecommendations: {
-      commonWeaknesses,
-      keyImprovements,
-      modelMunicipalities
+      commonWeaknesses: [],
+      keyImprovements: [],
+      modelMunicipalities: [],
     },
-    version: "1.0"
+    version: '1.0',
   };
-  
-  // Save meta-analysis using storage abstraction
-  // Fallback: use saveAnalysis for meta-analysis if saveMetaAnalysis does not exist
-  if (typeof (st as any).saveMetaAnalysis === 'function') {
-    await (st as any).saveMetaAnalysis(domainId, metaAnalysis);
-    console.log(`\n🎉 Meta-analysis complete!`);
-    console.log(`📁 Meta-analysis saved for domain: ${domainId}`);
-  } else if (typeof (st as any).saveAnalysis === 'function') {
-    // Save as a special analysis with id 'meta-analysis'
-    await (st as any).saveAnalysis(domainId, 'meta-analysis', metaAnalysis);
-    console.log(`\n🎉 Meta-analysis complete!`);
-    console.log(`📁 Meta-analysis saved as analysis 'meta-analysis' for domain: ${domainId}`);
-  } else {
-    throw new Error('No suitable save method found on storage abstraction.');
-  }
-  console.log(`📊 Analyzed ${analyses.length} municipalities`);
-  console.log(`🏆 Best overall: ${highestScoring.entity?.displayName || 'N/A'} (${(highestScoring.overallScore ?? 0).toFixed(1)})`);
-  console.log(`📈 Average score: ${averageScore.toFixed(2)}`);
-  console.log(`⭐ ${bestPractices.length} best practices identified`);
-  console.log(`🎯 ${modelMunicipalities.length} model municipalities found`);
+
+  await st.saveMetaAnalysis(domainId, meta);
 }
 
-export { generateMetaAnalysis, findBestPracticesForQuestion };
+
+/**
+ * Generates meta-analysis for a domain and then enriches per-entity analyses with AI-evaluated fields.
+ * Pass force=true to regenerate all best practices regardless of existing state.
+ */
+export async function generateMetaAnalysis(st: IStorage, domainId: string, verbose?: boolean, force?: boolean) {
+  const analyses = await loadAllAnalyses(st, domainId);
+  console.log(`Loaded ${analyses.length} analyses for domain ${domainId}`);
+
+  const currentQuestions: Question[] = await st.getQuestionsByDomain(domainId);
+  let metaAnalysis = await st.getMetaAnalysisByDomain(domainId);
+
+  if (force) {
+    console.log(`--force: regenerating all ${currentQuestions.length} best practices for domain ${domainId}`);
+    await createMetaAnalysisForDomain(st, domainId, analyses, verbose);
+  } else {
+    const toUpdate = bestPracticesToUpdate(metaAnalysis, currentQuestions);
+    if (toUpdate.length === 0) {
+      console.log(`Meta-analysis is up-to-date for domain ${domainId}`);
+    } else if (!metaAnalysis?.bestPractices?.length) {
+      console.log(`No existing meta-analysis for domain ${domainId}, generating from scratch...`);
+      await createMetaAnalysisForDomain(st, domainId, analyses, verbose);
+    } else {
+      console.log(`Updating ${toUpdate.length} best practice(s) for domain ${domainId}: questions ${toUpdate.join(', ')}`);
+      await updateMetaBestPractices(st, domainId, metaAnalysis, analyses, toUpdate, verbose);
+    }
+  }
+
+  metaAnalysis = await st.getMetaAnalysisByDomain(domainId);
+  const bestPractices = metaAnalysis?.bestPractices || [];
+  console.log(`🎉 Meta-analysis ready for domain ${domainId} with ${bestPractices.length} best practices.`);
+
+  await enrichEntityAnalysesWithAI(st, domainId, analyses, bestPractices);
+}
+
+export { findBestPracticesForQuestion };

@@ -10,6 +10,20 @@ import { discoverContentSelector } from "../lib/spiderPageAnalysis";
 
 const realmId = "westchester-municipal-environmental";
 
+describe("return sourcemap", () => {
+  it("should return a source map for a realm", async () => {
+    const storage = getDefaultStorage(realmId);
+    const sourceMap = await storage.getSourceMap();
+    console.log("Source map:", sourceMap);
+    expect(sourceMap).toBeTruthy();
+    expect(sourceMap?.get("NY-Bedford-Town")).toBeTruthy();
+    const entitySources = await storage.getSourcesForEntity("NY-Bedford-Town");
+    expect(entitySources).toBeTruthy();
+    expect(entitySources?.domains).toBeTruthy();
+    expect(entitySources?.domains["trees"]).toBeTruthy();
+  });
+});
+
 describe('Download and Process Source', () => {
   setVerboseMode(true); // Enable verbose logging for this test suite
   xit('should download and process source for a specific entity', async () => {

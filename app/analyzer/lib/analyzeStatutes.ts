@@ -1,5 +1,6 @@
 ﻿import dotenv from "dotenv";
 dotenv.config();
+import { pathToFileURL } from "node:url";
 import {
   loadModelConfig, setCurrentModel,
   getCurrentTokenUsage, estimateTokens, sleep, QUESTION_SET_PAUSE_MS,
@@ -7,16 +8,16 @@ import {
   setVerbose as setOpenaiVerbose,
   createChatCompletion,
 } from "../services/aiService.js";
-import { calculateAnswerScore, calculateNormalizedScores } from "./scoring.js";
+import { calculateNormalizedScores, NormalizedScores } from "./scoring.js";
 import { getVectorService, VectorService, getDocumentKey, DocumentType } from "../services/vectorService.js";
 import { Analysis, Ruleset, MetaAnalysis, getDefaultStorage, getRealmsFromStorage, IStorage, FileStat 
 
 } from "@civillyengaged/ordinizer-servercore";
 
-import { generateMetaAnalysis } from "./createMetaAnalysis.js";
+import { enrichEntityAnalysis, generateMetaAnalysis } from "./createMetaAnalysis.js";
 import { indexEntity } from "./indexDocumentService.js";
-import { generateGapAnalysis, loadMetaAnalysis } from "./analysisHelpers.js";
-import { analyzeQuestions } from "./analyzeQuestions.js";
+import { loadMetaAnalysis } from "./analysisHelpers.js";
+import { analyzeQuestions, NO_SOURCES_AVAILABLE, NOT_SPECIFIED } from "./analyzeQuestions.js";
 import { parseCommonCliArgs } from "./scriptArgs.js";
 
 // TODO - put this into a config file or environment variable
@@ -43,14 +44,18 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   fixOrder?: boolean;
   setGrades?: boolean;
+  createFolders?: boolean;
   useMeta?: boolean; // New: Compare against meta-analysis ideal answers
   generateMeta?: boolean; // New: Generate meta-analysis after completing analysis
-  model?: "gpt-5.4-mini" | "gpt-5.4" | "gpt-5.5"; // Model selection for testing
+  generateMetaOnly?: boolean; // New: Only generate meta-analysis, skip all entity analysis
+  model?: string; // Specify AI model to use for analysis (e.g., "gpt-4", "gpt-3.5-turbo")
   questionId?: string; // New: Analyze only specific question ID
   skipRecent?: string; // New: Skip analysis if generated within specified time (e.g., "15m", "2h", "1d")
-  generateScoreOnly?: boolean; // New: Only calculate and update normalized scores without re-analyzing
   generateQuestions?: boolean; // New: Generate questions.json using AI if it doesn't exist
   dryRun?: boolean; // Perform a dry-run: load and plan analysis without making OpenAI calls or writing files
+  fixNoSources?: boolean; // Scan analyses and replace NO_SOURCES_AVAILABLE with NOT_SPECIFIED where appropriate
+  recalcScoreOnly?: boolean; // Recalculate normalized scores from existing analyses without re-running AI
+  forceBelow?: number; // Re-analyze questions whose score is below this normalised threshold (0–1)
 }
 
 // Global verbose flag
@@ -117,13 +122,13 @@ async function addMetaAnalysisComparison(
 
     if (bestPractice) {
       // Add comparison to the ideal answer
-      const comparedToIdeal = {
+      let comparedToIdeal = {
         idealAnswer: bestPractice.bestAnswer,
         idealScore: bestPractice.bestScore,
-        idealEntity: bestPractice.bestEntity.displayName,
+        idealEntity: bestPractice.bestEntity?.displayName,
         currentScore: question.score || 0,
-        performanceGap: bestPractice.bestScore - (question.score || 0),
         improvementSuggestions: bestPractice.improvementSuggestions || [],
+        performanceGap: ( bestPractice.bestScore) ? bestPractice.bestScore - (question.score || 0) : 0
       };
 
       return {
@@ -286,6 +291,54 @@ async function setGradesFromMetadata(options: AnalyzeOptions) {
   console.log(`   Processed: ${totalProcessed} entities`);
   console.log(`   Updated: ${totalUpdated} grades`);
 }
+// Recalculate normalized scores from existing analyses without re-running AI
+async function recalcScoreOnly(options: AnalyzeOptions) {
+  const st = await getStorage(options);
+  const domains = options.domain
+    ? await getVisibleDomainIds(st, options.domain)
+    : await getVisibleDomainIds(st);
+
+  let totalUpdated = 0;
+  let totalSkipped = 0;
+
+  for (const domain of domains) {
+    console.log(`\n📂 Processing domain: ${domain}`);
+    const questions = await st.getQuestionsByDomain(domain, options.realm);
+    const entityIds = await getRequestedEntityIds(options, st, domain);
+
+    for (const entityId of entityIds) {
+      const analysis = await st.getAnalysis(domain, entityId, options.realm);
+      if (!analysis) {
+        log(`No analysis found for ${entityId}, skipping`);
+        totalSkipped++;
+        continue;
+      }
+      if (!analysis.questions || analysis.questions.length === 0) {
+        console.log(`⚠️  ${entityId}: No questions in analysis, skipping`);
+        totalSkipped++;
+        continue;
+      }
+
+      const scores: NormalizedScores = calculateNormalizedScores(analysis.questions, questions, options.verbose);
+
+      analysis.scores = scores;
+      analysis.overallScore = scores.normalizedScore;
+
+      if (options.dryRun) {
+        console.log(`🧪 ${entityId}: dry-run — normalizedScore would be ${scores.normalizedScore}`);
+      } else {
+        await st.saveAnalysis(analysis);
+        console.log(`✅ ${entityId}: normalizedScore=${scores.normalizedScore}`);
+      }
+      totalUpdated++;
+    }
+  }
+
+  console.log(`\n📊 Score recalculation complete!`);
+  console.log(`   Updated: ${totalUpdated} entities`);
+  console.log(`   Skipped: ${totalSkipped} entities`);
+}
+
 // Fix question order in existing analysis.json files
 async function fixQuestionOrder(options: AnalyzeOptions) {
 
@@ -354,6 +407,62 @@ async function fixQuestionOrder(options: AnalyzeOptions) {
   console.log(
     `📊 Processed ${totalProcessed} analysis files, fixed ${totalFixed} files`,
   );
+}
+
+// Replace NO_SOURCES_AVAILABLE with NOT_SPECIFIED in statutory (non-general) domains
+async function fixNoSourcesAnswers(options: AnalyzeOptions) {
+  const st = await getStorage(options);
+  const domains = options.domain
+    ? await getVisibleDomainIds(st, options.domain)
+    : await getVisibleDomainIds(st);
+
+  let totalFixed = 0;
+  let totalScanned = 0;
+
+  for (const domain of domains) {
+    const domainConfig = await st.getDomain(domain);
+    const isGeneralDomain = domainConfig?.type === "general";
+
+    if (isGeneralDomain) {
+      log(`Skipping general domain ${domain} — NO_SOURCES_AVAILABLE is correct there`);
+      continue;
+    }
+
+    console.log(`\n📂 Scanning domain: ${domain}`);
+    const entityIds = await getRequestedEntityIds(options, st, domain);
+
+    for (const entityId of entityIds) {
+      totalScanned++;
+      const analysis = await st.getAnalysis(domain, entityId, options.realm);
+      if (!analysis) continue;
+
+      const affected = analysis.questions.filter(
+        (q: any) => q.answer === NO_SOURCES_AVAILABLE,
+      );
+      if (affected.length === 0) continue;
+
+      if (options.dryRun) {
+        console.log(
+          `🧪 ${entityId}: would fix ${affected.length} answer(s): ${affected.map((q: any) => `Q${q.id}`).join(", ")}`,
+        );
+        totalFixed += affected.length;
+        continue;
+      }
+
+      for (const q of affected) {
+        q.answer = NOT_SPECIFIED;
+      }
+      await st.saveAnalysis(analysis);
+      console.log(
+        `✅ ${entityId}: fixed ${affected.length} answer(s) → NOT_SPECIFIED: ${affected.map((q: any) => `Q${q.id}`).join(", ")}`,
+      );
+      totalFixed += affected.length;
+    }
+  }
+
+  console.log(`\n📊 Fix no-sources complete!`);
+  console.log(`   Entities scanned: ${totalScanned}`);
+  console.log(`   Answers fixed: ${totalFixed}${options.dryRun ? " (dry-run)" : ""}`);
 }
 
 // Intelligent question comparison function
@@ -483,15 +592,21 @@ export async function analyzeStatutes(options: AnalyzeOptions = {}) {
     );
   }
 
+  if (options.recalcScoreOnly) {
+    console.log(`📊 Recalculating normalized scores from existing analyses`);
+    await recalcScoreOnly(options);
+    return;
+  }
+
   if (options.fixOrder) {
     console.log(`🔧 Fixing question order in existing analysis.json files`);
     await fixQuestionOrder(options);
     return;
   }
 
-  if (options.generateScoreOnly) {
-    console.log(`🧮 Generating normalized scores for existing analysis files`);
-    await generateScoresOnly(options);
+  if (options.fixNoSources) {
+    console.log(`🔧 Replacing NO_SOURCES_AVAILABLE with NOT_SPECIFIED in statutory domains`);
+    await fixNoSourcesAnswers(options);
     return;
   }
 
@@ -525,7 +640,14 @@ export async function analyzeStatutes(options: AnalyzeOptions = {}) {
     console.log(`\n📁 Processing domain: ${domain}`);
 
     // Get entities to process
-    const entities = await getRequestedEntityIds(options, st, domain);
+    let entities = await getRequestedEntityIds(options, st, domain);
+
+    // if entities.size==0 and options.create then create entities
+    if (entities.length === 0 && options.createFolders) {
+      console.log("creating subbolders for the entities");
+      await st.createFoldersForDomain(domain);
+      entities = await st.getEntityIds(domain);
+    }
 
     // Initialize Pinecone index
     const indexName = "ordinizer-statutes";
@@ -564,8 +686,16 @@ export async function analyzeStatutes(options: AnalyzeOptions = {}) {
       );
     } else {
       console.log(`🔍 Generating meta-analysis for ${targetDomain} domain...`);
+      // check if entity subset specified
+      if (options.entity && options.entity !== "all") {
+        await enrichEntityAnalysis(st, options.entity, targetDomain, options.verbose);
+        console.log(
+          `🎉 Entity ${options.entity} enriched with meta-analysis insights!`,
+        );
+        return;
+      }
       try {
-        await generateMetaAnalysis(st, targetDomain);
+        await generateMetaAnalysis(st, targetDomain, options.verbose, options.force);
         console.log(
           `🎉 Meta-analysis generated successfully for ${targetDomain}!`,
         );
@@ -922,6 +1052,7 @@ type GeneratedAnalysisResult = {
   usesStateCode?: boolean;
   grades?: { [key: string]: string | null };
   gapAnalysis?: string;
+  sources?: import("@civillyengaged/ordinizer-core").SourceLink[];
 };
 
 async function buildAnswersFromResults(
@@ -934,6 +1065,9 @@ async function buildAnswersFromResults(
     sourceRefs?: string[];
     vectorTokensUsed?: number;
     researchSuggestions?: string[];
+    gap?: string;
+    score?: number;
+    nextPrompts?: string[];
   }>,
   model: AnalyzeOptions["model"],
   includeAnalyzedAt: boolean,
@@ -950,51 +1084,21 @@ async function buildAnswersFromResults(
       totalVectorTokens += result.vectorTokensUsed;
     }
 
-    const score = calculateAnswerScore(result.answer, result.confidence);
-    let gap: string | null = null;
-    if (!dryRun) {
-      gap = await generateGapAnalysis(
-        question.question,
-        result.answer,
-        result.confidence,
-        entity,
-        domain,
-        calculateAnswerScore,
-        model,
-      );
-    }
-
     const newAnswer: any = {
       id: question.id,
       question: question.question,
       answer: result.answer,
       confidence: result.confidence,
       sourceRefs: result.sourceRefs || [],
-      score: parseFloat(score.toFixed(2)),
     };
-
-    if (result.researchSuggestions && result.researchSuggestions.length > 0) {
-      newAnswer.vectorResearchSuggestions = result.researchSuggestions;
-      console.log(
-        `🧭 ${entity}: Question ${question.id} suggests further vector research: ${result.researchSuggestions.join(", ")}`,
-      );
-    } else if (
-      /further research|additional (?:research|documents|sources)|need more information|look for documents/i.test(
-        result.answer || "",
-      )
-    ) {
-      console.log(
-        `🧭 ${entity}: Question ${question.id} answer suggests further vector research.`,
-      );
-    }
 
     if (includeAnalyzedAt) {
       newAnswer.analyzedAt = new Date().toISOString();
     }
 
-    if (gap) {
-      newAnswer.gap = gap;
-    }
+    if (result.gap !== undefined) newAnswer.gap = result.gap;
+    if (result.score !== undefined) newAnswer.score = result.score;
+    if (result.nextPrompts !== undefined) newAnswer.nextPrompts = result.nextPrompts;
 
     newAnswers.push(newAnswer);
   }
@@ -1111,6 +1215,7 @@ async function runConversationAnalysis(
   authoritativeDocumentType: DocumentType | undefined,
   questionsToKeep: any[],
   options: AnalyzeOptions,
+  bestPracticesByQuestionId?: Record<number, import("@civillyengaged/ordinizer-core").BestPractice>,
 ): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
   console.log(
     `💬 ${entity}: Using conversation mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
@@ -1143,6 +1248,7 @@ async function runConversationAnalysis(
       questionsToKeep.length > 0
         ? `\n\nNOTE: Other questions in this analysis have already covered these topics:\n${questionsToKeep.map((q) => `- Q${q.id}: ${q.answer.substring(0, 100)}...`).join("\n")}\n\nProvide unique information that doesn't repeat what's already been covered.`
         : "",
+    bestPracticesByQuestionId,
   });
 
   const conversationEndTokens = getCurrentTokenUsage();
@@ -1176,6 +1282,7 @@ async function runVectorAnalysis(
   authoritativeDocumentType: DocumentType | undefined,
   vectorService: VectorService,
   options: AnalyzeOptions,
+  bestPracticesByQuestionId?: Record<number, import("@civillyengaged/ordinizer-core").BestPractice>,
 ): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
   console.log(
     `🔍 ${entity}: Using vector mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars), authoritativeDocumentType=${authoritativeDocumentType || "undefined"}`,
@@ -1206,6 +1313,7 @@ async function runVectorAnalysis(
       questionsToKeep.length > 0
         ? `\n\nNOTE: Other questions in this analysis have already covered these topics:\n${questionsToKeep.map((q) => `- Q${q.id}: ${q.answer.substring(0, 100)}...`).join("\n")}\n\nProvide unique information that doesn't repeat what's already been covered.`
         : "",
+    bestPracticesByQuestionId,
   });
 
   return buildAnswersFromResults(
@@ -1231,59 +1339,8 @@ async function enhanceQuestionsWithGapAnalysis(
 ): Promise<any[]> {
   const enhancedQuestionsToKeep: any[] = [];
 
-  for (const existingQuestion of questionsToKeep) {
-    const score =
-      existingQuestion.score !== undefined
-        ? parseFloat(existingQuestion.score.toFixed(2))
-        : parseFloat(
-            calculateAnswerScore(
-              existingQuestion.answer,
-              existingQuestion.confidence || 50,
-            ).toFixed(2),
-          );
-
-    if (!options.dryRun && !questionId && !existingQuestion.gap && score < 1.0) {
-      console.log(
-        `🔎 ${entity}: Adding missing gap analysis for question ${existingQuestion.id} (score: ${score.toFixed(2)})`,
-      );
-      const gap = await generateGapAnalysis(
-        existingQuestion.question,
-        existingQuestion.answer,
-        existingQuestion.confidence || 50,
-        entity,
-        domain,
-        calculateAnswerScore,
-        options.model,
-      );
-
-      const enhanced: any = {
-        ...existingQuestion,
-        score: parseFloat(score.toFixed(2)),
-      };
-
-      if (gap) {
-        enhanced.gap = gap;
-      }
-
-      enhancedQuestionsToKeep.push(enhanced);
-    } else if (!questionId && existingQuestion.gap && score >= 1.0) {
-      console.log(
-        `🔎 ${entity}: Removing gap from question ${existingQuestion.id} (perfect score: ${score.toFixed(2)})`,
-      );
-      const { gap, ...questionWithoutGap } = existingQuestion;
-      enhancedQuestionsToKeep.push({
-        ...questionWithoutGap,
-        score: parseFloat(score.toFixed(2)),
-      });
-    } else {
-      enhancedQuestionsToKeep.push({
-        ...existingQuestion,
-        score: parseFloat(score.toFixed(2)),
-      });
-    }
-  }
-
-  return enhancedQuestionsToKeep;
+  // No longer enhance or mutate questions with gap or score here; just return as-is
+  return questionsToKeep;
 }
 
 /**
@@ -1476,7 +1533,7 @@ async function generateVectorAnalysis(
     );
   }
 
-  const { questionsToAnalyze, questionsToKeep, questionsToRemove } =
+  let { questionsToAnalyze, questionsToKeep, questionsToRemove } =
     compareQuestions(
       questions,
       force && !questionId ? [] : existingAnalysis?.questions || [],
@@ -1484,11 +1541,44 @@ async function generateVectorAnalysis(
       questionId,
     );
 
+  // Force re-analysis of questions below a score threshold
+  if (options.forceBelow !== undefined) {
+    const threshold = options.forceBelow;
+    const questionDefMap = new Map(questions.map((q) => [q.id, q]));
+    const toForce: any[] = [];
+    const toStillKeep: any[] = [];
+    for (const kept of questionsToKeep) {
+      const raw = (kept as any).score;
+      const normalised = raw === undefined || raw === null ? null : (raw > 1 ? raw / 10 : raw);
+      if (normalised === null || normalised < threshold) {
+        const baseDef = questionDefMap.get(kept.id);
+        if (baseDef) toForce.push(baseDef);
+      } else {
+        toStillKeep.push(kept);
+      }
+    }
+    if (toForce.length > 0) {
+      console.log(`🔄 ${entity}: Re-analyzing ${toForce.length} question(s) scoring below ${Math.round(threshold * 100)}%`);
+      questionsToAnalyze = [...questionsToAnalyze, ...toForce];
+      questionsToKeep = toStillKeep;
+    }
+  }
+
   // Prepare analysis parameters
   const statuteSize = statute.length;
   const useConversationMode = USE_CONVERSATION;
   const statuteTokens = statute ? estimateTokens(statute) : 0;
   const startTokenUsage = getCurrentTokenUsage();
+
+  // Load meta analysis best practices for combined enrichment during analysis
+  const metaAnalysis = await st.getMetaAnalysisByDomain(domain);
+  const bestPracticesByQuestionId: Record<number, import("@civillyengaged/ordinizer-core").BestPractice> = {};
+  if (metaAnalysis?.bestPractices?.length) {
+    for (const bp of metaAnalysis.bestPractices) {
+      bestPracticesByQuestionId[bp.questionId] = bp;
+    }
+    log(`Loaded ${metaAnalysis.bestPractices.length} best practices for combined enrichment`);
+  }
 
   // Run appropriate analysis mode
   let newAnswers: any[] = [];
@@ -1504,7 +1594,6 @@ async function generateVectorAnalysis(
   }
   const domainForEntityText = domainObj.displayName || domain + " applying to " + entityObj.displayName;
 
-
   if (useConversationMode) {
     const result = await runConversationAnalysis(
       domain,
@@ -1518,6 +1607,7 @@ async function generateVectorAnalysis(
       content.authoritativeDocumentType,
       questionsToKeep,
       options,
+      Object.keys(bestPracticesByQuestionId).length ? bestPracticesByQuestionId : undefined,
     );
     newAnswers = result.newAnswers;
     totalVectorTokens = result.totalVectorTokens;
@@ -1533,6 +1623,7 @@ async function generateVectorAnalysis(
       content.authoritativeDocumentType,
       vectorService,
       options,
+      Object.keys(bestPracticesByQuestionId).length ? bestPracticesByQuestionId : undefined,
     );
     newAnswers = result.newAnswers;
     totalVectorTokens = result.totalVectorTokens;
@@ -1581,6 +1672,9 @@ async function generateVectorAnalysis(
   const grades: { [key: string]: string | null } = {};
   const scores = calculateNormalizedScores(allAnswers, questions);
 
+  const sourceMapEntity = await st.getSourcesForEntity(entity);
+  const sources = (sourceMapEntity?.domains[domain] ?? []) as import("@civillyengaged/ordinizer-core").SourceLink[];
+
   return {
     entityId: entity,
     domainId: domain,
@@ -1602,6 +1696,7 @@ async function generateVectorAnalysis(
     lastUpdated: new Date().toISOString(),
     processingMethod: "vector-search-rag",
     usesStateCode: false,
+    sources,
   };
 }
 
@@ -1749,11 +1844,6 @@ async function evaluateQuestion(questionText: any, statute: string, domain: stri
     additionalSources: { data: [] },
   });
 
-  const questionScore = calculateAnswerScore(
-    result.answer,
-    result.confidence
-  );
-
   if (VERBOSE) {
     console.log(
       `[VERBOSE] Generated answer: ${result.answer.substring(0, 100)}... (confidence: ${result.confidence}%, ${result.sourceRefs.length} refs)`,
@@ -1766,83 +1856,23 @@ async function evaluateQuestion(questionText: any, statute: string, domain: stri
     answer: result.answer,
     confidence: result.confidence,
     sourceRefs: result.sourceRefs,
-    score: questionScore,
     analyzedAt: new Date().toISOString(),
   };
 }
 
-// Generate scores only for existing analysis files
-async function generateScoresOnly(options: AnalyzeOptions) {
-  const st = await getStorage(options);
-
-  const domainsToProcess = options.domain
-    ? await getVisibleDomainIds(st, options.domain)
-    : await getVisibleDomainIds(st);
-
-  for (const domainId of domainsToProcess) {
-    console.log(`\n📊 Processing domain: ${domainId}`);
-
-    // Load domain questions with weights
-    const domainQuestions = await st.getQuestionsByDomain(domainId, options.realm);
-
-    const entityIds = await getRequestedEntityIds(options, st, domainId);
-
-    for (const entityId of entityIds) {
-      const analysis = await st.getAnalysis(domainId, entityId, options.realm);
-      if (!analysis) {
-        log(`⚠️  Analysis file not found for ${entityId}`);
-        continue;
-      }
-
-      try {
-        console.log(`🧮 ${entityId}: Calculating normalized scores...`);
-
-        // Skip if already has normalized scores (unless force)
-        if (analysis.scores?.normalizedScore && !options.force) {
-          console.log(
-            `✔ ${entityId}: Already has normalized scores (use --force to recalculate)`
-          );
-          continue;
-        }
-
-        // Recalculate individual question scores using new methodology
-        const questions = analysis.questions || [];
-        const updatedQuestions = questions.map((question) => ({
-          ...question,
-          score: parseFloat(
-            calculateAnswerScore(
-              question.answer || "",
-              question.confidence || 50,
-            ).toFixed(2),
-          ),
-        }));
-
-        // Calculate normalized scores with updated question scores using question weights
-        const scores = calculateNormalizedScores(updatedQuestions, domainQuestions);
-
-        // Update the analysis with new scores and updated questions
-        const updatedAnalysis = {
-          ...analysis,
-          questions: updatedQuestions,
-          scores: scores,
-          overallScore: scores.normalizedScore,
-          normalizedScore: scores.normalizedScore,
-          scoresUpdatedAt: new Date().toISOString(),
-        };
-
-        await st.saveAnalysis(updatedAnalysis);
-
-        console.log(
-          `✅ ${entityId}: Normalized score: ${scores.normalizedScore.toFixed(2)}/5.0 (${scores.questionsAnswered}/${scores.totalQuestions} questions answered)`
-        );
-      } catch (error) {
-        console.error(`❌ Error processing ${entityId}:`, errMsg(error));
-      }
-    }
+// Parse a score threshold expressed as "20%", "20", or "0.2" — all return 0.2 (normalised 0–1)
+function parseScoreThreshold(value: string): number {
+  const trimmed = value.trim();
+  if (trimmed.endsWith("%")) {
+    const n = parseFloat(trimmed.slice(0, -1));
+    if (isNaN(n)) throw new Error(`Invalid score threshold: "${value}"`);
+    return n / 100;
   }
-
-  console.log(`\n🎉 Score generation complete!`);
+  const n = parseFloat(trimmed);
+  if (isNaN(n)) throw new Error(`Invalid score threshold: "${value}"`);
+  return n > 1 ? n / 100 : n;
 }
+
 // Parse time string like "15m", "2h", "1d" into milliseconds
 function parseTimeToMs(timeStr: string): number {
   const match = timeStr.match(/^(\d+)([mhd])$/i);
@@ -1944,13 +1974,17 @@ Options:
   --reindex                 Re-upload document chunks to Pinecone vector database
   --verbose, -v             Enable detailed logging of processing steps
   --fixorder                Fix question order in existing analysis.json files to match questions.json
+  --fix-no-sources          Replace "No relevant sources available" with "Not specified" in statutory domains
+  --recalc-score-only       Recalculate normalized scores from existing analyses without re-running AI
   --setgrades               Copy grades from metadata.json to analysis.json ${GRADING_ID} grades field
   --usemeta                 Compare analysis against meta-analysis best practices
   --questionId <id>         Analyze only the specified question ID (e.g., "9")
   --generate-meta           Generate meta-analysis after completing analysis
+  --generate-meta-only      Only generate meta-analysis (skip all entity analysis)
   --generate-questions      Generate questions.json using AI if it doesn't already exist
   --skip-recent <time>      Skip analysis if generated within specified time (e.g., "15m", "2h", "1d")
-  --generate-score-only     Calculate and update normalized scores for existing analysis files
+  --force-below-score <n>  Re-analyze questions whose current score is below threshold (e.g., "20%", "20", "0.2")
+
   --model <model>           AI model to use: gpt-5.4-mini, gpt-5.4, gpt-5.5
   --help, -h               Show this help message
 
@@ -1970,8 +2004,8 @@ Examples:
   # Fix question order for all analysis files
   tsx scripts/analyzeStatutes.ts --fixorder
 
-  # Generate normalized scores for existing analysis files
-  tsx scripts/analyzeStatutes.ts --generate-score-only --domain trees --verbose
+  # Recalculate normalized scores for existing analysis files
+  tsx scripts/analyzeStatutes.ts --recalc-score-only --domain trees --verbose
 
   # Fix question order for specific domain
   tsx scripts/analyzeStatutes.ts --domain property-maintenance --fixorder
@@ -2028,7 +2062,7 @@ async function parseArgs() {
     domain: common.domain,
     entity: common.entity,
     force: common.force,
-    dryRun: common.dryRun,
+    dryRun: common.dryRun
   };
 
   if (common.realm) {
@@ -2053,6 +2087,12 @@ async function parseArgs() {
       case "--fixorder":
         options.fixOrder = true;
         break;
+      case "--fix-no-sources":
+        options.fixNoSources = true;
+        break;
+      case "--recalc-score-only":
+        options.recalcScoreOnly = true;
+        break;
       case "--setgrades":
         options.setGrades = true;
         break;
@@ -2061,6 +2101,10 @@ async function parseArgs() {
         break;
       case "--generate-meta":
         options.generateMeta = true;
+        break;
+      case "--generate-meta-only":
+        options.generateMeta = true;
+        options.generateMetaOnly = true;
         break;
       case "--generate-questions":
         options.generateQuestions = true;
@@ -2071,8 +2115,11 @@ async function parseArgs() {
       case "--skip-recent":
         options.skipRecent = rest[++i];
         break;
-      case "--generate-score-only":
-        options.generateScoreOnly = true;
+      case "--force-below-score":
+        options.forceBelow = parseScoreThreshold(rest[++i]);
+        break;
+      case "--createFolders":
+        options.createFolders = true;
         break;
       case "--model":
         options.model = rest[++i] as any;
@@ -2131,12 +2178,17 @@ async function parseArgs() {
 }
 
 
-// // Run the script
-// if (require.main === module) {
-//   (async () => {
-    const options = await parseArgs();
-    analyzeStatutes(options).catch(console.error);
-//   })();
-// }
+export async function main(): Promise<void> {
+  const options = await parseArgs();
+  await analyzeStatutes(options);
+}
+
+const isEntrypoint = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (isEntrypoint) {
+  main().catch(console.error);
+}
 
 

@@ -161,7 +161,7 @@ Do not invent non-existent paths if uncertain; prefer higher-level official page
 
   const response = await createChatCompletion(prompt);
 
-  const content = response.choices[0]?.message?.content;
+  const content = response.text;
   if (!content) {
     return null;
   }

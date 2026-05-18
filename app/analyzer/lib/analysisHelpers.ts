@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
-import { checkRateLimit, estimateTokens, fetchChatResponse, log, recordTokenUsage } from "../services/aiService.js";
+import { checkRateLimit, estimateTokens, fetchChatResponseInJSON, log, recordTokenUsage } from "../services/aiService.js";
+import { NOT_SPECIFIED, NO_SOURCES_AVAILABLE } from "./analyzeQuestions.js";
 
 export async function loadMetaAnalysis(domainId: string, dataDir = "data"): Promise<any> {
   const metaPath = path.join(dataDir, domainId, "meta-analysis.json");
@@ -33,7 +34,6 @@ export async function generateGapAnalysis(
   municipality: string,
   domain: string,
   calculateScore: (answer: string, confidence: number) => number,
-  model = "gpt-4o",
   dataDir = "data",
 ): Promise<string | null> {
   try {
@@ -55,7 +55,7 @@ export async function generateGapAnalysis(
       }
     }
 
-    const isNotSpecified = answer === "Not specified in the statute." || answer === "Not specified in the provided sources.";
+    const isNotSpecified = answer === NOT_SPECIFIED || answer === NO_SOURCES_AVAILABLE;
     const isLowConfidence = confidence < 40;
     const guidance = getQuestionTypeGuidance(question);
 
@@ -66,10 +66,10 @@ export async function generateGapAnalysis(
     const estimatedTokens = estimateTokens(gapPrompt) + 150;
     await checkRateLimit(estimatedTokens);
 
-    const gapResponse = await fetchChatResponse(model, gapPrompt);
-    recordTokenUsage(gapResponse.usage?.total_tokens || estimatedTokens);
+    const gapResponse = await fetchChatResponseInJSON(gapPrompt);
+    recordTokenUsage(gapResponse.usage?.totalTokens || estimatedTokens);
 
-    const gap = gapResponse.choices[0].message.content || null;
+    const gap = gapResponse.text || null;
     if (gap && (gap.includes("establish comprehensive regulations") || gap.includes("Gap analysis not available") || gap.length < 20 || gap.toLowerCase().startsWith("the answer"))) {
       return null;
     }

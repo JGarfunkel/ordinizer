@@ -1,3 +1,5 @@
+#!/usr/bin/env tsx
+
 import { getDefaultStorage } from "@civillyengaged/ordinizer-servercore";
 import { parseCommonCliArgs, requireDataRootAndRealm } from "./scriptArgs.js";
 
@@ -8,6 +10,7 @@ interface Args {
     domain?: string;
     entity?: string;
     delete: DeleteMode;
+    keepLastPerDay: boolean;
 }
 
 interface Target {
@@ -15,7 +18,37 @@ interface Target {
     entityId: string;
 }
 
+const USAGE = `
+Usage: cleanupBackups.cli.ts --realm <realm> --delete <mode> [options]
+
+Required:
+  --realm <realm>            Realm ID (e.g. "ny")
+  --delete <mode>            What to delete: analysis | metadata | all
+
+Filters (default: all domains and entities):
+  --domain <domainId>        Limit to a single domain
+  --entity <entityId>        Limit to a single entity
+
+Options:
+  --keep-last-per-day        Instead of deleting all backups, keep the last
+                             backup for each calendar day and remove earlier
+                             ones from the same day
+  --help                     Show this help message
+
+Examples:
+  # Delete all analysis backups across the entire realm
+  cleanupBackups.cli.ts --realm ny --delete analysis
+
+  # Keep one backup per day for metadata in a specific domain
+  cleanupBackups.cli.ts --realm ny --delete metadata --domain police-transparency --keep-last-per-day
+`.trim();
+
 function parseArgs(args: string[]): Args {
+    if (args.includes("--help") || args.includes("-h")) {
+        console.log(USAGE);
+        process.exit(0);
+    }
+
     const { common, rest } = parseCommonCliArgs(args);
     requireDataRootAndRealm(common);
 
@@ -23,6 +56,7 @@ function parseArgs(args: string[]): Args {
         realm: common.realm,
         domain: common.domain,
         entity: common.entity,
+        keepLastPerDay: false,
     };
 
     const consumed: number[] = [];
@@ -36,7 +70,10 @@ function parseArgs(args: string[]): Args {
             options.delete = value;
             consumed.push(i, i + 1);
             i += 1;
-    }
+        } else if (arg === "--keep-last-per-day") {
+            options.keepLastPerDay = true;
+            consumed.push(i);
+        }
     }
 
     for (let i = 0; i < rest.length; i += 1) {
@@ -90,17 +127,23 @@ async function main() {
     let analysisTotal = 0;
     let metadataTotal = 0;
 
+    const deleteVerb = options.keepLastPerDay ? "Pruned" : "Deleted";
+
     for (const target of targets) {
         if (options.delete === "analysis" || options.delete === "all") {
-            const analysisDeleted = await storage.deleteAnalysisBackups(target.domainId, target.entityId);
+            const analysisDeleted = options.keepLastPerDay
+                ? await storage.pruneAnalysisBackups(target.domainId, target.entityId)
+                : await storage.deleteAnalysisBackups(target.domainId, target.entityId);
             analysisTotal += analysisDeleted;
-            console.log(`Deleted ${analysisDeleted} analysis backup file${analysisDeleted === 1 ? "" : "s"} for ${options.realm}/${target.domainId}/${target.entityId}`);
+            console.log(`${deleteVerb} ${analysisDeleted} analysis backup file${analysisDeleted === 1 ? "" : "s"} for ${options.realm}/${target.domainId}/${target.entityId}`);
         }
         if (options.delete === "metadata" || options.delete === "all") {
-            const metadataDeleted = await storage.deleteMetadataBackups(target.domainId, target.entityId);
+            const metadataDeleted = options.keepLastPerDay
+                ? await storage.pruneMetadataBackups(target.domainId, target.entityId)
+                : await storage.deleteMetadataBackups(target.domainId, target.entityId);
             metadataTotal += metadataDeleted;
-            console.log(`Deleted ${metadataDeleted} metadata backup file${metadataDeleted === 1 ? "" : "s"} for ${options.realm}/${target.domainId}/${target.entityId}`);
-    }
+            console.log(`${deleteVerb} ${metadataDeleted} metadata backup file${metadataDeleted === 1 ? "" : "s"} for ${options.realm}/${target.domainId}/${target.entityId}`);
+        }
     }
 
     if (targets.length > 1) {

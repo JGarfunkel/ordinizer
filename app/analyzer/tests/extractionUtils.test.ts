@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { addOrUpdateSource, shouldUseCurlForUrl } from "../lib/extractionUtils.js";
+import fs from "fs/promises";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { addOrUpdateSource, shouldUseCurlForUrl, extractStatuteInfoFromHTML } from "../lib/extractionUtils.js";
+import { convertHtmlToText } from "../lib/simpleHtmlToText.js";
 import type { Ruleset } from "@civillyengaged/ordinizer-core";
 import * as extractionConfig from "../lib/extractionConfig.js";
 import * as servercore from "@civillyengaged/ordinizer-servercore";
@@ -59,12 +61,12 @@ describe("addOrUpdateSource", () => {
 
 describe("shouldUseCurlForUrl", () => {
   beforeEach(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("uses per-library config to enable curl for matching URLs", async () => {
-    jest.spyOn(servercore, "getDefaultStorage").mockReturnValue({} as any);
-    jest.spyOn(extractionConfig, "loadStatuteLibraryConfig").mockResolvedValue({
+    vi.spyOn(servercore, "getDefaultStorage").mockReturnValue({} as any);
+    vi.spyOn(extractionConfig, "loadStatuteLibraryConfig").mockResolvedValue({
       defaultLibrary: "default-lib",
       libraries: [
         {
@@ -84,5 +86,28 @@ describe("shouldUseCurlForUrl", () => {
 
     expect(result).toBe(true);
     expect(extractionConfig.loadStatuteLibraryConfig).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// File-based debug test — set TEST_HTML_FILE=<path> to run
+// ---------------------------------------------------------------------------
+
+const htmlFile = process.env.TEST_HTML_FILE || "..\\..\\..\\nyseeds\\data\\westchester-municipal-environmental\\trees\\NY-Greenburgh-Town\\statute.html";
+
+describe("extractStatuteInfoFromHTML (file-based)", () => {
+  (htmlFile ? it :/*  */ it.skip)("extracts info and converts to text from provided HTML file", async () => {
+    const html = await fs.readFile(htmlFile!, "utf-8");
+    console.log(`\nRead ${html.length} bytes from ${htmlFile}`);
+
+    const info = await extractStatuteInfoFromHTML(html);
+    console.log("Extracted statute info:", info);
+
+    const text = convertHtmlToText(html, "6817633");
+    console.log(`Converted text length: ${text.length}`);
+    console.log("First 500 chars of converted text:\n", text.substring(0, 500));
+
+    expect(info).toBeDefined();
+    expect(text.length).toBeGreaterThan(200);
   });
 });

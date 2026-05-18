@@ -219,6 +219,15 @@ export async function pdfFormToText(pdfBuffer: Buffer, formTitle: string): Promi
   return pdfToText(pdfBuffer, formTitle, true);
 }
 
+export async function extractTitleFromPDF(pdfBuffer: Buffer): Promise<string> {
+  try {
+    const parser = new PDFParse({data: pdfBuffer});
+    return (await parser.getInfo()).info.Title || "";
+  } catch {
+    return "";
+  }
+}
+
 export async function pdfToText(pdfBuffer: Buffer, formTitle: string = "PDF Form", isForm: boolean = false): Promise<string> {
   let parser: PDFParse | null = null;
   try {

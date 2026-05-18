@@ -42,3 +42,4 @@ pnpm-debug.log*
 tmp/
 *.tsbuildinfo
 .npmrc
+.claude

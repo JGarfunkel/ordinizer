@@ -10,9 +10,10 @@ import fs from "fs-extra";
 import path from "path";
 import { JSDOM } from "jsdom";
 import { convertHtmlToTextSimple } from "./simpleHtmlToText.js";
-import { downloadFromUrlAnyType, pdfToText } from "./extractionUtils.js";
+import { downloadFromUrlAnyType, extractTitleFromPDF } from "./extractionUtils.js";
 import type { DownloadRequestOptions } from "./extractionUtils.js";
 import type { CrawledPage, ExtractedLink } from "./domainScoring.js";
+import { LinkedResource } from "@ordinizer/core/schema.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,20 +21,20 @@ import type { CrawledPage, ExtractedLink } from "./domainScoring.js";
 
 export type HistoryStatus = "404" | "blocked" | "no-content" | "robots-disallow" | "timeout" | "unrelated" | "related" | "index";
 
-export interface SpiderHistoryEntry {
-  url: string; // always the normalized URL
-  entityId: string;
-  matchedDomainIds: string[];
+export interface SpiderDownloadRecord extends LinkedResource {
+  entityId?: string; // optional as this is record is stored under an entityId
   status: HistoryStatus;
-  timestamp: string;
   localFile?: string; // relative path to HTML artifact
   localFileText?: string; // relative path to TXT artifact
   localFileTextSize?: number; // length of the text content in the TXT artifact, for quick reference
 }
 
+// Backward-compatible alias while call sites migrate to SpiderDownloadRecord.
+export type SpiderHistoryEntry = SpiderDownloadRecord;
+
 export interface SpiderHistoryFile {
   menuLinks: SpiderMenuLinkInfo;
-  records: SpiderHistoryEntry[];
+  records: SpiderDownloadRecord[];
 }
 
 export interface SpiderMenuLinkInfo {
@@ -111,7 +112,7 @@ export function canSkipStatus(status: HistoryStatus): boolean {
   return status !== "related" && status !== "index";
 }
 
-export function wasAttemptedRecently(entry: SpiderHistoryEntry | undefined, recrawlDays: number): boolean {
+export function wasAttemptedRecently(entry: SpiderDownloadRecord | undefined, recrawlDays: number): boolean {
   if (!entry || recrawlDays <= 0) {
     return false;
   }
@@ -148,7 +149,7 @@ export function normalizeMenuLinks(rawMenuLinks: unknown): SpiderMenuLinkInfo {
 // History entry migration
 // ---------------------------------------------------------------------------
 
-export function migrateHistoryEntry(raw: any): SpiderHistoryEntry | null {
+export function migrateHistoryEntry(raw: any): SpiderDownloadRecord | null {
   if (!raw || typeof raw !== "object") {
     return null;
   }
@@ -170,6 +171,12 @@ export function migrateHistoryEntry(raw: any): SpiderHistoryEntry | null {
     : [];
   const localFile = typeof raw.localFile === "string" && raw.localFile ? raw.localFile : undefined;
   const localFileText = typeof raw.localFileText === "string" && raw.localFileText ? raw.localFileText : undefined;
+  const documentTitle = typeof raw.documentTitle === "string" && raw.documentTitle.trim()
+    ? raw.documentTitle.trim()
+    : (typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : undefined);
+  const title = typeof raw.title === "string" && raw.title.trim()
+    ? raw.title.trim()
+    : (documentTitle || url);
   // Legacy migration: convert old artifactPaths array to new schema
   let migratedLocalFile = localFile;
   let migratedLocalFileText = localFileText;
@@ -181,10 +188,12 @@ export function migrateHistoryEntry(raw: any): SpiderHistoryEntry | null {
   }
   return {
     url,
+    title,
     entityId,
     matchedDomainIds,
     status,
     timestamp,
+    ...(documentTitle ? { documentTitle } : {}),
     ...(migratedLocalFile ? { localFile: migratedLocalFile } : {}),
     ...(migratedLocalFileText ? { localFileText: migratedLocalFileText } : {}),
   };
@@ -228,19 +237,19 @@ export async function ensureEntityHistoryLayout(storage: any, entityId: string):
 // ---------------------------------------------------------------------------
 
 export async function loadHistoryData(storage: any, entityId: string): Promise<{
-  historyMap: Map<string, SpiderHistoryEntry>;
+  historyMap: Map<string, SpiderDownloadRecord>;
   menuLinks: SpiderMenuLinkInfo;
 }> {
   const historyPath = getHistoryFilePath(storage, entityId);
   if (!(await fs.pathExists(historyPath))) {
     return {
-      historyMap: new Map<string, SpiderHistoryEntry>(),
+      historyMap: new Map<string, SpiderDownloadRecord>(),
       menuLinks: { timestamp: "", urls: [] },
     };
   }
   const loaded = (await fs.readJson(historyPath).catch(() => ({ records: [] }))) as SpiderHistoryFile;
   const entries = Array.isArray(loaded.records) ? loaded.records : [];
-  const historyMap = new Map<string, SpiderHistoryEntry>();
+  const historyMap = new Map<string, SpiderDownloadRecord>();
   for (const rawEntry of entries) {
     const migrated = migrateHistoryEntry(rawEntry);
     if (migrated) {
@@ -257,7 +266,7 @@ export async function loadHistoryData(storage: any, entityId: string): Promise<{
 export async function saveHistoryData(
   storage: any,
   entityId: string,
-  historyMap: Map<string, SpiderHistoryEntry>,
+  historyMap: Map<string, SpiderDownloadRecord>,
   menuLinks: SpiderMenuLinkInfo = { timestamp: "", urls: [] },
 ): Promise<void> {
   const historyPath = getHistoryFilePath(storage, entityId);
@@ -270,20 +279,32 @@ export async function saveHistoryData(
 }
 
 export function upsertHistoryEntry(
-  historyMap: Map<string, SpiderHistoryEntry>,
-  input: Omit<SpiderHistoryEntry, "timestamp"> & { timestamp?: string },
+  historyMap: Map<string, SpiderDownloadRecord>,
+  input: {
+    url: string;
+    matchedDomainIds: string[];
+    status: HistoryStatus;
+    entityId?: string;
+    title?: string;
+    localFile?: string;
+    localFileText?: string;
+    localFileTextSize?: number;
+    timestamp?: string;
+  },
 ): void {
   const timestamp = input.timestamp || new Date().toISOString();
+  const title = (input.title || input.url).trim();
   historyMap.set(input.url, {
     ...input,
+    title,
     timestamp,
   });
 }
 
 export async function recordFileSize(
   storage: any,
-  historyMap: Map<string, SpiderHistoryEntry>,
-  entry: SpiderHistoryEntry,
+  historyMap: Map<string, SpiderDownloadRecord>,
+  entry: SpiderDownloadRecord,
 ): Promise<number | undefined> {
   if (!entry.localFileText) {
     return undefined;
@@ -462,7 +483,7 @@ export async function saveCrawledArtifacts(
 
 export async function cleanupArtifactsForHistoryEntry(
   storage: any,
-  historyEntry: SpiderHistoryEntry | undefined,
+  historyEntry: SpiderDownloadRecord | undefined,
 ): Promise<void> {
   if (!historyEntry) {
     return;
@@ -542,13 +563,90 @@ export function extractLinksAndText(baseUrl: string, html: string): {
   };
 }
 
+function getDocumentTitleFromHtml(html: string, fallbackUrl?: string): string | undefined {
+  try {
+    const dom = new JSDOM(html, fallbackUrl ? { url: fallbackUrl } : undefined);
+    const document = dom.window.document;
+    const candidates = [
+      document.querySelector("title")?.textContent,
+      document.querySelector("meta[property='og:title']")?.getAttribute("content"),
+      document.querySelector("meta[name='twitter:title']")?.getAttribute("content"),
+      document.querySelector("h1")?.textContent,
+      document.querySelector("h2")?.textContent,
+    ];
+    for (const candidate of candidates) {
+      const normalized = (candidate || "").replace(/\s+/g, " ").trim();
+      if (normalized) {
+        return normalized.slice(0, 300);
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function extractDocumentTitleWithCache(
+  storage: any,
+  historyMap: Map<string, SpiderDownloadRecord>,
+  url: string,
+  html?: string,
+): Promise<string> {
+  const normalizedUrl = normalizeUrlForMatch(url);
+  const existing = historyMap.get(normalizedUrl);
+  const existingTitle = existing?.title?.trim();
+
+  if (existing?.localFile) {
+    const filePath = fromRelativeDownloadsPath(storage, existing.localFile);
+    if (await fs.pathExists(filePath)) {
+      if (url.toLocaleLowerCase().endsWith(".pdf")) {
+        const pdfBuffer = await fs.readFile(filePath);
+        const title = await extractTitleFromPDF(pdfBuffer);
+        if (title) {
+          console.debug("[Title Extraction] Extracted title from cached PDF for URL:", url, "title:", title);
+          return title;
+        }
+      } else {
+        const cachedHtml = await fs.readFile(filePath, "utf-8");
+        const cachedTitle = getDocumentTitleFromHtml(cachedHtml, url);
+        if (cachedTitle) {
+          // console.debug("[Title Extraction] Extracted title from cached HTML for URL:", url, "title:", cachedTitle);
+          return cachedTitle;
+        }
+      }
+    }
+  }
+
+  const htmlTitle = html ? getDocumentTitleFromHtml(html, url) : undefined;
+  if (htmlTitle) {
+    // console.debug("[Title Extraction] Extracted title from provided HTML for URL:", url, "title:", htmlTitle);
+    return htmlTitle;
+  }
+
+  if (existingTitle && existingTitle !== url) {
+    //console.debug("[Title Extraction] Using existing title for URL:", url, "title:", existingTitle);
+    return existingTitle;
+  }
+
+  // find URL slug, convert _ and - to spaces, and convert to title case
+  try {
+    const urlObj = new URL(url);
+    const slug = urlObj.pathname.split("/").filter(Boolean).pop() || urlObj.hostname;
+    const slugWithSpaces = slug.replace(/[-_]+/g, " ");
+    const titleCased = slugWithSpaces.replace(/\b\w/g, (char) => char.toUpperCase());
+    return titleCased;
+  } catch {
+    return "";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Cache loading
 // ---------------------------------------------------------------------------
 
 export async function loadCachedPageFromHistory(
   storage: any,
-  entry: SpiderHistoryEntry,
+  entry: SpiderDownloadRecord,
   depth: number,
 ): Promise<{ page: CrawledPage; linkCandidates: ExtractedLink[] } | null> {
   if (!entry.localFile && !entry.localFileText) {

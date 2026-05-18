@@ -577,6 +577,59 @@ export async function downloadAndProcessSource(realmId: string, domainId: string
   // }
 }
 
+export async function convertExistingSourceToText(realmId: string, domainId: string, entityId: string): Promise<void> {
+  const storage = getDefaultStorage(realmId);
+  const currentRealm: Realm = await storage.getRealmConfig();
+  const ruleType = currentRealm.ruleType ?? "statute";
+  const ruleset = await storage.getRulesetOrCreate(domainId, entityId);
+  const destPath = await storage.getPathForDomainAndEntity(ruleset);
+
+  const htmlPath = path.join(destPath, `${ruleType}.html`);
+  const pdfPath = path.join(destPath, `${ruleType}.pdf`);
+
+  let downloadedFilepath: string;
+  if (await fs.pathExists(htmlPath)) {
+    downloadedFilepath = htmlPath;
+  } else if (await fs.pathExists(pdfPath)) {
+    downloadedFilepath = pdfPath;
+  } else {
+    throw new Error(`No source file found for ${entityId}/${domainId} (expected ${htmlPath} or ${pdfPath})`);
+  }
+
+  let sourceUrls: ArticleLink[] | undefined;
+  let plainTextContent: string;
+
+  if (downloadedFilepath.endsWith(".pdf")) {
+    plainTextContent = await getTextFromPdfFile(downloadedFilepath);
+  } else {
+    const content = await fs.readFile(downloadedFilepath, "utf-8");
+    const primarySource = getPrimarySource(ruleset);
+    const url = primarySource?.sourceUrl ?? "";
+    primarySource.contentLength = content.length;
+    const articles = detectArticleBasedPage(content, url);
+
+    if (articles.length > 0) {
+      ({ plainTextContent, sourceUrls } = await stitchArticlesAndGenerateContent(articles, sourceUrls, content));
+    } else {
+      const anchorMatch = url.match(/#(.+)$/);
+      const anchorId = anchorMatch ? anchorMatch[1] : undefined;
+      plainTextContent = convertHtmlToText(content, anchorId);
+    }
+
+    const statuteInfo = await extractStatuteInfoFromHTML(content);
+    ruleset.statuteNumber = statuteInfo.number;
+    if (primarySource) primarySource.title = statuteInfo.title;
+  }
+
+  const plaintextFilename = path.join(destPath, `${ruleType}.txt`);
+  await fs.writeFile(plaintextFilename, plainTextContent, "utf-8");
+
+  addArticleSources(sourceUrls, getPrimarySource(ruleset)?.sourceUrl ?? "", ruleset);
+
+  console.log(`  ${domainId}: Converted existing source (${plainTextContent.length} characters)`);
+  storage.saveRuleset(ruleset);
+}
+
 function addArticleSources(sourceUrls: ArticleLink[] | undefined, url: string, ruleset: Ruleset) {
   if (sourceUrls && sourceUrls.length > 0) {
     for (const sourceUrlObj of sourceUrls) {

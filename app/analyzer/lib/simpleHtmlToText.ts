@@ -9,7 +9,7 @@ function extractStructuredText(root: Element | Document): string {
 	}
 
 	const blocks = Array.from(
-		(root as Element).querySelectorAll("h1, h2, h3, h4, h5, h6, p, li"),
+		(root as Element).querySelectorAll("h1, h2, h3, h4, h5, h6, p, li, div.para"),
 	);
 	const segments: string[] = [];
 
@@ -161,14 +161,14 @@ export function convertHtmlToText(html: string, anchorId?: string): string {
 			// Try to find the anchor element
 			const anchorElement = document.getElementById(anchorId);
 			if (anchorElement) {
-				console.log(`  ✅ Found anchor element: ${anchorElement.tagName}`);
+				console.log(`  ✅ Found anchor element: ${anchorElement.tagName}#${anchorElement.id}`);
         
 				// Strategy 1: Look for content div with pattern {anchorId}_content
 				// For ecode360 URLs, skip content element strategy and go directly to litem extraction
 				let contentElement = document.getElementById(`${anchorId}_content`);
 				const isEcode360 = document.querySelector('.litem') !== null;
         
-				if (contentElement && !isEcode360) {
+				if (contentElement && isEcode360) {
 					console.log(`  📍 Found content element: ${anchorId}_content`);
           
 					// Check if the content element has proper section content (not just a fragment)

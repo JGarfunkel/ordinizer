@@ -9,7 +9,7 @@ import fs from "fs-extra";
 import { JSDOM } from "jsdom";
 import { Entity, Domain } from "@civillyengaged/ordinizer-core";
 import { isDomainScoreMatch, scoreDomainDetailed } from "./domainScoring.js";
-import type { SpiderHistoryEntry } from "./spiderHistory.js";
+import type { SpiderDownloadRecord } from "./spiderHistory.js";
 import type { HistoryStatus } from "./spiderHistory.js";
 import type { CrawledPage, ExtractedLink } from "./domainScoring.js";
 import {
@@ -18,6 +18,7 @@ import {
   fromRelativeDownloadsPath,
   loadCachedPageFromHistory,
   extractLinksAndText,
+  extractDocumentTitleWithCache,
   fetchPageContent,
   saveCrawledArtifacts,
   upsertHistoryEntry,
@@ -665,7 +666,7 @@ export function extractContentBlockText(html: string, baseUrl: string, contentSe
 
 export async function readLinkCandidatesForMenuDiscovery(
   storage: any,
-  historyMap: Map<string, SpiderHistoryEntry>,
+  historyMap: Map<string, SpiderDownloadRecord>,
   url: string,
 ): Promise<ExtractedLink[]> {
   const normalizedUrl = normalizeUrlForMatch(url);
@@ -688,7 +689,7 @@ export async function readLinkCandidatesForMenuDiscovery(
 
 async function fetchHtmlForMenuDiscovery(
   storage: any,
-  historyMap: Map<string, SpiderHistoryEntry>,
+  historyMap: Map<string, SpiderDownloadRecord>,
   entityId: string,
   url: string,
   options?: {
@@ -728,9 +729,12 @@ async function fetchHtmlForMenuDiscovery(
     if (await fs.pathExists(htmlPath)) {
       const cachedHtml = await fs.readFile(htmlPath, "utf-8");
       const status = evaluateStatus(cachedHtml);
+      const extractedTitle = await extractDocumentTitleWithCache(storage, historyMap, normalizedUrl, cachedHtml);
+      const resourceTitle = (extractedTitle || existingHistory.title || normalizedUrl).trim();
       if (status && existingHistory.status !== status) {
         upsertHistoryEntry(historyMap, {
           url: normalizedUrl,
+          title: resourceTitle,
           entityId,
           matchedDomainIds: status === "related" ? existingHistory.matchedDomainIds || [] : [],
           status,
@@ -768,9 +772,12 @@ async function fetchHtmlForMenuDiscovery(
   };
   const status = evaluateStatus(html) || "related";
   const timestamp = new Date().toISOString();
+  const extractedTitle = await extractDocumentTitleWithCache(storage, historyMap, normalizedUrl, html);
+  const resourceTitle = (extractedTitle || extracted.title || normalizedUrl).trim();
   const saved = await saveCrawledArtifacts(storage, entityId, page, timestamp);
   upsertHistoryEntry(historyMap, {
     url: normalizedUrl,
+    title: resourceTitle,
     entityId,
     matchedDomainIds: [],
     status,
@@ -784,7 +791,7 @@ async function fetchHtmlForMenuDiscovery(
 
 export async function fetchHtmlForMenuDiscoveryCached(
   storage: any,
-  historyMap: Map<string, SpiderHistoryEntry>,
+  historyMap: Map<string, SpiderDownloadRecord>,
   entityId: string,
   url: string,
   options?: {
@@ -819,7 +826,7 @@ export function extractContentBlockLinkCandidates(
 
 export async function discoverLocalMenuLinks(
   storage: any,
-  historyMap: Map<string, SpiderHistoryEntry>,
+  historyMap: Map<string, SpiderDownloadRecord>,
   entity: Entity,
   entityRecordUrls: Set<string>,
   options?: {

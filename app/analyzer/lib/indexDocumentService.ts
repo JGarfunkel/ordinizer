@@ -1,10 +1,12 @@
+#!/usr/bin/env tsx
+
 import dotenv from "dotenv";
 dotenv.config();
 import { pathToFileURL } from "node:url";
 import { getDefaultStorage, getRealmsFromStorage, IStorageReadOnly } from "@civillyengaged/ordinizer-servercore";
 import { getVectorService, getDocumentKey } from "../services/vectorService.js";
 import { parseCommonCliArgs } from "./scriptArgs.js";
-import { loadHistoryData, getEntityDownloadsRoot } from "./spiderHistory.js";
+import { loadHistoryData, saveHistoryData, getEntityDownloadsRoot, normalizeUrlForMatch } from "./spiderHistory.js";
 
 export interface IndexOptions {
   entity?: string;
@@ -17,6 +19,7 @@ export interface IndexOptions {
   dryRun?: boolean;
   only?: string;
   prune?: boolean;
+  removeUrl?: string;
 }
 
 let VERBOSE = false;
@@ -226,6 +229,59 @@ export async function pruneUnrelatedDocuments(options: IndexOptions = {}): Promi
 }
 
 /**
+ * Mark a URL as "unrelated" in the entity's history file and delete its vector
+ * chunks from the Pinecone index.
+ */
+export async function removeUrlFromIndex(entityId: string, url: string, options: IndexOptions = {}): Promise<void> {
+  VERBOSE = options.verbose ?? VERBOSE;
+  if (!options.realm) {
+    throw new Error("Realm is required to remove a URL from the index");
+  }
+  const storage = getDefaultStorage(options.realm);
+  const vectorService = getVectorService(options.realm);
+  await vectorService.initializeIndex();
+
+  const { historyMap, menuLinks } = await loadHistoryData(storage, entityId);
+  const normalizedUrl = normalizeUrlForMatch(url);
+
+  const entry = historyMap.get(normalizedUrl);
+  if (!entry) {
+    console.error(`❌ URL not found in history for entity "${entityId}": ${url}`);
+    console.error(`   (searched as: ${normalizedUrl})`);
+    process.exit(1);
+  }
+
+  console.log(`🔍 Found history entry for: ${url} (status=${entry.status})`);
+  entry.status = "unrelated";
+  historyMap.set(normalizedUrl, entry);
+
+  if (options.dryRun) {
+    console.log(`🔍 [dry-run] Would mark URL as unrelated in history`);
+  } else {
+    await saveHistoryData(storage, entityId, historyMap, menuLinks);
+    console.log(`✅ Marked as unrelated in history`);
+  }
+
+  const rawFile = entry.localFileText ?? entry.localFile;
+  const filename = rawFile ? rawFile.split("/").pop() : undefined;
+  if (!filename) {
+    console.log(`⚠️  No local file recorded for this URL — nothing to remove from index`);
+    return;
+  }
+
+  const prefix = getDocumentKey(entityId, ["shared"], "shared", filename);
+  log(`Derived index prefix: "${prefix}"`);
+
+  if (options.dryRun) {
+    console.log(`🔍 [dry-run] Would delete index chunks with prefix: ${prefix}`);
+  } else {
+    console.log(`🗑️  Deleting index chunks for: ${filename}`);
+    await vectorService.deleteIndexedChunksForDocument(prefix);
+    console.log(`✅ Removed from index: ${url}`);
+  }
+}
+
+/**
  * Index all entities in the realm, optionally scoped to one domain or entity.
  */
 export async function indexAll(options: IndexOptions = {}): Promise<void> {
@@ -306,13 +362,15 @@ Usage:
   tsx app/analyzer/lib/indexDocumentService.ts [options]
 
 Options:
-  --entity <id>     Index a single entity only (e.g., "NY-Bedford-Town")
-  --domain <id>     Scope indexing to one domain (e.g., "trees")
-  --realm <id>      Realm to use (defaults to CURRENT_REALM env var or default realm)
-  --force           Re-index even if vectors already exist
-  --prune           Delete vector chunks for history entries with status=unrelated or status=index
-  --verbose, -v     Enable detailed logging
-  --help, -h        Show this help message
+  --entity <id>          Index a single entity only (e.g., "NY-Bedford-Town")
+  --domain <id>          Scope indexing to one domain (e.g., "trees")
+  --realm <id>           Realm to use (defaults to CURRENT_REALM env var or default realm)
+  --force                Re-index even if vectors already exist
+  --prune                Delete vector chunks for history entries with status=unrelated or status=index
+  --removeUrl <url>      Mark a URL as "unrelated" in the entity's history and delete its index chunks
+                         Requires --entity <entityId>
+  --verbose, -v          Enable detailed logging
+  --help, -h             Show this help message
 
 Examples:
   # Index all entities in the default realm
@@ -367,6 +425,10 @@ async function parseArgs(): Promise<IndexOptions> {
       case "--prune":
         options.prune = true;
         break;
+      case "--removeUrl":
+      case "--remove-url":
+        options.removeUrl = rest[++i];
+        break;
       default:
         if (rest[i].startsWith("-")) {
           console.error(`Unknown option: ${rest[i]}`);
@@ -401,21 +463,29 @@ async function parseArgs(): Promise<IndexOptions> {
   return options;
 }
 
+export async function main(): Promise<void> {
+  const options = await parseArgs();
+  if (options.list) {
+    await listDocuments(options);
+  } else if (options.prune) {
+    await pruneUnrelatedDocuments(options);
+  } else if (options.removeUrl) {
+    if (!options.entity) {
+      console.error("❌ --entity <entityId> is required when using --removeUrl");
+      process.exit(1);
+    }
+    await removeUrlFromIndex(options.entity, options.removeUrl, options);
+  } else {
+    await indexAll(options);
+  }
+}
+
 const isEntrypoint = process.argv[1]
   ? import.meta.url === pathToFileURL(process.argv[1]).href
   : false;
 
 if (isEntrypoint) {
-  (async () => {
-    const options = await parseArgs();
-    if (options.list) {
-      await listDocuments(options);
-    } else if (options.prune) {
-      await pruneUnrelatedDocuments(options);
-    } else {
-      await indexAll(options);
-    }
-  })().catch((error) => {
+  main().catch((error) => {
     console.error("❌ Fatal error:", error);
     process.exit(1);
   });
