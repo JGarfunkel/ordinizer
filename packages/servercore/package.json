@@ -1,6 +1,6 @@
 {
   "name": "@civillyengaged/ordinizer-servercore",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Shared server-side core utilities and scoring logic for Ordinizer",
   "publishConfig": {
     "access": "public"
