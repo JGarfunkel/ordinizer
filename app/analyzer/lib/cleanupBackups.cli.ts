@@ -11,6 +11,7 @@ interface Args {
     entity?: string;
     delete: DeleteMode;
     keepLastPerDay: boolean;
+    ofdate?: string;
 }
 
 interface Target {
@@ -33,6 +34,8 @@ Options:
   --keep-last-per-day        Instead of deleting all backups, keep the last
                              backup for each calendar day and remove earlier
                              ones from the same day
+  --ofdate <prefix>          Only target backups whose timestamp starts with
+                             this prefix (e.g. "2026" or "2026-05")
   --help                     Show this help message
 
 Examples:
@@ -41,6 +44,9 @@ Examples:
 
   # Keep one backup per day for metadata in a specific domain
   cleanupBackups.cli.ts --realm ny --delete metadata --domain police-transparency --keep-last-per-day
+
+  # Delete only analysis backups from May 2026
+  cleanupBackups.cli.ts --realm ny --delete analysis --ofdate 2026-05
 `.trim();
 
 function parseArgs(args: string[]): Args {
@@ -73,6 +79,14 @@ function parseArgs(args: string[]): Args {
         } else if (arg === "--keep-last-per-day") {
             options.keepLastPerDay = true;
             consumed.push(i);
+        } else if (arg === "--ofdate") {
+            const value = rest[i + 1];
+            if (!value || value.startsWith("--")) {
+                throw new Error("--ofdate requires a value (e.g. \"2026\" or \"2026-05\")");
+            }
+            options.ofdate = value;
+            consumed.push(i, i + 1);
+            i += 1;
         }
     }
 
@@ -132,15 +146,15 @@ async function main() {
     for (const target of targets) {
         if (options.delete === "analysis" || options.delete === "all") {
             const analysisDeleted = options.keepLastPerDay
-                ? await storage.pruneAnalysisBackups(target.domainId, target.entityId)
-                : await storage.deleteAnalysisBackups(target.domainId, target.entityId);
+                ? await storage.pruneAnalysisBackups(target.domainId, target.entityId, options.ofdate)
+                : await storage.deleteAnalysisBackups(target.domainId, target.entityId, options.ofdate);
             analysisTotal += analysisDeleted;
             console.log(`${deleteVerb} ${analysisDeleted} analysis backup file${analysisDeleted === 1 ? "" : "s"} for ${options.realm}/${target.domainId}/${target.entityId}`);
         }
         if (options.delete === "metadata" || options.delete === "all") {
             const metadataDeleted = options.keepLastPerDay
-                ? await storage.pruneMetadataBackups(target.domainId, target.entityId)
-                : await storage.deleteMetadataBackups(target.domainId, target.entityId);
+                ? await storage.pruneMetadataBackups(target.domainId, target.entityId, options.ofdate)
+                : await storage.deleteMetadataBackups(target.domainId, target.entityId, options.ofdate);
             metadataTotal += metadataDeleted;
             console.log(`${deleteVerb} ${metadataDeleted} metadata backup file${metadataDeleted === 1 ? "" : "s"} for ${options.realm}/${target.domainId}/${target.entityId}`);
         }

@@ -276,11 +276,11 @@ export interface IStorage extends IStorageReadOnly {
   // save the ruleset
   saveRuleset(ruleset: Ruleset): Promise<Ruleset>;
 
-  deleteAnalysisBackups(domainId: string, entityId: string): Promise<number>;
-  deleteMetadataBackups(domainId: string, entityId: string): Promise<number>;
+  deleteAnalysisBackups(domainId: string, entityId: string, ofdate?: string): Promise<number>;
+  deleteMetadataBackups(domainId: string, entityId: string, ofdate?: string): Promise<number>;
 
-  pruneAnalysisBackups(domainId: string, entityId: string): Promise<number>;
-  pruneMetadataBackups(domainId: string, entityId: string): Promise<number>;
+  pruneAnalysisBackups(domainId: string, entityId: string, ofdate?: string): Promise<number>;
+  pruneMetadataBackups(domainId: string, entityId: string, ofdate?: string): Promise<number>;
 
 }
 
@@ -1300,33 +1300,35 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
     return { backupPath, mtime: stat.mtime };
   }
 
-  private async deleteBackupFiles(domainId: string, entityId: string, prefix: string): Promise<number> {
+  private async deleteBackupFiles(domainId: string, entityId: string, prefix: string, ofdate?: string): Promise<number> {
     const directoryPath = path.join(this.getRealmDir(), domainId, entityId);
     if (!await fs.pathExists(directoryPath)) {
       return 0;
     }
 
+    const matchPrefix = ofdate ? `${prefix}${ofdate}` : prefix;
     const files = await fs.readdir(directoryPath);
-    const backupFiles = files.filter(file => file.startsWith(prefix) && file.endsWith(".json"));
+    const backupFiles = files.filter(file => file.startsWith(matchPrefix) && file.endsWith(".json"));
 
     await Promise.all(backupFiles.map(file => fs.remove(path.join(directoryPath, file))));
     return backupFiles.length;
   }
 
-  async deleteAnalysisBackups(domainId: string, entityId: string): Promise<number> {
-    return this.deleteBackupFiles(domainId, entityId, "analysis-backup-");
+  async deleteAnalysisBackups(domainId: string, entityId: string, ofdate?: string): Promise<number> {
+    return this.deleteBackupFiles(domainId, entityId, "analysis-backup-", ofdate);
   }
 
-  async deleteMetadataBackups(domainId: string, entityId: string): Promise<number> {
-    return this.deleteBackupFiles(domainId, entityId, "metadata-backup-");
+  async deleteMetadataBackups(domainId: string, entityId: string, ofdate?: string): Promise<number> {
+    return this.deleteBackupFiles(domainId, entityId, "metadata-backup-", ofdate);
   }
 
-  private async pruneBackupFiles(domainId: string, entityId: string, prefix: string): Promise<number> {
+  private async pruneBackupFiles(domainId: string, entityId: string, prefix: string, ofdate?: string): Promise<number> {
     const directoryPath = path.join(this.getRealmDir(), domainId, entityId);
     if (!await fs.pathExists(directoryPath)) return 0;
 
+    const matchPrefix = ofdate ? `${prefix}${ofdate}` : prefix;
     const files = await fs.readdir(directoryPath);
-    const backupFiles = files.filter(f => f.startsWith(prefix) && f.endsWith(".json")).sort();
+    const backupFiles = files.filter(f => f.startsWith(matchPrefix) && f.endsWith(".json")).sort();
 
     // Group files by calendar day (YYYY-MM-DD prefix of the timestamp)
     const byDay = new Map<string, string[]>();
@@ -1348,12 +1350,12 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
     return toDelete.length;
   }
 
-  async pruneAnalysisBackups(domainId: string, entityId: string): Promise<number> {
-    return this.pruneBackupFiles(domainId, entityId, "analysis-backup-");
+  async pruneAnalysisBackups(domainId: string, entityId: string, ofdate?: string): Promise<number> {
+    return this.pruneBackupFiles(domainId, entityId, "analysis-backup-", ofdate);
   }
 
-  async pruneMetadataBackups(domainId: string, entityId: string): Promise<number> {
-    return this.pruneBackupFiles(domainId, entityId, "metadata-backup-");
+  async pruneMetadataBackups(domainId: string, entityId: string, ofdate?: string): Promise<number> {
+    return this.pruneBackupFiles(domainId, entityId, "metadata-backup-", ofdate);
   }
 
   async createAnalysis(analysis: InsertAnalysis): Promise<Analysis> {
