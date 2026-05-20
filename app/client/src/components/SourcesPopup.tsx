@@ -19,7 +19,7 @@ export interface SourcesPopupProps {
 export function SourcesPopup({ entity, domainName, sources, open, onOpenChange }: SourcesPopupProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto z-[1100]" overlayClassName="z-[1050] bg-black/50">
         <DialogHeader>
           <DialogTitle className="text-lg font-semibold">
             Sources for {entity}

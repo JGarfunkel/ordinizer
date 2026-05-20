@@ -1,12 +1,12 @@
-import { AlertCircle, HelpCircle, FileText } from "lucide-react";
+import { AlertCircle, HelpCircle, FileText, Scroll, ChevronDown } from "lucide-react";
 import { SourcesPopup, SourcesIconButton } from "../../components/SourcesPopup";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from '@tanstack/react-query';
 import { apiPath } from "../../lib/apiConfig";
 import { Card, CardContent } from "../../ui";
 import StatuteLink from "../../components/StatuteLink";
 import { ScoreVisualization } from "../../components/ScoreVisualization";
-import type { Analysis, Entity, Realm } from "@civillyengaged/ordinizer-core";
+import type { Analysis, Entity, Realm, Ruleset } from "@civillyengaged/ordinizer-core";
 import type { ScoreData, VersionsData } from "./types";
 
 function isNotSpecified(answer: string): boolean {
@@ -46,6 +46,12 @@ export function SidebarAnalysis({
   onQuestionMarkClick,
 }: SidebarAnalysisProps) {
 
+  const [bestPracticesExpanded, setBestPracticesExpanded] = useState(!selectedEntityId);
+
+  useEffect(() => {
+    setBestPracticesExpanded(!selectedEntityId);
+  }, [selectedEntityId]);
+
   // State for sources popup
   const [selectedSources, setSelectedSources] = useState<{
     entity: string;
@@ -61,6 +67,20 @@ export function SidebarAnalysis({
     staleTime: 1000 * 60 * 5,
     refetchOnWindowFocus: true,
   });
+
+  // Fetch statute metadata to get the source URL for the statute link
+  const statuteEntityId = usesStateCode
+    ? `${currentRealm?.territory}-State`
+    : analysisData?.municipality?.id;
+  const statuteDomainId = analysisData?.domain?.id;
+  const { data: statuteMetadata } = useQuery<Ruleset>({
+    queryKey: [apiPath(`statute-metadata/${statuteDomainId}/${statuteEntityId}`), realmId],
+    enabled: !!statuteDomainId && !!statuteEntityId,
+    staleTime: 1000 * 60 * 5,
+  });
+  const statuteSourceUrl =
+    statuteMetadata?.sources?.find((s) => s.type === "statute")?.sourceUrl ??
+    statuteMetadata?.sources?.[0]?.sourceUrl;
 
   return (
     <Card className="shadow-sm border border-gray-200">
@@ -79,7 +99,7 @@ export function SidebarAnalysis({
                   : analysisData?.municipality?.displayName}
               </h3>
               <h4 className="text-base text-civic-blue capitalize flex items-center justify-center gap-2">
-                {analysisData?.domain?.displayName} Regulations
+                {analysisData?.entity?.displayName} - {analysisData?.domain?.displayName}
                 {(() => {
                   if (!datasources || !selectedEntityId || !analysisData?.domain?.id) return null;
                   const entitySources = datasources[selectedEntityId]?.domains?.[analysisData.domain.id];
@@ -102,6 +122,17 @@ export function SidebarAnalysis({
                   }
                   return null;
                 })()}
+                {statuteSourceUrl && (
+                  <a
+                    href={statuteSourceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-civic-blue hover:text-blue-800"
+                    title="View statute"
+                  >
+                    <Scroll size={16} />
+                  </a>
+                )}
               </h4>
               {usesStateCode ? (
                 <div className="inline-flex items-center px-3 py-2 mt-2 rounded-full text-sm font-medium bg-blue-600 text-white">
@@ -162,7 +193,7 @@ export function SidebarAnalysis({
                     Environmental Protection Score
                   </h5>
                   <div className="text-lg font-bold text-green-700" title="score out of 10.0">
-                    {scoreData.overallScore.toFixed(1)}
+                    {(10 * scoreData.overallScore).toFixed(1)}
                   </div>
                 </div>
               </div>
@@ -358,12 +389,23 @@ export function SidebarAnalysis({
                   {analysisData.alignmentSuggestions.bestPractices &&
                     analysisData.alignmentSuggestions.bestPractices.length > 0 && (
                       <div>
-                        <p className="font-medium text-purple-700 mb-1">Best Practices</p>
-                        <ul className="list-disc list-inside text-gray-600 space-y-1">
-                          {analysisData.alignmentSuggestions.bestPractices.map((practice, i) => (
-                            <li key={i}>{practice}</li>
-                          ))}
-                        </ul>
+                        <button
+                          className="flex items-center gap-1 font-medium text-purple-700 mb-1 w-full text-left"
+                          onClick={() => setBestPracticesExpanded((v) => !v)}
+                        >
+                          <ChevronDown
+                            size={14}
+                            className={`transition-transform ${bestPracticesExpanded ? "" : "-rotate-90"}`}
+                          />
+                          Best Practices
+                        </button>
+                        {bestPracticesExpanded && (
+                          <ul className="list-disc list-inside text-gray-600 space-y-1">
+                            {analysisData.alignmentSuggestions.bestPractices.map((practice, i) => (
+                              <li key={i}>{practice}</li>
+                            ))}
+                          </ul>
+                        )}
                       </div>
                     )}
                 </div>
