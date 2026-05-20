@@ -9,7 +9,7 @@ function extractStructuredText(root: Element | Document): string {
 	}
 
 	const blocks = Array.from(
-		(root as Element).querySelectorAll("h1, h2, h3, h4, h5, h6, p, li, div.para"),
+		(root as Element).querySelectorAll("h1, h2, h3, h4, h5, h6, p, li, div.para, section.definition, header"),
 	);
 	const segments: string[] = [];
 
@@ -27,6 +27,27 @@ function extractStructuredText(root: Element | Document): string {
 		if (block.tagName.toLowerCase() === "li") {
 			segments.push(`- ${raw}`);
 			continue;
+		}
+
+		if (block.tagName.toLowerCase() === "section" && block.classList.contains("definition")) {
+			const term = (block.querySelector("dfn.term")?.textContent || "").replace(/\s+/g, " ").trim();
+			const def = (block.querySelector(".deftext")?.textContent || "").replace(/\s+/g, " ").trim();
+			if (term && def) {
+				segments.push(`${term}: ${def}`);
+				continue;
+			}
+		}
+
+		if (block.tagName.toLowerCase() === "div" && block.classList.contains("para")) {
+			const litem = block.closest(".litem");
+			if (litem) {
+				const letterEl = litem.querySelector("a.litem_number");
+				const letter = (letterEl?.textContent || "").replace(/\s+/g, " ").trim();
+				if (letter) {
+					segments.push(`${letter} ${raw}`);
+					continue;
+				}
+			}
 		}
 
 		segments.push(raw);

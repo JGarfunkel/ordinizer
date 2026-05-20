@@ -56,6 +56,7 @@ export interface AnalyzeOptions {
   fixNoSources?: boolean; // Scan analyses and replace NO_SOURCES_AVAILABLE with NOT_SPECIFIED where appropriate
   recalcScoreOnly?: boolean; // Recalculate normalized scores from existing analyses without re-running AI
   forceBelow?: number; // Re-analyze questions whose score is below this normalised threshold (0–1)
+  cleanOnly?: boolean; // Refresh metadata fields (municipality, domain) from storage without making AI calls
 }
 
 // Global verbose flag
@@ -339,6 +340,60 @@ async function recalcScoreOnly(options: AnalyzeOptions) {
   console.log(`   Skipped: ${totalSkipped} entities`);
 }
 
+// Refresh metadata fields (municipality, domain) from storage records without re-running AI
+async function cleanOnlyAnalysis(options: AnalyzeOptions) {
+  const st = await getStorage(options);
+  const domains = options.domain
+    ? await getVisibleDomainIds(st, options.domain)
+    : await getVisibleDomainIds(st);
+
+  let totalUpdated = 0;
+  let totalSkipped = 0;
+
+  for (const domain of domains) {
+    console.log(`\n📂 Processing domain: ${domain}`);
+    const domainRecord = await st.getDomain(domain);
+    const entityIds = await getRequestedEntityIds(options, st, domain);
+
+    for (const entityId of entityIds) {
+      const analysis = await st.getAnalysis(domain, entityId);
+      if (!analysis) {
+        log(`No analysis found for ${entityId}, skipping`);
+        totalSkipped++;
+        continue;
+      }
+
+      const entityRecord = await st.getEntity(entityId);
+      if (!entityRecord) {
+        console.log(`⚠️  ${entityId}: Entity record not found, skipping`);
+        totalSkipped++;
+        continue;
+      }
+
+      const domainInfo = buildDomainInfo(domain, domainRecord);
+      const municipalityInfo = { id: entityId, displayName: entityRecord.displayName };
+
+      analysis.entityId = entityId;
+      analysis.domainId = domain;
+      analysis.municipality = municipalityInfo;
+      (analysis as any).entity = municipalityInfo;
+      analysis.domain = domainInfo as any;
+
+      if (options.dryRun) {
+        console.log(`🧪 ${entityId}: dry-run — municipality="${municipalityInfo.displayName}", domain="${domainInfo.displayName}"`);
+      } else {
+        await st.saveAnalysis(analysis);
+        console.log(`✅ ${entityId}: refreshed`);
+      }
+      totalUpdated++;
+    }
+  }
+
+  console.log(`\n🧹 Clean-only pass complete!`);
+  console.log(`   Updated: ${totalUpdated} entities`);
+  console.log(`   Skipped: ${totalSkipped} entities`);
+}
+
 // Fix question order in existing analysis.json files
 async function fixQuestionOrder(options: AnalyzeOptions) {
 
@@ -592,6 +647,12 @@ export async function analyzeStatutes(options: AnalyzeOptions = {}) {
     );
   }
 
+  if (options.cleanOnly) {
+    console.log(`🧹 Refreshing metadata fields from storage (clean-only, no AI calls)`);
+    await cleanOnlyAnalysis(options);
+    return;
+  }
+
   if (options.recalcScoreOnly) {
     console.log(`📊 Recalculating normalized scores from existing analyses`);
     await recalcScoreOnly(options);
@@ -808,7 +869,7 @@ async function processEntity(
         log(`Statute modified: ${docStat.mtime.toISOString()}`);
         log(`Analysis modified: ${analysisStat.mtime.toISOString()}`);
         // Continue with analysis - don't return here
-      } else if (!skipRecent && ageInDays < 30) {
+      } else if (!skipRecent && ageInDays < 30 && options.forceBelow === undefined) {
         console.log(`⏭️  ${entity}: Analysis is recent (${ageInDays.toFixed(1)} days old) and statute unchanged, skipping`);
         if (options.reindex) {
           await indexEntity(entity, { ...options, force: true });
@@ -1011,15 +1072,13 @@ async function processEntity(
         if (typeof log === "function") log(`Using metadata.grade as ${GRADING_ID} grade: ${grades[GRADING_ID]}`);
       }
 
+      const domainRecord = await st.getDomain(domain);
       return {
         municipality: {
           id: entity,
           displayName: `${metadata.municipalityName} - ${metadata.municipalityType}`,
         },
-        domain: {
-          id: domain,
-          displayName: (typeof formatDomainName === "function" ? formatDomainName(domain) : domain),
-        },
+        domain: buildDomainInfo(domain, domainRecord),
         grades,
         questions: allAnswers,
         lastUpdated: new Date().toISOString(),
@@ -1549,7 +1608,7 @@ async function generateVectorAnalysis(
     const toStillKeep: any[] = [];
     for (const kept of questionsToKeep) {
       const raw = (kept as any).score;
-      const normalised = raw === undefined || raw === null ? null : (raw > 1 ? raw / 10 : raw);
+      const normalised = raw ?? null;
       if (normalised === null || normalised < threshold) {
         const baseDef = questionDefMap.get(kept.id);
         if (baseDef) toForce.push(baseDef);
@@ -1682,10 +1741,7 @@ async function generateVectorAnalysis(
       id: entity,
       displayName: `${metadata.municipality} - ${metadata.municipalityType}`,
     },
-    domain: {
-      id: domain,
-      displayName: formatDomainName(domain),
-    },
+    domain: buildDomainInfo(domain, domainConfig),
     grades,
     questions: allAnswers,
     scores: scores,
@@ -1948,11 +2004,8 @@ async function getTimeAgoString(
   }
 }
 
-function formatDomainName(domain: string): string {
-  return domain
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
+function buildDomainInfo(domainId: string, record?: { displayName?: string }): { id: string; displayName: string } {
+  return { id: domainId, displayName: record?.displayName ?? domainId };
 }
 
 function showHelp(): void {
@@ -1975,6 +2028,7 @@ Options:
   --verbose, -v             Enable detailed logging of processing steps
   --fixorder                Fix question order in existing analysis.json files to match questions.json
   --fix-no-sources          Replace "No relevant sources available" with "Not specified" in statutory domains
+  --clean-only              Refresh metadata fields (municipality, domain) from storage; preserves answers, no AI calls
   --recalc-score-only       Recalculate normalized scores from existing analyses without re-running AI
   --setgrades               Copy grades from metadata.json to analysis.json ${GRADING_ID} grades field
   --usemeta                 Compare analysis against meta-analysis best practices
@@ -2089,6 +2143,9 @@ async function parseArgs() {
         break;
       case "--fix-no-sources":
         options.fixNoSources = true;
+        break;
+      case "--clean-only":
+        options.cleanOnly = true;
         break;
       case "--recalc-score-only":
         options.recalcScoreOnly = true;

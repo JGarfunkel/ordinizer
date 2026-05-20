@@ -96,7 +96,7 @@ export async function indexEntity(
         domain,
         "statute",
         { url: url || "", fileName: "statute.txt", fetchedAt: fetchedAt || "" },
-        options.dryRun
+        { verbose: options.verbose, dryRun: options.dryRun }
       );
       console.log(`✅ ${entityId}/${domain}: Statute indexed`);
     }
@@ -155,7 +155,7 @@ export async function indexEntity(
         domainsToIndex,
         "shared",
         { url: url || "", fileName: filename, fetchedAt: fetchedAt || "" },
-        options.dryRun
+        { verbose: options.verbose, dryRun: options.dryRun }
       );
       downloadCount++;
     });

@@ -42,7 +42,9 @@ export const NO_SOURCES_AVAILABLE = "No relevant sources available";
 export const NOT_SPECIFIED = "Not specified in the provided sources.";
 
 export function generateAnalysisPrompt(context: AnalysisPromptContext, doScoring?: boolean): AnalysisPrompt {
-  const scoreText = doScoring && context.scoreInstructions ? `\n\nSCORING GUIDANCE: ${context.scoreInstructions}` : "";
+  const scoreText = doScoring && context.scoreInstructions
+    ? `\n\nSCORING GUIDANCE: ${context.scoreInstructions}\nReturn a normalized score 0.0–1.0 in the "score" field reflecting how well the statute addresses this question.`
+    : "";
   const extraSourceText = context.additionalSourceCount && context.additionalSourceCount > 0
     ? "\n- Additional sources are provided. Check them for relevant requirements."
     : "";
@@ -176,7 +178,7 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
       scoreInstructions: q.scoreInstructions,
       additionalSourceCount: input.additionalSources?.data?.length || 0,
       isGeneralDomain: input.isGeneralDomain,
-    });
+    }, !!q.scoreInstructions);
 
     let sourceBody = "";
     let retrievalTokens = 0;
@@ -304,6 +306,9 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
     await sleep(QUESTION_PAUSE_MS);
 
     const parsed = aiResult.object;
+    if (verbose) {
+      console.log(`[VERBOSE] ${input.entity} Q${i + 1}: AI response parsed successfully:`, parsed);
+    }
     const answer = parsed.answer || NOT_SPECIFIED;
     const confidence = Math.max(0, Math.min(100, parsed.confidence || 50));
     const sourceRefs = parsed.sourceRefs?.length ? parsed.sourceRefs : fallbackSourceRefs;
@@ -315,10 +320,20 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
       vectorTokensUsed: completionTokens + retrievalTokens,
     };
 
+    // Capture score whenever the AI returned one (happens when scoreInstructions or bestPractice prompted it)
+    if (typeof parsed.score === "number") {
+      result.score = parsed.score;
+    }
+
     if (bestPractice) {
       if (!input.isGeneralDomain) result.gap = parsed.gap ?? "";
-      result.score = typeof parsed.score === "number" ? parsed.score : 0;
+      if (typeof parsed.score !== "number") result.score = 0; // default to 0 when bestPractice expected a score but AI omitted it
       result.nextPrompts = Array.isArray(parsed.nextPrompts) ? parsed.nextPrompts : [];
+    }
+
+    // No statute or sources found → score must be 0, regardless of AI output
+    if (answer === NOT_SPECIFIED || answer === NO_SOURCES_AVAILABLE) {
+      result.score = 0;
     }
 
     results.push(result);

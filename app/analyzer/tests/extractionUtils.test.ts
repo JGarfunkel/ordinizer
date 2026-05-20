@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { addOrUpdateSource, shouldUseCurlForUrl, extractStatuteInfoFromHTML } from "../lib/extractionUtils.js";
 import { convertHtmlToText } from "../lib/simpleHtmlToText.js";
+import { chunkText } from "../lib/chunkText.js";
 import type { Ruleset } from "@civillyengaged/ordinizer-core";
 import * as extractionConfig from "../lib/extractionConfig.js";
 import * as servercore from "@civillyengaged/ordinizer-servercore";
@@ -109,5 +110,36 @@ describe("extractStatuteInfoFromHTML (file-based)", () => {
 
     expect(info).toBeDefined();
     expect(text.length).toBeGreaterThan(200);
+  });
+});
+
+const htmlFileWithDefinitions = process.env.TEST_HTML_FILE || "..\\..\\..\\nyseeds\\data\\westchester-municipal-environmental\\wetland-protection\\NY-Bedford-Town\\statute.html";
+
+describe("convertHtmlToText (file-based)", () => {
+  (htmlFileWithDefinitions ? it :/*  */ it.skip)("extracts info and converts to text from provided HTML file with definitions", async () => {
+    const html = await fs.readFile(htmlFileWithDefinitions!, "utf-8");
+    console.log(`\nRead ${html.length} bytes from ${htmlFileWithDefinitions}`);
+
+    const info = await extractStatuteInfoFromHTML(html);
+    console.log("Extracted statute info:", info);
+
+    const result = convertHtmlToText(html);
+    console.log(`Converted text length: ${result.length}`);
+    console.log("First 500 chars of converted text:\n", result.substring(0, 500));
+
+    const chunks = chunkText(result, 2000);
+    console.log(`Chunked into ${chunks.length} chunks`);
+
+    const inAnyChunk = (s: string) => chunks.some(c => c.includes(s));
+
+    expect(inAnyChunk("Word usage; definitions.")).toBe(true);
+    expect(inAnyChunk("A. Except where specifically defined herein, all words used in this chapter shall carry their customary meanings. Words used in the present tense include the future and the plural includes the singular. The word \"shall\" is intended to be mandatory.")).toBe(true);
+    expect(inAnyChunk("B. As used in this chapter, the following terms shall have the meanings indicated:")).toBe(true);
+    expect(inAnyChunk("APPLICANT: See \"person.\"")).toBe(true);
+    expect(inAnyChunk("BEDFORD REGULATED WETLAND AREA MAP: A series of maps, dated January 1991, prepared by Evans Associates that show areas which may constitute regulated wetlands.")).toBe(true);
+    expect(inAnyChunk("BUILDING: Any structure having a roof, supported by columns or by walls or self-supporting, and intended for the shelter, housing or enclosure of natural persons, animals or chattel.")).toBe(true);
+    expect(inAnyChunk("BUILDING INSPECTOR: The duly appointed Building Inspector of the Town of Bedford.")).toBe(true);
+
+
   });
 });

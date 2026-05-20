@@ -24,6 +24,7 @@ import path from "path";
 import { getDefaultStorage } from "@civillyengaged/ordinizer-servercore";
 import type { Analysis, AnalyzedQuestion, Question, Ruleset } from "@civillyengaged/ordinizer-core";
 import { parseCommonCliArgs } from "./scriptArgs.js";
+import { NO_SOURCES_AVAILABLE, NOT_SPECIFIED } from "./analyzeQuestions.js";
 import type { SpiderHistoryFile, SpiderDownloadRecord } from "./spiderHistory.js";
 
 // ---------------------------------------------------------------------------
@@ -42,10 +43,7 @@ interface SourceLink {
 
 function scoreBar(score: number | undefined): string {
   if (score === undefined || score === null) return "n/a";
-  // score expected 0–10 (or 0–1 — normalise both)
-  const normalised = score > 1 ? score / 10 : score;
-  const pct = Math.round(normalised * 100);
-  return `${pct}%`;
+  return `${Math.round(score * 10)}%`;
 }
 
 function confidenceLabel(conf: number | undefined): string {
@@ -235,13 +233,16 @@ function renderEntitySection(
 
 interface QuestionScoreData {
   text: string;
-  scores: number[]; // normalised 0–1
+  scores: number[];
+  naCount: number;
+  bestEntity: { displayName: string; score: number } | null;
 }
 
 function renderScoreDistribution(
   questions: Question[],
   questionScores: Map<string, QuestionScoreData>,
-  entityScores: Array<{ displayName: string; score: number }>,
+  entityScores: Array<{ displayName: string; score: number; lowConfidence: boolean }>,
+  noDataCount: number,
 ): string {
   const lines: string[] = ["---\n", "## Score Distribution\n"];
 
@@ -249,15 +250,18 @@ function renderScoreDistribution(
   if (entityScores.length > 0) {
     lines.push("### Overall Scores by Entity\n");
     const sorted = [...entityScores].sort((a, b) => b.score - a.score);
+    const hasLowConf = sorted.some((e) => e.lowConfidence);
     lines.push("| Entity | Score |");
     lines.push("|--------|-------|");
     for (const e of sorted) {
-      lines.push(`| ${e.displayName} | ${scoreBar(e.score)} |`);
+      const label = e.lowConfidence ? `${e.displayName} \\*` : e.displayName;
+      lines.push(`| ${label} | ${scoreBar(e.score)} |`);
     }
     const avg = entityScores.reduce((s, e) => s + e.score, 0) / entityScores.length;
     const min = Math.min(...entityScores.map((e) => e.score));
     const max = Math.max(...entityScores.map((e) => e.score));
     lines.push(`\n**Avg:** ${scoreBar(avg)} · **Min:** ${scoreBar(min)} · **Max:** ${scoreBar(max)}\n`);
+    if (hasLowConf) lines.push("\\* Score > 0 but average confidence ≤ 10% — treat with caution.\n");
   }
 
   // Per-question distribution table (quartile buckets)
@@ -275,55 +279,55 @@ function renderScoreDistribution(
 
   if (orderedQIds.length > 0) {
     lines.push("### Per-Question Score Distribution\n");
-    lines.push("| Q# | Question | Count | Avg | Min | Max | 0–25% | 25–50% | 50–75% | 75–100% |");
-    lines.push("|----|----------|-------|-----|-----|-----|-------|--------|--------|---------|");
+    lines.push("| Q# | Question | Count | Avg | Min | Max | 0–25% | 25–50% | 50–75% | 75–100% | n/a |");
+    lines.push("|----|----------|-------|-----|-----|-----|-------|--------|--------|---------|-----|");
 
     for (const qid of orderedQIds) {
-      const { text, scores } = questionScores.get(qid)!;
-      const avg = scores.reduce((s, n) => s + n, 0) / scores.length;
-      const min = Math.min(...scores);
-      const max = Math.max(...scores);
-      const b0 = scores.filter((s) => s < 0.25).length;
-      const b1 = scores.filter((s) => s >= 0.25 && s < 0.5).length;
-      const b2 = scores.filter((s) => s >= 0.5 && s < 0.75).length;
-      const b3 = scores.filter((s) => s >= 0.75).length;
+      const { text, scores, naCount } = questionScores.get(qid)!;
+      const avg = scores.length > 0 ? scores.reduce((s, n) => s + n, 0) / scores.length : 0;
+      const min = scores.length > 0 ? Math.min(...scores) : 0;
+      const max = scores.length > 0 ? Math.max(...scores) : 0;
+      const b0 = scores.filter((s) => s < 2.5).length;
+      const b1 = scores.filter((s) => s >= 2.5 && s < 5.0).length;
+      const b2 = scores.filter((s) => s >= 5.0 && s < 7.5).length;
+      const b3 = scores.filter((s) => s >= 7.5).length;
       const shortText = text.length > 60 ? text.slice(0, 57) + "…" : text;
-      lines.push(`| ${qid} | ${shortText} | ${scores.length} | ${scoreBar(avg)} | ${scoreBar(min)} | ${scoreBar(max)} | ${b0} | ${b1} | ${b2} | ${b3} |`);
+      lines.push(`| ${qid} | ${shortText} | ${scores.length} | ${scoreBar(avg)} | ${scoreBar(min)} | ${scoreBar(max)} | ${b0} | ${b1} | ${b2} | ${b3} | ${naCount} |`);
     }
     lines.push("");
   }
 
-  // Decile distribution table — rows = decile bucket, columns = Overall + each question
+  // Decile distribution table — rows = Overall + each question, columns = decile buckets
   if (orderedQIds.length > 0 || entityScores.length > 0) {
     lines.push("### Decile Distribution\n");
 
     const decileLabels = ["0–10%", "10–20%", "20–30%", "30–40%", "40–50%",
                           "50–60%", "60–70%", "70–80%", "80–90%", "90–100%"];
 
-    const colHeaders = ["Overall", ...orderedQIds.map((id) => `Q${id}`), "**Total**"];
-    lines.push(`| Decile | ${colHeaders.join(" | ")} |`);
-    lines.push(`|--------|${colHeaders.map(() => "------").join("|")}|`);
+    const bucketCount = (scores: number[], d: number) => {
+      const lo = d;
+      const hi = d === 9 ? 10.001 : d + 1;
+      return scores.filter((s) => s >= lo && s < hi).length;
+    };
 
-    for (let d = 0; d < 10; d++) {
-      const lo = d / 10;
-      const hi = d === 9 ? 1.001 : (d + 1) / 10; // inclusive upper bound for top bucket
-      const countInBucket = (scores: number[]) =>
-        scores.filter((s) => s >= lo && s < hi).length;
+    lines.push(`| Question | ${decileLabels.join(" | ")} | No data | Best |`);
+    lines.push(`|----------|${decileLabels.map(() => "------").join("|")}|---------|------|`);
 
-      const overallCount = entityScores.length > 0
-        ? countInBucket(entityScores.map((e) => e.score))
-        : 0;
+    // Overall row
+    if (entityScores.length > 0) {
+      const overallScores = entityScores.map((e) => e.score);
+      const deciles = Array.from({ length: 10 }, (_, d) => bucketCount(overallScores, d));
+      const best = entityScores.reduce((a, b) => b.score > a.score ? b : a);
+      lines.push(`| **Overall** | ${deciles.join(" | ")} | ${noDataCount} | ${best.displayName} (${scoreBar(best.score)}) |`);
+    }
 
-      const qCounts = orderedQIds.map((qid) => countInBucket(questionScores.get(qid)!.scores));
-      const total = (entityScores.length > 0 ? overallCount : 0) + qCounts.reduce((s, n) => s + n, 0);
-
-      const cells = [
-        String(entityScores.length > 0 ? overallCount : "—"),
-        ...qCounts.map(String),
-        `**${total}**`,
-      ];
-
-      lines.push(`| ${decileLabels[d]} | ${cells.join(" | ")} |`);
+    // Per-question rows
+    for (const qid of orderedQIds) {
+      const { text, scores, naCount, bestEntity } = questionScores.get(qid)!;
+      const deciles = Array.from({ length: 10 }, (_, d) => bucketCount(scores, d));
+      const shortText = text.length > 50 ? text.slice(0, 47) + "…" : text;
+      const bestCell = bestEntity ? `${bestEntity.displayName} (${scoreBar(bestEntity.score)})` : "—";
+      lines.push(`| Q${qid}: ${shortText} | ${deciles.join(" | ")} | ${naCount} | ${bestCell} |`);
     }
     lines.push("");
   }
@@ -385,19 +389,20 @@ async function generateDomainReport(
   reportLines.push(`# Domain Report: ${domain.displayName}\n`);
   reportLines.push(`**Domain ID:** \`${domainId}\`  `);
   reportLines.push(`**Realm:** \`${realmId}\`  `);
-  reportLines.push(`**Generated:** ${new Date().toISOString()}  `);
+  reportLines.push(`**Generated:** ${new Date().toLocaleString()}  `);
   if (domain.description) {
     reportLines.push(`\n${domain.description}\n`);
   }
   reportLines.push("");
 
   const questionsFilePath = path.join(realmDir, domainId, "questions.json");
-  reportLines.push(renderQuestions(questions, questionsFilePath, localDir));
 
   // --- Per-entity sections ---
   let entitiesUpdated = 0;
+  let noDataCount = 0;
   const questionScores = new Map<string, QuestionScoreData>();
-  const entityScores: Array<{ displayName: string; score: number }> = [];
+  const entityScores: Array<{ displayName: string; score: number; lowConfidence: boolean }> = [];
+  const entitySections: string[] = [];
 
   for (const entityId of [...allEntityIds].sort()) {
     const entity = entityById.get(entityId);
@@ -455,19 +460,33 @@ async function generateDomainReport(
     }
 
     // Collect scores for distribution summary
-    if (analysis) {
+    if (!analysis) {
+      noDataCount++;
+    } else {
       const overall = analysis.overallScore ?? analysis.scores?.overallScore ?? analysis.normalizedScore;
       if (overall !== undefined && overall !== null) {
-        entityScores.push({ displayName, score: overall > 1 ? overall / 10 : overall });
+        const avgConf = analysis.scores?.averageConfidence ?? null;
+        const lowConfidence = overall > 0 && avgConf !== null && avgConf <= 10;
+        entityScores.push({ displayName, score: overall, lowConfidence });
+      } else {
+        noDataCount++;
       }
       for (const aq of analysis.questions ?? []) {
         const qid = String(getQuestionId(aq));
         const raw = (aq as any).score;
-        const normalised = (raw === undefined || raw === null) ? 0 : (raw > 1 ? raw / 10 : raw);
         if (!questionScores.has(qid)) {
-          questionScores.set(qid, { text: aq.question, scores: [] });
+          questionScores.set(qid, { text: aq.question, scores: [], naCount: 0, bestEntity: null });
         }
-        questionScores.get(qid)!.scores.push(normalised);
+        const entry = questionScores.get(qid)!;
+        if (aq.answer === NO_SOURCES_AVAILABLE || aq.answer === NOT_SPECIFIED) {
+          entry.naCount++;
+        } else {
+          const normalised = (raw ?? 0) * 10;
+          entry.scores.push(normalised);
+          if (!entry.bestEntity || normalised > entry.bestEntity.score) {
+            entry.bestEntity = { displayName, score: normalised };
+          }
+        }
       }
     }
 
@@ -475,12 +494,14 @@ async function generateDomainReport(
 
     const analysisFilePath = path.join(realmDir, domainId, entityId, "analysis.json");
     const metadataFilePath = path.join(realmDir, domainId, entityId, "metadata.json");
-    reportLines.push(
+    entitySections.push(
       renderEntitySection(entityId, displayName, sourcesForReport, analysis, questions, ruleset, analysisFilePath, metadataFilePath, localDir),
     );
   }
 
-  reportLines.push(renderScoreDistribution(questions, questionScores, entityScores));
+  reportLines.push(renderScoreDistribution(questions, questionScores, entityScores, noDataCount));
+  reportLines.push(renderQuestions(questions, questionsFilePath, localDir));
+  reportLines.push(...entitySections);
 
   const reportPath = path.join(localDir, `report-${domainId}.md`);
   await fs.writeFile(reportPath, reportLines.join("\n"), "utf-8");

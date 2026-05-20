@@ -108,5 +108,6 @@ describe("spiderPageAnalysis with real mock HTML files", () => {
     expect(selector).not.toBe("#freeform-slider");
 
   });
+  
 });
 

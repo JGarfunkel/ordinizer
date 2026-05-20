@@ -61,6 +61,9 @@ export function getVectorService(realm: string) {
 	return vectorMap.get(realm)!;
 }
 
+import { chunkText } from "../lib/chunkText.js";
+export { chunkText };
+
 export class VectorService {
 	private pinecone: Pinecone;
 	private indexName = '';
@@ -322,7 +325,7 @@ export class VectorService {
 	 */
 	async deleteIndexedChunksForDocument(
 		prefix: string,
-	) {
+	): Promise<number> {
 		try {
 			const index = this.getIndex();
 
@@ -359,8 +362,10 @@ export class VectorService {
 			} else {
 				console.log(`[deleteIndexedChunks] No vectors found for prefix "${prefix}" — nothing deleted`);
 			}
+			return uniqueIds.length;
 		} catch (error) {
 			console.error(`[deleteIndexedChunks] Error during deletion for prefix "${prefix}":`, error);
+			return 0;
 		}
 	}
 
@@ -462,61 +467,7 @@ export class VectorService {
 
 	/** Split statute text into token-safe chunks for embedding */
 	chunkText(text: string, maxChunkSize = 1000): string[] {
-		const chunks: string[] = [];
-		const maxTokens = 5000;
-		console.log(`Starting intelligent chunking: ${text.length} characters, max chunk size: ${maxChunkSize}`);
-
-		let sections: string[];
-		const doubleNL = text.split(/\.\n\n/).filter(s => s.trim())
-			.map((s, i, a) => i < a.length - 1 && !s.endsWith(".") ? s + "." : s);
-
-		if (doubleNL.length > 1 && doubleNL.every(s => s.length < maxChunkSize)) {
-			sections = doubleNL;
-			console.log(`Split into ${sections.length} sections by .\\n\\n separators`);
-		} else {
-			const singleNL = text.split(/\.\n/).filter(s => s.trim())
-			.map((s, i, a) => i < a.length - 1 && !s.endsWith(".") ? s + "." : s);
-			if (singleNL.length > 1 && singleNL.some(s => s.length < maxChunkSize * 0.8)) {
-			sections = singleNL;
-			console.log(`Split into ${sections.length} sections by .\\n separators`);
-			} else {
-			sections = text.split(/(?=§\s*\d+|Section\s+\d+|SECTION\s+\d+|Article\s+[IVXLCDM]+)/i).filter(s => s.trim());
-			console.log(`Split into ${sections.length} sections by § markers (fallback)`);
-			}
-		}
-
-		for (let i = 0; i < sections.length; i++) {
-			const section = sections[i];
-			const sectionTokens = estimateTokens(section);
-			if (section.length <= maxChunkSize && sectionTokens <= maxTokens) {
-			chunks.push(section.trim());
-			} else {
-			const sentences = section.split(/(?<=[.!?])\s+/).filter(s => s.trim());
-			let current = "";
-			for (const sentence of sentences) {
-				const proposed = current + (current ? " " : "") + sentence;
-				if ((proposed.length > maxChunkSize || estimateTokens(proposed) > maxTokens) && current.trim()) {
-				chunks.push(current.trim());
-				current = sentence;
-				} else {
-				current = proposed;
-				}
-			}
-			if (current.trim()) chunks.push(current.trim());
-			}
-		}
-
-		const validated = chunks
-			.filter(c => c.length > 400)
-			.filter(c => {
-			const t = estimateTokens(c);
-			if (t > maxTokens) { console.warn(`⚠️ Filtering oversized chunk: ~${t} tokens`); return false; }
-			if (c.length > 12000) { console.warn(`⚠️ Filtering large character chunk: ${c.length} chars`); return false; }
-			return true;
-			});
-
-		console.log(`Chunking complete: ${chunks.length} total → ${validated.length} validated`);
-		return validated;
+		return chunkText(text, maxChunkSize);
 	}
 
 	/**
@@ -534,7 +485,7 @@ export class VectorService {
 		domains: string | string[],
 		documentType: DocumentType = "statute",
 		provenance: { url: string, fileName: string, fetchedAt: string },
-		dryRun = false,
+		options: { verbose?: boolean, dryRun?: boolean } = {},
 	) {
 	const domainList = Array.isArray(domains) ? domains : [domains];
 	const primaryDomain = domainList[0];
@@ -556,8 +507,13 @@ export class VectorService {
 	const prefix = getDocumentKey(entityId, domainList, documentType, provenance.fileName);
 	console.debug("Generated document key prefix:", prefix);
 	const alreadyIndexed = await this.hasIndexedDocument(prefix);
+	let deletedCount = 0;
 	if (alreadyIndexed) {
-		await this.deleteIndexedChunksForDocument(prefix);
+		if (options.dryRun) {
+			console.log(`Dry run: would delete existing vectors for ${entityId} [${domainList.join(", ")}] with prefix "${prefix}"`);
+		} else {
+			deletedCount = await this.deleteIndexedChunksForDocument(prefix);
+		}
 	}
 
 	const index = this.getIndex();
@@ -598,7 +554,8 @@ export class VectorService {
 				indexedAt: new Date().toISOString(),
 				...(provenance || {}),
 			};
-			console.log(`Generated embedding for chunk ${docId}} (tokens: ${tokenCount})`);
+			const fullText = (options.verbose) ? `\tFull text:\n${chunk}` : "";
+			console.log(`Generated embedding for chunk ${docId}} (tokens: ${tokenCount})${fullText}`);
 			vectors.push({
 				id: docId,
 				values: res.data[0].embedding,
@@ -611,9 +568,12 @@ export class VectorService {
 
 	if (vectors.length > 0) {
 		console.log(`Planning to upsert ${vectors.length} vectors for ${entityId} [${domainList.join(", ")}]`);
-		if (!dryRun) {
+		if (!options.dryRun) {
 			await index.upsert(vectors);
 			console.log(`Indexed ${vectors.length} chunks`);
+			if (deletedCount > 0 && deletedCount !== vectors.length) {
+				console.log(`\x1b[1;32mChunk count changed for ${entityId} [${domainList.join(", ")}]: deleted ${deletedCount}, indexed ${vectors.length}\x1b[0m`);
+			}
 		} else {
 			console.log(`Dry run enabled - skipping upsert`);
 		}

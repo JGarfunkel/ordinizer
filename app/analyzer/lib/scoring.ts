@@ -98,10 +98,19 @@ export function calculateAnswerScore(answer: string, confidence: number): number
   return Math.max(0.1, Math.min(1.0, score));
 }
 
+const NOT_SPECIFIED_ANSWERS = new Set([
+  "Not specified in the provided sources.",
+  "No relevant sources available",
+  "Not specified in the statute.",
+]);
+
+function isNotSpecifiedAnswer(answer: string | undefined): boolean {
+  return !!answer && NOT_SPECIFIED_ANSWERS.has(answer);
+}
+
 /**
  * Calculate weighted normalized scores across all Q&A pairs.
- * Individual question scores (answer.score) are on a 0–1 scale.
- * The returned normalizedScore / overallScore are on a 0–10 scale.
+ * All scores (individual and aggregate) are on a 0–1 scale.
  */
 export function calculateNormalizedScores(answers: AnalyzedQuestion[], questions: Question[], verbose?: boolean): NormalizedScores {
   const scores: NormalizedScores = {
@@ -134,7 +143,7 @@ export function calculateNormalizedScores(answers: AnalyzedQuestion[], questions
   for (const answer of answers) {
     const question = questionMap.get(String(answer.questionId ?? answer.id));
     const weight = question?.weight ?? 1;
-    const score = answer.score ?? 0;
+    const score = isNotSpecifiedAnswer(answer.answer) ? 0 : (answer.score ?? 0);
     const weightedScore = roundToDecimal(score * weight, 2);
 
     questionsWithScores.push({
