@@ -47,6 +47,7 @@ export function SidebarAnalysis({
 }: SidebarAnalysisProps) {
 
   const [bestPracticesExpanded, setBestPracticesExpanded] = useState(!selectedEntityId);
+  const [showGaps, setShowGaps] = useState(false);
 
   useEffect(() => {
     setBestPracticesExpanded(!selectedEntityId);
@@ -70,7 +71,7 @@ export function SidebarAnalysis({
 
   // Fetch statute metadata to get the source URL for the statute link
   const statuteEntityId = usesStateCode
-    ? `${currentRealm?.territory}-State`
+    ? `${currentRealm?.stateProvince}-State`
     : analysisData?.municipality?.id;
   const statuteDomainId = analysisData?.domain?.id;
   const { data: statuteMetadata } = useQuery<Ruleset>({
@@ -193,7 +194,7 @@ export function SidebarAnalysis({
                     Environmental Protection Score
                   </h5>
                   <div className="text-lg font-bold text-green-700" title="score out of 10.0">
-                    {(10 * scoreData.overallScore).toFixed(1)}
+                    {scoreData.overallScore.toFixed(1)}/10
                   </div>
                 </div>
               </div>
@@ -202,15 +203,26 @@ export function SidebarAnalysis({
             {/* Questions and Answers */}
             {analysisData?.questions?.length > 0 ? (
               <div>
-                <h5 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
-                  <HelpCircle className="text-civic-blue mr-2" size={18} />
-                  Common Questions
-                  {scoreData && (
-                    <span className="ml-2 text-xs text-gray-500">
-                      (Environmental scores shown below)
-                    </span>
-                  )}
-                </h5>
+                <div className="flex items-center justify-between mb-3">
+                  <h5 className="text-base font-semibold text-gray-900 flex items-center">
+                    <HelpCircle className="text-civic-blue mr-2" size={18} />
+                    Common Questions
+                    {scoreData && (
+                      <span className="ml-2 text-xs text-gray-500">
+                        (Environmental scores shown below)
+                      </span>
+                    )}
+                  </h5>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={showGaps}
+                      onChange={(e) => setShowGaps(e.target.checked)}
+                      className="accent-orange-500"
+                    />
+                    Show gaps
+                  </label>
+                </div>
                 <div className="space-y-4">
                   {analysisData?.questions?.map((qa, index) => {
                     const scoredQuestion = scoreData?.questions.find((sq) => sq.id === qa.id);
@@ -262,7 +274,7 @@ export function SidebarAnalysis({
                             </button>
                           )}
                         </div>
-                        {hasGap && qa.gap && (
+                        {hasGap && qa.gap && showGaps && (
                           <div className="mt-2 p-2 bg-orange-50 border-l-4 border-orange-400 rounded-r">
                             <p className="text-xs text-orange-700 font-medium flex items-center">
                               <span className="inline-block w-4 h-4 text-center mr-2">🔧</span>
@@ -280,7 +292,7 @@ export function SidebarAnalysis({
                                 {(() => {
                                   const refs = qa.relevantSections as (string | { name: string; url?: string })[];
                                   const stateEntityId = usesStateCode
-                                    ? `${currentRealm?.territory}-State`
+                                    ? `${currentRealm?.stateProvince}-State`
                                     : analysisData?.municipality?.id;
                                   return refs.map((ref, i) => {
                                     if (typeof ref === "string") {
@@ -318,7 +330,7 @@ export function SidebarAnalysis({
                               <StatuteLink
                                 municipalityId={
                                   usesStateCode
-                                    ? `${currentRealm?.territory}-State`
+                                    ? `${currentRealm?.stateProvince}-State`
                                     : analysisData?.municipality?.id
                                 }
                                 domainId={analysisData?.domain?.id}
