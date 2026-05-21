@@ -2,11 +2,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { ExternalLink, Files } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui";
 import * as React from "react";
+import type { SourceMapLink } from "@civillyengaged/ordinizer-core";
 
-export interface SourceMapLink {
-  url: string;
-  title: string;
-}
+export type { SourceMapLink };
 
 export interface SourcesPopupProps {
   entity: string;

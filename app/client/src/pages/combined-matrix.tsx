@@ -46,13 +46,6 @@ interface CombinedMatrixData {
   }>;
 }
 
-interface SourcesPopupProps {
-  entity: string;
-  domainName: string;
-  sources: SourceMapLink[];
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}
 
 
 export default function CombinedMatrix() {

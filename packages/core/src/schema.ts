@@ -11,23 +11,6 @@ export interface EntityCollection {
   entities: Entity[];   
 }
 
-export interface Entity {
-  id: string;
-  name: string;
-  displayName: string; // i.e. "Name - Type"
-  singular?: string; // Added: from municipalities.json
-  type?: string;   // e.g., City, Town, Village, School District, etc.
-  county?: string;
-  state?: string;
-  population?: number;
-  area?: number;
-  density?: number;
-  website?: string;
-  contact?: string;
-  lastUpdated?: string; // String format
-  domains: { [domain: string]: DomainData };
-}
-
 // Only used by source-data.tsx!
 // For a municipality's domain-specific data
 export interface DomainData {
@@ -41,17 +24,6 @@ export interface DomainData {
   articleCount?: number;
   ruleset: Ruleset | null;
   sourceUrls?: Array<{ title: string; url: string }>;
-}
-
-export interface Domain {
-  id: string;
-  name: string;
-  displayName: string;
-  description?: string;
-  show?: boolean;
-  order?: number;
-  color?: string;
-  lastUpdated?: string; // String format
 }
 
 export interface EntityDomain {
@@ -348,7 +320,7 @@ export interface Realm {
   displayName: string;
   description: string;
   ruleType: 'statute' | 'policy';
-  territory: string; // state
+  stateProvince: string;
   county: string;
   datapath: string;
   entityType: 'municipalities' | 'school-districts';
@@ -406,16 +378,24 @@ export interface Entity {
   name: string;
   displayName: string;
   type?: string;
-  region?: string;
+  singular?: string;
+  county?: string;
   state?: string;
   country?: string;
-  singular?: string; // URL-friendly singular form (backward compatibility)
-  mainUrl?: string; // URL to the entity's page 
+  region?: string;
+  population?: number;
+  area?: number;
+  density?: number;
+  website?: string;
+  contact?: string;
+  lastUpdated?: string;
+  mainUrl?: string;
   governingUrl?: string;
-  governingBody?: string; // name of the board specific to the realm
-  hubUrl?: string; // URL to independent information hub
+  governingBody?: string;
+  hubUrl?: string;
   authorityUrl?: string;
-  parentId: string | null; // For hierarchical relationships (e.g., village within town
+  parentId?: string | null;
+  domains?: { [domain: string]: DomainData };
 }
 
 export interface Domain {
@@ -423,11 +403,16 @@ export interface Domain {
   name: string;
   displayName: string;
   description?: string;
+  show?: boolean;
+  order?: number;
+  color?: string;
+  lastUpdated?: string;
   questions?: Question[];
   questionPromptScope?: string;
   questionPromptRequirements?: string[];
   keywords?: string[];
-  type: 'statutory' | 'policy' | 'general';
+  type?: 'statutory' | 'policy' | 'general';
+  searchEnhancements?: Array<{ conditions: string[]; terms: string[] }>;
 }
 
 export interface AnalyzedQuestion {

@@ -830,22 +830,23 @@ async function processEntity(
   options: AnalyzeOptions = {},
 ): Promise<boolean> {
   const st = await getStorage(options);
-  const force = options.force || false;
+  let force = options.force || false;
   const useMeta = options.useMeta || false;
   const questionId = options.questionId;
   const skipRecent = options.skipRecent;
 
   // Check if analysis should be skipped based on --skip-recent parameter
-  if (
-    !force &&
-    skipRecent &&
-    (await shouldSkipRecentAnalysis(st, domain, entity, skipRecent))
-  ) {
-    const timeAgo = await getTimeAgoString(st, domain, entity);
-    console.log(
-      `⏭️  ${entity}: Analysis is recent (${timeAgo}), skipping due to --skip-recent ${skipRecent}`,
-    );
-    return false; // No OpenAI calls made
+  if (!force && skipRecent) {
+    if (await shouldSkipRecentAnalysis(st, domain, entity, skipRecent)) {
+      const timeAgo = await getTimeAgoString(st, domain, entity);
+      console.log(
+        `⏭️  ${entity}: Analysis is recent (${timeAgo}), skipping due to --skip-recent ${skipRecent}`,
+      );
+      return false; // No OpenAI calls made
+    } else {
+      force = true; // Analysis is older than --skip-recent threshold — force a run
+      options = { ...options, force: true };
+    }
   }
 
   // Check if analysis exists and is recent, and if statute is newer than analysis
@@ -1176,6 +1177,7 @@ async function getPrioritizedDiscoveredChunks(
   domainForEntityText: string,
   isGeneralDomain: boolean,
   authoritativeDocumentType: DocumentType | undefined,
+  domainConfig?: { searchEnhancements?: Array<{ conditions: string[]; terms: string[] }> },
 ): Promise<{ chunks: string[]; sourceRefs: string[]; tokenUsage: number }> {
   const uniqueRefs = new Set<string>();
   let tokenUsage = 0;
@@ -1193,6 +1195,7 @@ async function getPrioritizedDiscoveredChunks(
       domain,
       5,
       "shared",
+      domainConfig,
     );
     tokenUsage += sharedOnly.tokenUsage;
     mergeRefs(sharedOnly.sourceRefs);
@@ -1210,6 +1213,7 @@ async function getPrioritizedDiscoveredChunks(
         domain,
         5,
         authoritativeDocumentType,
+        domainConfig,
       )
     : { chunks: [], sourceRefs: [], tokenUsage: 0 };
 
@@ -1222,6 +1226,7 @@ async function getPrioritizedDiscoveredChunks(
     domain,
     5,
     "shared",
+    domainConfig,
   );
 
   tokenUsage += shared.tokenUsage;
@@ -1275,6 +1280,7 @@ async function runConversationAnalysis(
   questionsToKeep: any[],
   options: AnalyzeOptions,
   bestPracticesByQuestionId?: Record<number, import("@civillyengaged/ordinizer-core").BestPractice>,
+  domainConfig?: { searchEnhancements?: Array<{ conditions: string[]; terms: string[] }> },
 ): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
   console.log(
     `💬 ${entity}: Using conversation mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
@@ -1301,6 +1307,7 @@ async function runConversationAnalysis(
         domainForEntityText,
         isGeneralDomain,
         authoritativeDocumentType,
+        domainConfig,
       );
     },
     existingAnswersContextBuilder: () =>
@@ -1342,6 +1349,7 @@ async function runVectorAnalysis(
   vectorService: VectorService,
   options: AnalyzeOptions,
   bestPracticesByQuestionId?: Record<number, import("@civillyengaged/ordinizer-core").BestPractice>,
+  domainConfig?: { searchEnhancements?: Array<{ conditions: string[]; terms: string[] }> },
 ): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
   console.log(
     `🔍 ${entity}: Using vector mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars), authoritativeDocumentType=${authoritativeDocumentType || "undefined"}`,
@@ -1366,6 +1374,7 @@ async function runVectorAnalysis(
         domainForEntityText,
         isGeneralDomain,
         authoritativeDocumentType,
+        domainConfig,
       );
     },
     existingAnswersContextBuilder: () =>
@@ -1667,6 +1676,7 @@ async function generateVectorAnalysis(
       questionsToKeep,
       options,
       Object.keys(bestPracticesByQuestionId).length ? bestPracticesByQuestionId : undefined,
+      domainObj,
     );
     newAnswers = result.newAnswers;
     totalVectorTokens = result.totalVectorTokens;
@@ -1683,6 +1693,7 @@ async function generateVectorAnalysis(
       vectorService,
       options,
       Object.keys(bestPracticesByQuestionId).length ? bestPracticesByQuestionId : undefined,
+      domainObj,
     );
     newAnswers = result.newAnswers;
     totalVectorTokens = result.totalVectorTokens;

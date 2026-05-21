@@ -1,6 +1,6 @@
 import fs from "fs-extra";
 import path from "path";
-import { type Realm } from "@civillyengaged/ordinizer-core";
+import { type Realm, type RealmsConfig } from "@civillyengaged/ordinizer-core";
 import { loadSpreadsheetExtractionProperties } from "./spreadsheetParser.js";
 import { IStorage, getDefaultStorage } from "@civillyengaged/ordinizer-servercore";
 
@@ -35,11 +35,6 @@ export interface StatuteLibrary {
 export interface StatuteLibraryConfig {
   libraries: StatuteLibrary[];
   defaultLibrary: string;
-  lastUpdated: string;
-}
-
-export interface RealmsConfig {
-  realms: Realm[];
   lastUpdated: string;
 }
 
@@ -86,27 +81,6 @@ export interface ArticleLink {
   title: string;
   url: string;
 }
-
-// ─── Domain config ───────────────────────────────────────────────────────────
-
-// TODO - move to spreadsheet parser
-// export function getSpreadsheetUrl(): string {
-//   return loadSpreadsheetExtractionProperties().url;
-// }
-
-// export function getDomains(): string[] {
-//   return loadSpreadsheetExtractionProperties().domains.map((d) => d.name);
-// }
-
-// /** @deprecated Use getDomains() instead */
-// export const DOMAINS = getDomains();
-
-// export function getDomainMapping(): Record<string, string> {
-//   return loadSpreadsheetExtractionProperties().domainMapping;
-// }
-
-// /** @deprecated Use getDomainMapping() instead */
-// export const DOMAIN_MAPPING = getDomainMapping();
 
 export const DELAY_BETWEEN_DOWNLOADS = 5000; // 5 seconds
 

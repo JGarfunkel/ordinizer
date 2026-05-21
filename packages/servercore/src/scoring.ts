@@ -3,9 +3,11 @@
  * Extracted and generalized from server/lib/scoringUtils.ts
  */
 
-import type { Analysis, Entity, EntitySummary, DomainSummary, QuestionScore, 
-              Realm, MatrixData, RulesetSource, MatrixEntity} from '@civillyengaged/ordinizer-core';
+import type { Analysis, Entity, EntitySummary, DomainSummary, QuestionScore,
+              Realm, MatrixData, RulesetSource, MatrixEntity, QuestionWithScore } from '@civillyengaged/ordinizer-core';
 import type { IStorageReadOnly } from './storage.js';
+
+export type { QuestionWithScore };
 
 export interface ScoreOptions {
   includeStateCodeEntities?: boolean;
@@ -14,17 +16,6 @@ export interface ScoreOptions {
     medium: string;
     high: string;
   };
-}
-
-export interface QuestionWithScore {
-  id: number | string;
-  question: string;
-  answer: string;
-  score: number; // Individual score 0.0 - 1.0
-  weight: number; // Question weight (default 1)
-  weightedScore: number; // score * weight
-  maxWeightedScore: number; // weight (max possible for this question)
-  confidence: number;
 }
 
 export interface DetailedEntityScore {

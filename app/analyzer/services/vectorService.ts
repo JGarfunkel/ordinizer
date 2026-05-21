@@ -441,28 +441,22 @@ export class VectorService {
 
 		/** Truncate text to fit within a token budget */
 	truncateToTokenLimit(text: string, maxTokens: number): string {
-	const maxChars = maxTokens * 4;
-	if (text.length <= maxChars) return text;
-	return text.substring(0, maxChars - 100) + "\n\n[Text truncated to fit context limit...]";
+		const maxChars = maxTokens * 4;
+		if (text.length <= maxChars) return text;
+		return text.substring(0, maxChars - 100) + "\n\n[Text truncated to fit context limit...]";
 	}
 
 	/** Add domain-specific keywords to a question for better vector matching */
-	enhanceQuestionForVectorSearch(question: string, domain: string): string {
-	const lq = question.toLowerCase();
-	let enhanced = question;
-	if (domain === "property-maintenance") {
-		if (lq.includes("yard") || lq.includes("landscape"))
-		enhanced += " curtilage vegetation grasses brush briars 10 inches 15 feet perimeter structure uncultivated plants flowers gardens pollinator";
-		if (lq.includes("penalty") || lq.includes("fine"))
-		enhanced += " $200 per day violation continues penalty fine";
-		if (lq.includes("timeline") || lq.includes("resolving"))
-		enhanced += " 30 days 10 days certified mail notice violation hearing";
-	}
-	if (domain === "trees" && (lq.includes("permit") || lq.includes("removal")))
-		enhanced += " tree removal permit application DBH diameter inches";
-	if ((domain === "glb" || domain === "gas-leaf-blower") && (lq.includes("hours") || lq.includes("time")))
-		enhanced += " 8 AM 9 AM 5 PM 6 PM hours operation blower leaf";
-	return enhanced;
+	enhanceQuestionForVectorSearch(question: string, domainConfig?: { searchEnhancements?: Array<{ conditions: string[]; terms: string[] }> }): string {
+		if (!domainConfig?.searchEnhancements?.length) return question;
+		const lq = question.toLowerCase();
+		let enhanced = question;
+		for (const enhancement of domainConfig.searchEnhancements) {
+			if (!enhancement.conditions.length || enhancement.conditions.some((c) => lq.includes(c))) {
+				enhanced += " " + enhancement.terms.join(" ");
+			}
+		}
+		return enhanced;
 	}
 
 	/** Split statute text into token-safe chunks for embedding */
@@ -633,8 +627,9 @@ export class VectorService {
 		domain: string,
 		topK = 5,
 		documentType?: DocumentType,
+		domainConfig?: { searchEnhancements?: Array<{ conditions: string[]; terms: string[] }> },
 	): Promise<{ chunks: string[]; sourceRefs: string[]; tokenUsage: number }> {
-		const enhanced = this.enhanceQuestionForVectorSearch(question, domain);
+		const enhanced = this.enhanceQuestionForVectorSearch(question, domainConfig);
 		const estimatedQuestionTokens = estimateTokens(enhanced);
 		await checkRateLimit(estimatedQuestionTokens);
 		const embedRes = await this.openai.embeddings.create({ model: "text-embedding-3-small", input: enhanced });

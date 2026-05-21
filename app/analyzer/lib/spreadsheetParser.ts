@@ -114,12 +114,12 @@ export class DefaultSpreadsheetParser implements ISpreadsheetParser {
   }
 
   getEntityPrefix(): string {
-    const state = this.realm?.territory || loadSpreadsheetExtractionProperties().state;
+    const state = this.realm?.stateProvince || loadSpreadsheetExtractionProperties().state;
     return `${state}-`;
   }
 
   getStateCode(): string {
-    if (this.realm?.territory) return this.realm.territory;
+    if (this.realm?.stateProvince) return this.realm.stateProvince;
     return loadSpreadsheetExtractionProperties().state;
   }
 

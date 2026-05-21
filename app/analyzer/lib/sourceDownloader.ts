@@ -80,7 +80,7 @@ export async function downloadEntitySources(
 
   const sp = parser ?? new DefaultSpreadsheetParser(realm);
   let downloadCount = 0;
-  const territory = realm.territory ?? '';
+  const stateProvince = realm.stateProvince ?? '';
 
   for (const row of rows) {
     // Parse "Name (Type)" format from first column
@@ -181,16 +181,16 @@ export async function downloadEntitySources(
         }
       }
 
-      // Check if this municipality uses state code
+      // Check if this municipality uses state code (cell text contains e.g. "NY State")
       const usesStateCode =
-        cellText?.toLowerCase().includes("ny state") || false;
+        !!stateProvince && (cellText?.toLowerCase().includes(`${stateProvince.toLowerCase()} state`) ?? false);
 
       // Convert domain name to kebab-case for directory naming
       const domainDir = domain.toLowerCase().replace(/\s+/g, "-");
 
       if (usesStateCode) {
-        downloadCount = await checkStateMetadata(cleanName, 
-          cleanType, sp, realm, domainDir, domain, url, cellText, downloadCount, territory);
+        downloadCount = await checkStateMetadata(cleanName,
+          cleanType, sp, realm, domainDir, domain, url, cellText, downloadCount, stateProvince);
 
         continue; // Skip the regular download logic for state code municipalities
       } else {
@@ -198,7 +198,7 @@ export async function downloadEntitySources(
           storage,
           realm,
           domain,
-          territory,
+          stateProvince,
           cleanName,
           cleanType,
           url,
@@ -226,7 +226,7 @@ export async function downloadEntitySources(
   //   await generateSummaryFile(realm);
 }
 
-async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpreadsheetParser, realm: Realm, domainDir: string, domain: string, url: string, cellText: any, downloadCount: number, territory: string) {
+async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpreadsheetParser, realm: Realm, domainDir: string, domain: string, url: string, cellText: any, downloadCount: number, stateProvince: string) {
   console.log(
     `  ${cleanName} - ${cleanType}: Uses ${sp.getStateCode()} State code, managing shared state reference`
   );
@@ -298,7 +298,7 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
     if (content) {
       // Always save original HTML source for potential later conversion
       await fs.writeFile(stateHtmlPath, content, "utf-8");
-      console.log(`  Saved ${territory} State HTML source: ${stateHtmlPath}`);
+      console.log(`  Saved ${stateProvince} State HTML source: ${stateHtmlPath}`);
 
       // Check if this is an article-based page for state code too
       const articles = detectArticleBasedPage(        content,        url      );
@@ -307,7 +307,7 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
 
       if (articles.length > 0) {
         console.log(
-          `  📚 Processing article-based ${territory} State statute with ${articles.length} articles`
+          `  📚 Processing article-based ${stateProvince} State statute with ${articles.length} articles`
         );
         const articleResult = await downloadAndStitchArticles(articles);
         plainTextContent = articleResult.content;
@@ -333,7 +333,7 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
 
       // Save state ruleset
       const stateMetadata: any = {
-        municipality: `${territory} State`,
+        municipality: `${stateProvince} State`,
         municipalityType: "State",
         domain: domain,
         domainId: domain.toLowerCase().replace(/\s+/g, "-"),
@@ -351,21 +351,21 @@ async function checkStateMetadata(cleanName: string, cleanType: string, sp: ISpr
         stateMetadata.sourceUrls = sourceUrls;
         stateMetadata.isArticleBased = true;
         console.log(
-          `  📄 Added ${sourceUrls.length} article URLs to ${territory} State ruleset`
+          `  📄 Added ${sourceUrls.length} article URLs to ${stateProvince} State ruleset`
         );
       }
 
       await fs.writeJson(stateMetadataPath, stateMetadata, { spaces: 2 });
 
       console.log(
-        `  ${domain}: Downloaded ${territory} State statute (${plainTextContent.length} characters plain text)`
+        `  ${domain}: Downloaded ${stateProvince} State statute (${plainTextContent.length} characters plain text)`
       );
       downloadCount++;
     } else {
-      console.log(`  ${domain}: Failed to download ${territory} State statute`);
+      console.log(`  ${domain}: Failed to download ${stateProvince} State statute`);
     }
   } else {
-    console.log(`  ${territory} State statute already exists: ${stateFilePath}`);
+    console.log(`  ${stateProvince} State statute already exists: ${stateFilePath}`);
   }
   return downloadCount;
 }
@@ -399,7 +399,7 @@ export async function checkMetadataAndDownloadSources(
   storage: IStorage,
   realm: Realm,
   domain: string,
-  territory: string,
+  stateProvince: string,
   entityName: string,
   entityType: string,
   url: string,
@@ -413,7 +413,7 @@ export async function checkMetadataAndDownloadSources(
   },
   downloadCount: number
 ): Promise<void> {
-  const entityId = territory + "-" + entityName + (entityType ? `-${entityType}` : "");
+  const entityId = stateProvince + "-" + entityName + (entityType ? `-${entityType}` : "");
   const { noDeleteMode, forceMode, reloadMode, noDownloadMode } = options;
 
   if (!(await checkIfValidUrl(storage, url))) return;

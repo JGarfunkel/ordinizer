@@ -335,7 +335,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     // backwards compatibility if not created
     if (!ruleset.entityId) {
       let realm = await this.getRealmConfig();
-      ruleset.entityId = realm?.territory + "-" + ruleset.municipality + "-" + ruleset.municipalityType;
+      ruleset.entityId = realm?.stateProvince + "-" + ruleset.municipality + "-" + ruleset.municipalityType;
     }
     return ruleset.entityId;
   }
@@ -560,7 +560,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   ): Promise<Statute | undefined> {
     const realmConfig = await this.getRealmConfig();
     const realmType = realmConfig.ruleType ?? 'statute';
-    const territory = realmConfig.territory ?? '';
+    const territory = realmConfig.stateProvince ?? '';
 
     // Check for state-code redirect in metadata
     const stateFolder = territory ? `${territory}-State` : "";
@@ -773,7 +773,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
   async getDomainSummary(domainId: string, realmId: string): Promise<DomainSummaryRow[]> {
     const realmConfig = await this.getRealmConfig();
-    const territory = realmConfig.territory ?? '';
+    const territory = realmConfig.stateProvince ?? '';
     const municipalities = await this.getEntities();
 
     const result: DomainSummaryRow[] = [];
@@ -1129,7 +1129,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
   /**
    * List entity subdirectory names within a domain directory.
-   * For municipal realms (default) returns only NY-prefixed directories.
+   * For statute realms returns only directories prefixed with the realm's stateProvince.
    * For policy realms returns all non-hidden directories.
    */
   async listEntityIds(domainId: string, realmId?: string, realmTypeOverride?: string): Promise<string[]> {
@@ -1139,10 +1139,12 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     if (!await fs.pathExists(dir)) return [];
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const effective = realmTypeOverride ?? realmType;
+    const nonHidden = entries.filter((e) => e.isDirectory() && !e.name.startsWith("."));
     if (effective === "policy") {
-      return entries.filter((e) => e.isDirectory() && !e.name.startsWith(".")).map((e) => e.name);
+      return nonHidden.map((e) => e.name);
     }
-    return entries.filter((e) => e.isDirectory() && e.name.startsWith("NY-")).map((e) => e.name);
+    const prefix = realmConfig.stateProvince ? `${realmConfig.stateProvince}-` : null;
+    return (prefix ? nonHidden.filter((e) => e.name.startsWith(prefix)) : nonHidden).map((e) => e.name);
   }
 
   /**
