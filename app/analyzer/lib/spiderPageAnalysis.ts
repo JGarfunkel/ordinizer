@@ -7,7 +7,7 @@
 import { styleText } from "node:util";
 import fs from "fs-extra";
 import { JSDOM } from "jsdom";
-import { Entity, Domain } from "@civillyengaged/ordinizer-core";
+import { Entity, Domain, EntityLinkType } from "@civillyengaged/ordinizer-core";
 import { isDomainScoreMatch, scoreDomainDetailed } from "./domainScoring.js";
 import type { SpiderDownloadRecord } from "./spiderHistory.js";
 import type { HistoryStatus } from "./spiderHistory.js";
@@ -84,6 +84,21 @@ const CONTENT_SELECTOR_CANDIDATES = [
   "#maincontent",
   "#ContentPlaceHolder1_UpdatePanel1",
 ] as const;
+
+
+const ENTITY_LINK_FALLBACK: Record<EntityLinkType, keyof Entity> = {
+  main: "mainUrl",
+  governing: "governingUrl",
+  hub: "hubUrl",
+  authority: "authorityUrl",
+};
+
+export function getEntityLink(entity: Entity, type: EntityLinkType): string | undefined {
+  const fromLinks = entity.links?.find((l) => l.type === type)?.url;
+  if (fromLinks) return fromLinks;
+  return entity[ENTITY_LINK_FALLBACK[type]] as string | undefined;
+}
+
 
 const COMMENT_CONTENT_AREA_SELECTOR = "__comment_content_area__";
 
@@ -803,6 +818,34 @@ export async function fetchHtmlForMenuDiscoveryCached(
   return fetchHtmlForMenuDiscovery(storage, historyMap, entityId, url, options);
 }
 
+const PRIMARY_NAV_PATTERN = /\b(main|primary|site|global|top|header|masthead)\b/i;
+
+export function extractSecondaryNavLinkCandidates(html: string, baseUrl: string): ExtractedLink[] {
+  try {
+    const dom = new JSDOM(html, { url: baseUrl });
+    const document = dom.window.document;
+    const secondaryNavs = Array.from(document.querySelectorAll("nav")).filter((nav) => {
+      if (nav.closest("header") || nav.closest("footer")) return false;
+      const combined = `${nav.id} ${nav.className}`;
+      return !PRIMARY_NAV_PATTERN.test(combined);
+    });
+    if (secondaryNavs.length === 0) return [];
+    const seen = new Set<string>();
+    const results: ExtractedLink[] = [];
+    for (const nav of secondaryNavs) {
+      for (const link of extractLinksAndText(baseUrl, nav.outerHTML).linkCandidates) {
+        if (!seen.has(link.url)) {
+          seen.add(link.url);
+          results.push(link);
+        }
+      }
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
 export function extractContentBlockLinkCandidates(
   html: string,
   baseUrl: string,
@@ -835,8 +878,8 @@ export async function discoverLocalMenuLinks(
 ): Promise<{ discovered: Set<string>; contentSelectors: Map<string, string> }> {
   const discovered = new Set<string>();
   const contentSelectors = new Map<string, string>();
-  const governingUrl = normalizeUrl(entity.governingUrl);
-  const mainUrl = normalizeUrl(entity.mainUrl);
+  const governingUrl = normalizeUrl(getEntityLink(entity, "governing"));
+  const mainUrl = normalizeUrl(getEntityLink(entity, "main"));
   if (!governingUrl || !mainUrl) {
     return { discovered, contentSelectors };
   }
@@ -848,7 +891,7 @@ export async function discoverLocalMenuLinks(
   const normalizedMainUrl = normalizeUrlForMatch(mainUrl);
   const normalizedGoverningUrl = normalizeUrlForMatch(governingUrl);
   const allowedHosts = new Set<string>(
-    [mainUrl, governingUrl, normalizeUrl(entity.hubUrl)]
+    [mainUrl, governingUrl, normalizeUrl(getEntityLink(entity, "hub"))]
       .filter((value): value is string => Boolean(value))
       .map((url) => getLikelyHostname(url))
       .filter(Boolean),

@@ -394,8 +394,16 @@ export interface Entity {
   governingBody?: string;
   hubUrl?: string;
   authorityUrl?: string;
+  links?: EntityLink[];
   parentId?: string | null;
   domains?: { [domain: string]: DomainData };
+}
+
+export type EntityLinkType = "main" | "governing" | "hub" | "authority";
+
+export interface EntityLink {
+  type: EntityLinkType;
+  url: string;
 }
 
 export interface Domain {

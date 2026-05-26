@@ -9,7 +9,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { addOrUpdateSource, delay, downloadFromUrlAnyType, pdfToText } from "./extractionUtils.js";
 import { convertHtmlToTextSimple } from "./simpleHtmlToText.js";
-import { Ruleset, RulesetSource, Entity, Realm, Domain } from "@civillyengaged/ordinizer-core";
+import { Ruleset, RulesetSource, Entity, Realm, Domain, EntityLinkType } from "@civillyengaged/ordinizer-core";
 import { parseCommonCliArgs, requireDataRootAndRealm } from "./scriptArgs.js";
 import { styleText } from "node:util";
 import {
@@ -73,8 +73,10 @@ import {
   readLinkCandidatesForMenuDiscovery,
   fetchHtmlForMenuDiscoveryCached,
   extractContentBlockLinkCandidates,
+  extractSecondaryNavLinkCandidates,
   discoverContentSelector,
   extractContentBlockText,
+  getEntityLink
 } from "./spiderPageAnalysis.js";
 
 // Re-exports for backwards compatibility
@@ -84,10 +86,13 @@ export { canSkipStatus, migrateHistoryEntry, formatTxtArtifact };
 export { detectBoilerplateCandidates, applyActiveBoilerplate, updateWebsiteHostRecord };
 export { discoverContentSelector, extractContentBlockText };
 
+const CRAWL_SOURCES = ["governingUrl", "mainUrl", "hubUrl", "authorityUrl"] as const;
+type CrawlSource = (typeof CRAWL_SOURCES)[number];
+
 interface CrawlTask {
   url: string;
   depth: number;
-  source: "mainUrl" | "governingUrl" | "authorityUrl";
+  source: CrawlSource;
 }
 
 interface Args {
@@ -117,6 +122,9 @@ interface Args {
   refetch: boolean;
   generateSummary: boolean;
   force: boolean;
+  seedUrl?: string;
+  review: boolean;
+  fix?: string;
 }
 
 type ReviewStatus = "related" | "index" | "unrelated";
@@ -383,14 +391,15 @@ async function promptInteractiveClassification(
   kind: "link" | "page",
   url: string,
   proposed: ReviewStatus,
-  details: { text?: string; excerpt?: string; domainScores?: DomainScore[]; explanationLines?: string[] },
+  details: { text?: string; excerpt?: string; domainScores?: DomainScore[]; explanationLines?: string[]; cached?: boolean },
 ): Promise<ReviewStatus> {
   if (!rl) {
     return proposed;
   }
 
   const label = kind === "link" ? "LINK" : "PAGE";
-  console.log(styleText('bold',`\n[INTERACTIVE][${label}] ${url}`));
+  const cacheTag = details.cached === true ? " [cached]" : details.cached === false ? " [live]" : "";
+  console.log(styleText('bold',`\n[INTERACTIVE][${label}]${cacheTag} ${url}`));
   if (details.text) {
     console.log(`[INTERACTIVE][TEXT] ${details.text}`);
   }
@@ -476,6 +485,8 @@ function parseArgs(args: string[]): Args {
     refetch: false,
     generateSummary: false,
     force: false,
+    seedUrl: undefined,
+    review: false,
   };
 
   for (let i = 0; i < rest.length; i += 1) {
@@ -593,6 +604,24 @@ function parseArgs(args: string[]): Args {
       options.force = true;
       continue;
     }
+    if (arg === "--review") {
+      options.review = true;
+      continue;
+    }
+    if (arg === "--seed-url") {
+      const value = rest[i + 1];
+      if (!value) throw new Error("--seed-url requires a value (type name or URL)");
+      options.seedUrl = value;
+      i += 1;
+      continue;
+    }
+    if (arg === "--fix") {
+      const value = rest[i + 1];
+      if (!value) throw new Error("--fix requires a value (e.g. domain-to-related)");
+      options.fix = value;
+      i += 1;
+      continue;
+    }
 
     throw new Error(`Unknown argument: ${arg}`);
   }
@@ -601,7 +630,11 @@ function parseArgs(args: string[]): Args {
     options.all = true;
   }
 
-  if (!options.cleanup && !options.rewriteText && !options.listLocal && !options.reportRelatedWithoutDomains && !options.refetch && !options.generateSummary && !options.all && !options.entity && !options.specimenUrlsFile) {
+  if (options.fix && !options.all && !options.entity) {
+    options.all = true;
+  }
+
+  if (!options.cleanup && !options.rewriteText && !options.listLocal && !options.reportRelatedWithoutDomains && !options.refetch && !options.generateSummary && !options.review && !options.fix && !options.all && !options.entity && !options.specimenUrlsFile) {
     throw new Error("Specify --entity <id>, --all, or --specimenUrlsFile <path>");
   }
 
@@ -640,13 +673,14 @@ function parseArgs(args: string[]): Args {
 function resolveDataRoot(inputPath: string): string {
   return path.isAbsolute(inputPath) ? inputPath : path.resolve(process.cwd(), inputPath);
 }
-export function isLikelyIndexPage(page: CrawledPage): boolean {
+export function isLikelyIndexPage(page: CrawledPage, contentAreaLinkCount?: number): boolean {
   const urlLower = page.url.toLowerCase();
   const titleLower = page.title.toLowerCase();
   const hasIndexMarker = /\b(index|table of contents|contents|sitemap|directory)\b/.test(`${urlLower} ${titleLower}`);
   const bodyText = `${page.title}\n${page.plainText || page.textSample || ""}`;
   const hasCapitalizedIndexDensity = hasHighCapitalizedIndexDensity(bodyText);
-  return hasIndexMarker || page.links.length >= 40 || hasCapitalizedIndexDensity;
+  const linkCount = contentAreaLinkCount ?? page.links.length;
+  return hasIndexMarker || linkCount >= 40 || hasCapitalizedIndexDensity;
 }
 
 export function getCapitalizedWordStats(text: string): {
@@ -809,23 +843,45 @@ function explainLinkClassification(
   };
 }
 
-function getSeedUrls(entity: Entity): Array<{ url: string; source: "mainUrl" | "governingUrl" | "authorityUrl" }> {
-  const urls: Array<{ url: string; source: "mainUrl" | "governingUrl" | "authorityUrl" }> = [];
-  const governing = normalizeUrl(entity.governingUrl);
-  const main = normalizeUrl(entity.mainUrl);
-  const hub = normalizeUrl(entity.hubUrl);
-  const authority = normalizeUrl(entity.authorityUrl);
+function getSeedUrls(entity: Entity): Array<{ url: string; source: CrawlSource }> {
+  const urls: Array<{ url: string; source: CrawlSource }> = [];
+  const governing = normalizeUrl(getEntityLink(entity, "governing"));
+  const main = normalizeUrl(getEntityLink(entity, "main"));
+  const hub = normalizeUrl(getEntityLink(entity, "hub"));
+  const authority = normalizeUrl(getEntityLink(entity, "authority"));
 
   if (governing) urls.push({ url: governing, source: "governingUrl" });
   if (main) urls.push({ url: main, source: "mainUrl" });
-  if (hub) urls.push({ url: hub, source: "authorityUrl" });
+  if (hub) urls.push({ url: hub, source: "hubUrl" });
   if (authority) urls.push({ url: authority, source: "authorityUrl" });
 
   return urls;
 }
 
+const LINK_TYPE_TO_SOURCE: Record<string, CrawlSource> = {
+  main: "mainUrl",
+  governing: "governingUrl",
+  hub: "hubUrl",
+  authority: "authorityUrl",
+};
+
+function filterSeeds(
+  seeds: Array<{ url: string; source: CrawlSource }>,
+  seedUrl: string,
+): Array<{ url: string; source: CrawlSource }> {
+  if (seedUrl in LINK_TYPE_TO_SOURCE) {
+    const source = LINK_TYPE_TO_SOURCE[seedUrl];
+    return seeds.filter((s) => s.source === source);
+  }
+  // Direct URL: prefer a matching seed (to keep the right source label),
+  // otherwise inject it as-is and let the source default to "mainUrl".
+  const normalizedTarget = normalizeUrlForMatch(seedUrl);
+  const match = seeds.find((s) => normalizeUrlForMatch(s.url) === normalizedTarget);
+  return match ? [match] : [{ url: seedUrl, source: "mainUrl" }];
+}
+
 function getEntityRecordUrls(entity: Entity): Set<string> {
-  const urls = [entity.governingUrl, entity.mainUrl, entity.hubUrl, entity.authorityUrl]
+  const urls = (["governing", "main", "hub", "authority"] as const).map((t) => getEntityLink(entity, t))
     .map((value) => normalizeUrl(value || undefined))
     .filter((value): value is string => Boolean(value))
     .map((value) => normalizeUrlForMatch(value));
@@ -1091,10 +1147,14 @@ async function spiderEntity(
   const entityDownloadsDir = path.join(getEntityDownloadsRoot(storage), entity.id);
   await fs.ensureDir(entityDownloadsDir);
 
-  const seeds = getSeedUrls(entity);
+  const allSeeds = getSeedUrls(entity);
+  const seeds = args.seedUrl ? filterSeeds(allSeeds, args.seedUrl) : allSeeds;
   if (seeds.length === 0) {
-    console.log(`[SKIP] ${entity.id}: no seed URLs available`);
+    console.log(`[SKIP] ${entity.id}: no seed URLs available${args.seedUrl ? ` (--seed-url ${args.seedUrl})` : ""}`);
     return;
+  }
+  for (const seed of seeds) {
+    console.log(`[SEED] ${entity.id} source=${seed.source} ${seed.url}`);
   }
 
   await ensureEntityHistoryLayout(storage, entity.id);
@@ -1121,9 +1181,10 @@ async function spiderEntity(
   const entityRecordUrls = getEntityRecordUrls(entity);
   const visited = new Set<string>();
   const pages: CrawledPage[] = [];
-  const pagesBySource: Record<CrawlTask["source"], number> = {
+  const pagesBySource: Record<CrawlSource, number> = {
     governingUrl: 0,
     mainUrl: 0,
+    hubUrl: 0,
     authorityUrl: 0,
   };
   let interactiveModeStopped = false;
@@ -1172,8 +1233,8 @@ async function spiderEntity(
   // is validated as important. Remove such URLs from the menu-link filter so they are
   // crawled during this session rather than silently skipped. Also persist the removal
   // so it takes effect on subsequent runs without re-discovery.
-  const _governingUrl = normalizeUrl(entity.governingUrl);
-  const _mainUrl = normalizeUrl(entity.mainUrl);
+  const _governingUrl = normalizeUrl(getEntityLink(entity, "governing"));
+  const _mainUrl = normalizeUrl(getEntityLink(entity, "main"));
   const governingUrlLinkedUrls = new Set<string>();
   const governingMainContentLinkedUrls = new Set<string>();
   if (_governingUrl) {
@@ -1225,7 +1286,7 @@ async function spiderEntity(
   const processCollectedPages = async (skipInteractivePrompts = false): Promise<void> => {
     console.log(`[SUMMARY] ${entity.id} crawled pages: ${pages.length}`);
     console.log(
-      `[SUMMARY] ${entity.id} pages by source: governing=${pagesBySource.governingUrl}, main=${pagesBySource.mainUrl}, authority=${pagesBySource.authorityUrl}`,
+      `[SUMMARY] ${entity.id} pages by source: governing=${pagesBySource.governingUrl}, main=${pagesBySource.mainUrl}, hub=${pagesBySource.hubUrl}, authority=${pagesBySource.authorityUrl}`,
     );
 
     for (const page of pages) {
@@ -1274,12 +1335,24 @@ async function spiderEntity(
       const matchedDomainIds = matchedScores.map((score) => score.domainId).slice(0, MAX_MATCHED_DOMAINS);
 
       // Check if this page is a seed/entity URL (depth 0) - always treat as related
-      const normalizedMainUrl = entity.mainUrl ? normalizeUrlForMatch(entity.mainUrl) : null;
+      const normalizedMainUrl = getEntityLink(entity, "main") ? normalizeUrlForMatch(getEntityLink(entity, "main")!) : null;
       const isMainUrl = normalizedMainUrl && normalizedPageUrl === normalizedMainUrl;
       const isSeedEntityUrl = page.depth === 0;
 
+      // Hub pages are purpose-built content sites — never demote them to index.
+      const hubHostname = getLikelyHostname(normalizeUrl(getEntityLink(entity, "hub")) ?? "");
+      const isHubPage = Boolean(hubHostname && getLikelyHostname(page.url) === hubHostname);
+
+      // For non-hub pages use content-area link count (not whole-page) to avoid false positives.
+      let contentAreaLinkCount: number | undefined;
+      if (!isHubPage && hostRecordBefore?.contentSelector && page.htmlContent) {
+        contentAreaLinkCount = extractContentBlockLinkCandidates(
+          page.htmlContent, page.url, hostRecordBefore.contentSelector,
+        ).length;
+      }
+
       // Index is only a valid classification if the page also matches a domain.
-      const isIndex = !isSeedEntityUrl && matchedDomainIds.length > 0 && isLikelyIndexPage(scoredPage);
+      const isIndex = !isSeedEntityUrl && !isHubPage && matchedDomainIds.length > 0 && isLikelyIndexPage(scoredPage, contentAreaLinkCount);
       let finalStatus: HistoryStatus = isSeedEntityUrl
         ? "related"
         : matchedDomainIds.length === 0
@@ -1325,6 +1398,7 @@ async function spiderEntity(
               excerpt,
               domainScores: scoredDomains,
               explanationLines: pageExplanationLines,
+              cached: page.fromCache,
             },
           );
           finalStatus = reviewedStatus;
@@ -1501,7 +1575,7 @@ async function spiderEntity(
         pagesBySource[task.source] += 1;
 
         let linkCandidatesToEvaluate = cached.linkCandidates;
-        if (cached.page.htmlContent) {
+        if (cached.page.htmlContent && task.source !== "hubUrl") {
           const hostRecord = websitesFile.hosts[getLikelyHostname(task.url)];
           if (hostRecord?.contentSelector) {
             linkCandidatesToEvaluate = extractContentBlockLinkCandidates(
@@ -1512,14 +1586,15 @@ async function spiderEntity(
           }
         }
 
-        if (task.depth < args.maxDepth && linkCandidatesToEvaluate.length > 0) {
+        console.log(`[EXTRACT][CACHE] ${entity.id} source=${task.source} depth=${task.depth} links=${linkCandidatesToEvaluate.length} ${task.url}`);
+        if (task.depth < args.maxDepth + (task.source === "hubUrl" ? 1 : 0) && linkCandidatesToEvaluate.length > 0) {
           for (const link of linkCandidatesToEvaluate) {
             const evaluatedLink = evaluateLinkCandidate(link.url, {
               visited,
               queuedNormalizedUrls,
               historyMap,
               allowedHosts,
-              localMenuUrls,
+              localMenuUrls: task.source === "hubUrl" ? new Set<string>() : localMenuUrls,
               entityRecordUrls,
               recrawlDays: args.recrawlDays,
               verbose: args.verbose,
@@ -1603,6 +1678,28 @@ async function spiderEntity(
             }
           }
         }
+
+        if (task.source === "governingUrl" && task.depth === 0 && cached.page.htmlContent) {
+          const secondaryNavLinks = extractSecondaryNavLinkCandidates(cached.page.htmlContent, task.url);
+          if (secondaryNavLinks.length > 0) {
+            console.log(`[SECONDARY-NAV] ${entity.id} found ${secondaryNavLinks.length} links on governing URL (cache)`);
+            for (const link of secondaryNavLinks) {
+              const evaluatedLink = evaluateLinkCandidate(link.url, {
+                visited,
+                queuedNormalizedUrls,
+                historyMap,
+                allowedHosts,
+                localMenuUrls: new Set<string>(),
+                entityRecordUrls,
+                recrawlDays: args.recrawlDays,
+                verbose: args.verbose,
+              });
+              if (!evaluatedLink) continue;
+              queue.push({ url: evaluatedLink.normalizedLinkUrl, depth: task.depth + 1, source: task.source });
+              queuedNormalizedUrls.add(evaluatedLink.normalizedLinkUrl);
+            }
+          }
+        }
         continue;
       }
 
@@ -1666,7 +1763,7 @@ async function spiderEntity(
       continue;
     }
 
-    console.log(`[FETCH] ${entity.id} depth=${task.depth} ${task.url}`);
+    console.log(`[FETCH] ${entity.id} source=${task.source} depth=${task.depth} ${task.url}`);
 
     const fetchResult = await fetchPageWithBotFallback(task.url, consecutiveBotRejections, args.notbot);
     const fetched = fetchResult.fetched;
@@ -1715,6 +1812,7 @@ async function spiderEntity(
       pagesBySource[task.source] += 1;
     } else {
       const extracted = extractLinksAndText(task.url, fetched.page?.html || cachedHtmlForBlockedFetch || "");
+      console.log(`[EXTRACT] ${entity.id} source=${task.source} depth=${task.depth} links=${extracted.linkCandidates.length}${cachedHtmlForBlockedFetch ? " (cached)" : ""} ${task.url}`);
       const page: CrawledPage = {
         url: task.url,
         depth: task.depth,
@@ -1730,13 +1828,13 @@ async function spiderEntity(
       pages.push(page);
       pagesBySource[task.source] += 1;
 
-      if (task.depth >= args.maxDepth) {
+      if (task.depth >= args.maxDepth + (task.source === "hubUrl" ? 1 : 0)) {
         continue;
       }
 
       let linkCandidatesToEvaluate = extracted.linkCandidates;
       const hostRecord = websitesFile.hosts[getLikelyHostname(task.url)];
-      if (hostRecord?.contentSelector && page.htmlContent) {
+      if (hostRecord?.contentSelector && page.htmlContent && task.source !== "hubUrl") {
         linkCandidatesToEvaluate = extractContentBlockLinkCandidates(
           page.htmlContent,
           task.url,
@@ -1750,7 +1848,7 @@ async function spiderEntity(
           queuedNormalizedUrls,
           historyMap,
           allowedHosts,
-          localMenuUrls,
+          localMenuUrls: task.source === "hubUrl" ? new Set<string>() : localMenuUrls,
           entityRecordUrls,
           recrawlDays: args.recrawlDays,
           verbose: args.verbose,
@@ -1831,6 +1929,28 @@ async function spiderEntity(
             throw err;
           }
           // ignore malformed URLs
+        }
+      }
+
+      if (task.source === "governingUrl" && task.depth === 0 && page.htmlContent) {
+        const secondaryNavLinks = extractSecondaryNavLinkCandidates(page.htmlContent, task.url);
+        if (secondaryNavLinks.length > 0) {
+          console.log(`[SECONDARY-NAV] ${entity.id} found ${secondaryNavLinks.length} links on governing URL`);
+          for (const link of secondaryNavLinks) {
+            const evaluatedLink = evaluateLinkCandidate(link.url, {
+              visited,
+              queuedNormalizedUrls,
+              historyMap,
+              allowedHosts,
+              localMenuUrls: new Set<string>(),
+              entityRecordUrls,
+              recrawlDays: args.recrawlDays,
+              verbose: args.verbose,
+            });
+            if (!evaluatedLink) continue;
+            queue.push({ url: evaluatedLink.normalizedLinkUrl, depth: task.depth + 1, source: task.source });
+            queuedNormalizedUrls.add(evaluatedLink.normalizedLinkUrl);
+          }
         }
       }
     }
@@ -2096,10 +2216,10 @@ async function runListLocalMode(storage: any, targets: Entity[], args: Args): Pr
     reportLines.push(`## ${entity.id} (${entity.name})`);
     reportLines.push("");
     reportLines.push("### Entity URLs");
-    reportLines.push(`- governingUrl: ${entity.governingUrl || "(none)"}`);
-    reportLines.push(`- mainUrl: ${entity.mainUrl || "(none)"}`);
-    reportLines.push(`- hubUrl: ${entity.hubUrl || "(none)"}`);
-    reportLines.push(`- authorityUrl: ${entity.authorityUrl || "(none)"}`);
+    reportLines.push(`- governingUrl: ${getEntityLink(entity, "governing") || "(none)"}`);
+    reportLines.push(`- mainUrl: ${getEntityLink(entity, "main") || "(none)"}`);
+    reportLines.push(`- hubUrl: ${getEntityLink(entity, "hub") || "(none)"}`);
+    reportLines.push(`- authorityUrl: ${getEntityLink(entity, "authority") || "(none)"}`);
     reportLines.push("");
 
     reportLines.push("### History Status Summary");
@@ -2284,6 +2404,262 @@ async function runRefetchMode(storage: any, targets: Entity[], domains: Domain[]
   );
 }
 
+type ReviewSummaryRow = { group: string; related: number; index: number; unrelated: number };
+
+function buildReviewSummary(entries: SpiderDownloadRecord[], hubHostname: string): ReviewSummaryRow[] {
+  const groups = new Map<string, ReviewSummaryRow>();
+  for (const entry of entries) {
+    let hostname = "";
+    let firstDir = "";
+    try {
+      const parsed = new URL(entry.url);
+      hostname = parsed.hostname.toLowerCase();
+      firstDir = parsed.pathname.split("/").filter(Boolean)[0] ?? "";
+    } catch {
+      continue;
+    }
+    const isHub = hubHostname && hostname === hubHostname;
+    const group = isHub && firstDir ? `${hostname}/${firstDir}` : hostname;
+    if (!groups.has(group)) groups.set(group, { group, related: 0, index: 0, unrelated: 0 });
+    const row = groups.get(group)!;
+    if (entry.status === "related") row.related++;
+    else if (entry.status === "index") row.index++;
+    else if (entry.status === "unrelated") row.unrelated++;
+  }
+  return Array.from(groups.values()).sort((a, b) => a.group.localeCompare(b.group));
+}
+
+function printReviewSummaryTable(rows: ReviewSummaryRow[]): void {
+  if (rows.length === 0) return;
+  const groupW = Math.max(30, ...rows.map((r) => r.group.length)) + 2;
+  const cols = ["related", "index", "unrelated"] as const;
+  const colW = 9;
+  const sep = "-".repeat(groupW) + "+" + cols.map(() => "-".repeat(colW)).join("+");
+  const header = "Group".padEnd(groupW) + "|" + cols.map((c) => c.padStart(colW - 1).padEnd(colW)).join("|");
+  console.log(sep);
+  console.log(header);
+  console.log(sep);
+  for (const row of rows) {
+    const line = row.group.padEnd(groupW) + "|" +
+      cols.map((c) => String(row[c]).padStart(colW - 1).padEnd(colW)).join("|");
+    console.log(line);
+  }
+  const totals = { related: 0, index: 0, unrelated: 0 };
+  for (const row of rows) { totals.related += row.related; totals.index += row.index; totals.unrelated += row.unrelated; }
+  console.log(sep);
+  const totalLine = "TOTAL".padEnd(groupW) + "|" +
+    cols.map((c) => String(totals[c]).padStart(colW - 1).padEnd(colW)).join("|");
+  console.log(totalLine);
+  console.log(sep);
+}
+
+async function runReviewMode(storage: any, targets: Entity[], domains: Domain[], args: Args): Promise<void> {
+  const rl = createInterface({ input, output });
+  try {
+    for (const entity of targets) {
+      const { historyMap, menuLinks } = await loadHistoryData(storage, entity.id);
+
+      const reviewable = Array.from(historyMap.values()).filter(
+        (entry) =>
+          (entry.localFile || entry.localFileText) &&
+          (entry.status === "related" || entry.status === "unrelated" || entry.status === "index"),
+      );
+
+      if (reviewable.length === 0) {
+        console.log(`[REVIEW] ${entity.id}: no reviewable entries`);
+        continue;
+      }
+
+      const hubHostname = getLikelyHostname(normalizeUrl(getEntityLink(entity, "hub")) ?? "") ?? "";
+      const allClassified = Array.from(historyMap.values()).filter(
+        (e) => e.status === "related" || e.status === "index" || e.status === "unrelated",
+      );
+      console.log(`\n[REVIEW] ${entity.id}: ${reviewable.length} reviewable entries (${allClassified.length} total classified)`);
+      printReviewSummaryTable(buildReviewSummary(allClassified, hubHostname));
+
+      let changed = 0;
+      let skipToNextEntity = false;
+      let folderPrefix: string | null = null;
+      let folderStatus: ReviewStatus | null = null;
+      let folderDomains: string[] | null = null;
+
+      for (const entry of reviewable) {
+        if (skipToNextEntity) break;
+
+        // Fast-forward: apply folder selection without prompting
+        if (folderPrefix && entry.url.startsWith(folderPrefix) && folderStatus) {
+          const currentStatus = toReviewStatusFromHistory(entry.status) ?? "unrelated";
+          let newMatchedDomainIds: string[];
+          let newStatus: ReviewStatus;
+
+          if (folderDomains !== null) {
+            // Fixed: apply the same status and domain set uniformly
+            newMatchedDomainIds = folderDomains;
+            newStatus = folderStatus;
+          } else {
+            // Auto: score each page individually; download if not cached
+            let ff = await loadCachedPageFromHistory(storage, entry, 0);
+            if (!ff) {
+              console.log(`[REVIEW][FOLDER] downloading ${entry.url}...`);
+              const { page: downloaded } = await fetchPageContent(entry.url);
+              if (downloaded?.kind === "html" && downloaded.html) {
+                const builtPage: CrawledPage = {
+                  url: entry.url,
+                  depth: 0,
+                  title: entry.title ?? "",
+                  headers: {},
+                  htmlContent: downloaded.html,
+                  plainText: "",
+                  textSample: "",
+                  isPdf: false,
+                  links: [],
+                };
+                const timestamp = new Date().toISOString();
+                const saved = await saveCrawledArtifacts(storage, entity.id, builtPage, timestamp);
+                upsertHistoryEntry(historyMap, {
+                  ...entry,
+                  ...(saved.localFile ? { localFile: saved.localFile } : {}),
+                  ...(saved.localFileText ? { localFileText: saved.localFileText } : {}),
+                });
+                ff = { page: builtPage, fromCache: false };
+              }
+            }
+            if (ff) {
+              const ffScores = scoreDomainDetailed(domains, ff.page, entity.governingBody);
+              const matched = ffScores.filter((s) => isDomainScoreMatch(s));
+              newMatchedDomainIds = matched.map((s) => s.domainId);
+              newStatus = newMatchedDomainIds.length > 0 ? "related" : currentStatus;
+            } else {
+              newMatchedDomainIds = entry.matchedDomainIds ?? [];
+              newStatus = currentStatus;
+            }
+          }
+
+          const statusChanged = newStatus !== currentStatus;
+          const domainsChanged = JSON.stringify(newMatchedDomainIds.slice().sort()) !== JSON.stringify((entry.matchedDomainIds ?? []).slice().sort());
+          if (statusChanged || domainsChanged) {
+            upsertHistoryEntry(historyMap, { ...entry, status: newStatus, matchedDomainIds: newMatchedDomainIds });
+            console.log(`[REVIEW][FOLDER] ${entry.url} -> ${newStatus} | domains: [${newMatchedDomainIds.join(", ")}]`);
+            changed++;
+          }
+          continue;
+        }
+
+        const cached = await loadCachedPageFromHistory(storage, entry, 0);
+        const currentStatus = toReviewStatusFromHistory(entry.status) ?? "unrelated";
+        const style = getColorForStatus(currentStatus);
+        const cacheTag = cached ? "[cached]" : "[no cache]";
+
+        console.log(styleText("bold", `\n[REVIEW][PAGE] ${cacheTag} ${entry.url}`));
+
+        if (!cached) {
+          console.log(styleText(["bold", style] as any, `[REVIEW][STATUS] ${currentStatus}`) +
+            ` | stored domains: ${entry.matchedDomainIds?.join(", ") || "(none)"}`);
+          console.log("[REVIEW] No cached content — skipping domain scoring.");
+          continue;
+        }
+
+        const scoredDomains = scoreDomainDetailed(domains, cached.page, entity.governingBody);
+        const matchedScores = scoredDomains.filter((s) => isDomainScoreMatch(s));
+
+        if (cached.page.title) console.log(`[REVIEW][TITLE] ${cached.page.title}`);
+        console.log(styleText(["bold", style] as any, `[REVIEW][STATUS] ${currentStatus}`) +
+          ` | stored domains: ${entry.matchedDomainIds?.join(", ") || "(none)"}`);
+        if (cached.page.textSample) {
+          console.log(`[REVIEW][EXCERPT] ${cached.page.textSample.slice(0, 300)}`);
+        }
+        if (matchedScores.length > 0) {
+          console.log("[REVIEW][SCORED DOMAINS]");
+          matchedScores.slice(0, 8).forEach((s, i) =>
+            console.log(`  ${i + 1}. [${s.domainId}] ${s.displayName} | weighted=${s.weightedScore.toFixed(2)}`),
+          );
+        } else {
+          console.log("[REVIEW][SCORED DOMAINS] none matched threshold");
+        }
+
+        let newStatus = currentStatus;
+        let changeDomains = false;
+        let applyToFolder = false;
+        while (true) {
+          const answer = await rl.question("Keep [Enter], R=related I=index D=unrelated C=change-domains F=apply-to-folder N=next-entity X=exit: ");
+          const norm = answer.trim().toLowerCase();
+          if (!norm) break;
+          if (norm.startsWith("x")) return;
+          if (norm.startsWith("n")) { skipToNextEntity = true; break; }
+          if (norm.startsWith("r")) { newStatus = "related"; changeDomains = true; break; }
+          if (norm.startsWith("i")) { newStatus = "index"; changeDomains = true; break; }
+          if (norm.startsWith("d") || norm.startsWith("u")) { newStatus = "unrelated"; break; }
+          if (norm.startsWith("c")) { changeDomains = true; break; }
+          if (norm.startsWith("f")) { applyToFolder = true; changeDomains = true; break; }
+          console.log(`Unrecognized input '${answer.trim()}'`);
+        }
+        if (skipToNextEntity) break;
+
+        let newMatchedDomainIds: string[] = entry.matchedDomainIds ?? [];
+
+        if (changeDomains) {
+          const domainChoices = matchedScores.length > 0 ? matchedScores : scoredDomains.slice(0, 10);
+          if (domainChoices.length > 0) {
+            console.log("[REVIEW] Select domains (comma-separated numbers, A=all matched, Enter=keep current):");
+            domainChoices.forEach((s, i) => {
+              const isCurrent = newMatchedDomainIds.includes(s.domainId);
+              console.log(`  ${i + 1}. ${s.displayName} [${s.domainId}]${isCurrent ? " *" : ""}`);
+            });
+            const domainAnswer = await rl.question("Domains: ");
+            const trimmed = domainAnswer.trim();
+            if (trimmed.toLowerCase() === "a") {
+              newMatchedDomainIds = matchedScores.map((s) => s.domainId);
+            } else if (trimmed) {
+              const indices = trimmed
+                .split(",")
+                .map((s) => parseInt(s.trim(), 10) - 1)
+                .filter((i) => i >= 0 && i < domainChoices.length);
+              newMatchedDomainIds = indices.map((i) => domainChoices[i].domainId);
+            }
+            // If domains were selected via C/F, promote status to "related"
+            if (newMatchedDomainIds.length > 0 && newStatus !== "related" && newStatus !== "index") {
+              newStatus = "related";
+            }
+          }
+        } else if (newStatus === "unrelated") {
+          newMatchedDomainIds = [];
+        }
+
+        if (applyToFolder) {
+          folderPrefix = entry.url.substring(0, entry.url.lastIndexOf("/") + 1);
+          folderStatus = newStatus;
+          // null = auto-score each entry; fixed array = apply same domains to all
+          const domainSelectionMade = newMatchedDomainIds.join(",") !== (entry.matchedDomainIds ?? []).join(",");
+          folderDomains = domainSelectionMade ? newMatchedDomainIds : null;
+          const domainsDesc = folderDomains ? `[${folderDomains.join(", ")}]` : "(auto-scored per page)";
+          console.log(`[REVIEW][FOLDER] Fast-forward enabled for: ${folderPrefix} -> ${folderStatus} | domains: ${domainsDesc}`);
+        }
+
+        const statusChanged = newStatus !== currentStatus;
+        const domainsChanged = JSON.stringify(newMatchedDomainIds.slice().sort()) !== JSON.stringify((entry.matchedDomainIds ?? []).slice().sort());
+        if (statusChanged || domainsChanged) {
+          upsertHistoryEntry(historyMap, { ...entry, status: newStatus, matchedDomainIds: newMatchedDomainIds });
+          console.log(`[REVIEW] ${currentStatus} -> ${newStatus} | domains: [${newMatchedDomainIds.join(", ")}]`);
+          changed++;
+        }
+      }
+
+      if (changed > 0) {
+        if (!args.dryRun) {
+          await saveHistoryData(storage, entity.id, historyMap, menuLinks);
+          console.log(`[REVIEW] ${entity.id}: saved ${changed} change(s)`);
+        } else {
+          console.log(`[REVIEW] ${entity.id}: ${changed} change(s) (dry-run, not saved)`);
+        }
+      } else {
+        console.log(`[REVIEW] ${entity.id}: no changes`);
+      }
+    }
+  } finally {
+    rl.close();
+  }
+}
+
 async function runCleanupMode(storage: any, targets: Entity[], args: Args): Promise<void> {
   let totalScanned = 0;
   let totalFilesDeleted = 0;
@@ -2393,11 +2769,10 @@ async function runCleanupMode(storage: any, targets: Entity[], args: Args): Prom
     }
 
     const relatedWithoutDomainsEntity: string[] = [];
-    const allowedCleanupHosts = new Set<string>([
-      normalizeUrl(entity.mainUrl),
-      normalizeUrl(entity.governingUrl),
-      normalizeUrl(entity.hubUrl),
-    ].filter((value): value is string => Boolean(value)).map((url) => getLikelyHostname(url)));
+    const allowedCleanupHosts = new Set<string>((["main", "governing", "hub"] as const)
+      .map((t) => normalizeUrl(getEntityLink(entity, t)))
+      .filter((value): value is string => Boolean(value))
+      .map((url) => getLikelyHostname(url)));
 
     let entityUpdated = false;
 
@@ -2512,12 +2887,11 @@ async function runScanForEntity(storage: any, entity: Entity, domains: Domain[],
   const { historyMap, menuLinks } = await loadHistoryData(storage, entity.id);
   const websitesFile = await loadWebsitesFile(storage, entity.id);
 
-  const seedUrls = Array.from(new Set([
-    normalizeUrl(entity.mainUrl),
-    normalizeUrl(entity.hubUrl),
-    normalizeUrl(entity.governingUrl),
-    normalizeUrl(entity.authorityUrl),
-  ].filter((value): value is string => Boolean(value))));
+  const seedUrls = Array.from(new Set(
+    (["main", "hub", "governing", "authority"] as const)
+      .map((t) => normalizeUrl(getEntityLink(entity, t)))
+      .filter((value): value is string => Boolean(value))
+  ));
 
   const entityRecordUrls = getEntityRecordUrls(entity);
   const allowedHosts = new Set(seedUrls.map((url) => getLikelyHostname(url)).filter(Boolean));
@@ -2542,7 +2916,7 @@ async function runScanForEntity(storage: any, entity: Entity, domains: Domain[],
   }
 
   let secondaryUrl: string | undefined;
-  const normalizedMainUrl = normalizeUrl(entity.mainUrl);
+  const normalizedMainUrl = normalizeUrl(getEntityLink(entity, "main"));
   const mainHostname = normalizedMainUrl ? getLikelyHostname(normalizedMainUrl) : "";
   if (normalizedMainUrl && mainHostname) {
     const linkCandidates = await readLinkCandidatesForMenuDiscovery(storage, historyMap, normalizedMainUrl);
@@ -2577,7 +2951,7 @@ async function runScanForEntity(storage: any, entity: Entity, domains: Domain[],
   let discoveredMenuLinks = new Set<string>();
   const contentSelectors = new Map<string, string>();
 
-  const hasMainAndGoverning = Boolean(normalizeUrl(entity.mainUrl) && normalizeUrl(entity.governingUrl));
+  const hasMainAndGoverning = Boolean(normalizeUrl(getEntityLink(entity, "main")) && normalizeUrl(getEntityLink(entity, "governing")));
   if (hasMainAndGoverning) {
     const discovered = await discoverLocalMenuLinks(storage, historyMap, entity, entityRecordUrls, {
       domains,
@@ -2589,10 +2963,9 @@ async function runScanForEntity(storage: any, entity: Entity, domains: Domain[],
   }
 
   if (contentSelectors.size === 0 && secondaryUrl && secondaryHtml) {
-    const primaryUrl = normalizeUrl(entity.mainUrl)
-      || normalizeUrl(entity.governingUrl)
-      || normalizeUrl(entity.hubUrl)
-      || normalizeUrl(entity.authorityUrl);
+    const primaryUrl = (["main", "governing", "hub", "authority"] as const)
+      .map((t) => normalizeUrl(getEntityLink(entity, t)))
+      .find(Boolean);
     const primaryHtml = primaryUrl ? (seedHtmlByUrl.get(primaryUrl) || null) : null;
     if (primaryUrl && primaryHtml) {
       const selector = discoverContentSelector(entity, secondaryHtml, secondaryUrl, primaryHtml, primaryUrl);
@@ -2746,7 +3119,100 @@ async function runGenerateSummaryMode(storage: any, targets: Entity[]): Promise<
   console.log(`[SUMMARY] wrote ${summaryPath} with ${summary.length} entities`);
 }
 
+async function runFixMode(storage: any, targets: Entity[], fixOp: string, args: Args): Promise<void> {
+  const SUPPORTED_OPS = ["domain-to-related"];
+  if (!SUPPORTED_OPS.includes(fixOp)) {
+    throw new Error(`Unknown --fix operation: "${fixOp}". Supported: ${SUPPORTED_OPS.join(", ")}`);
+  }
+
+  let totalChanged = 0;
+
+  for (const entity of targets) {
+    const { historyMap, menuLinks } = await loadHistoryData(storage, entity.id);
+    let entityChanged = 0;
+
+    for (const [url, entry] of historyMap) {
+      if (fixOp === "domain-to-related") {
+        const hasDomains = Array.isArray(entry.matchedDomainIds) && entry.matchedDomainIds.length > 0;
+        if (hasDomains && entry.status !== "related") {
+          console.log(`[FIX] ${entity.id} | ${entry.status} -> related | domains: [${entry.matchedDomainIds!.join(", ")}] | ${url}`);
+          if (!args.dryRun) {
+            historyMap.set(url, { ...entry, status: "related" });
+          }
+          entityChanged++;
+        }
+      }
+    }
+
+    if (entityChanged > 0 && !args.dryRun) {
+      await saveHistoryData(storage, entity.id, historyMap, menuLinks);
+      console.log(`[FIX] ${entity.id}: ${entityChanged} record(s) updated`);
+    } else if (entityChanged > 0 && args.dryRun) {
+      console.log(`[FIX] ${entity.id}: ${entityChanged} record(s) would be updated (dry-run)`);
+    }
+
+    totalChanged += entityChanged;
+  }
+
+  console.log(`\n[FIX] Done. ${totalChanged} record(s) ${args.dryRun ? "would be" : ""} updated across ${targets.length} entity/entities.`);
+}
+
+function printHelp(): void {
+  console.log(`
+spiderEntityWebsites — crawl municipal entity websites and classify pages by domain
+
+Usage:
+  tsx spiderEntityWebsites.ts [options] --entity <id> | --all | --specimenUrlsFile <path>
+
+Target selection (required unless using a utility mode):
+  --entity <id>               Crawl a single entity by ID
+  --all                       Crawl all entities in the realm
+  --specimenUrlsFile <path>   Crawl URLs listed in a JSON file
+
+Common options:
+  --realm <realm-id>          Realm to use (or set CURRENT_REALM env var)
+  --data-root <path>          Path to the data root (or set DATA_ROOT env var)
+  --domain <id>               Restrict scoring/classification to one domain
+  --dry-run                   Skip writing any files
+  --verbose, -v               Extra logging
+  --help, -h                  Show this help message and exit
+
+Crawl control:
+  --max-depth <n>             Maximum crawl depth, 1–3 (default: 2)
+  --max-pages <n>             Total page cap across all sources (default: 3× per-source limit)
+  --max-pages-per-source <n>  Page cap per seed source (default: varies)
+  --concurrency <n>           Parallel fetch concurrency, 1–20 (default: 3)
+  --recrawl-days <n>          Re-fetch pages older than N days (default: varies)
+  --seed-url <type|url>       Restrict crawl to one seed — named type (mainUrl, hubUrl,
+                              governingUrl, authorityUrl) or a direct URL
+  --force                     Force re-crawl even if recently visited
+  --refetch                   Re-fetch and re-score all known pages
+  --nodownload                Score existing cached pages without fetching new ones
+  --notbot                    Use a generic User-Agent (avoids bot detection)
+
+Interactive / review:
+  --interactive               Prompt for domain confirmation per page
+  --interactive-honor-history Skip pages that already have a definitive status
+  --review                    Show a summary table of crawled pages and review interactively
+
+Utility modes (no crawling):
+  --scan, --nospider          Re-score already-downloaded pages without fetching
+  --cleanup                   Remove orphaned download artifacts
+  --rewriteText               Re-generate .txt artifacts from cached HTML
+  --listlocal                 List locally downloaded files for each entity
+  --report-related-without-domains  Report related pages that have no matched domains
+  --generateSummary           Write a summary JSON across all entities
+  --fix <operation>           Apply a batch fix to history records (use with --dry-run first)
+                                domain-to-related  Set status to "related" for any record
+                                                   that has matched domains but isn't already related
+`);
+}
+
 async function main() {
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    printHelp();
+    process.exit(0);
+  }
   const args = parseArgs(process.argv.slice(2));
   const dataRoot = resolveDataRoot(args.dataRoot);
   process.env.DATA_ROOT = dataRoot;
@@ -2797,6 +3263,16 @@ async function main() {
 
   if (args.refetch) {
     await runRefetchMode(storage, targets, domains, args);
+    return;
+  }
+
+  if (args.review) {
+    await runReviewMode(storage, targets, domains, args);
+    return;
+  }
+
+  if (args.fix) {
+    await runFixMode(storage, targets, args.fix, args);
     return;
   }
 
