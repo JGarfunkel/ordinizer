@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * ensureStatutes.cli.ts
+ * ensureStatutes.ts
  *
  * Scans every ruleset (metadata.json) across all domains and entities in the
  * realm's data directory. For each entry, confirms that both the plain-text
@@ -9,7 +9,7 @@
  * recorded in the ruleset and then indexes the entity in Pinecone.
  *
  * Usage:
- *   tsx app/analyzer/lib/ensureStatutes.cli.ts --realm <realmId> [options]
+ *   tsx app/analyzer/lib/ensureStatutes.ts --realm <realmId> [options]
  *
  * Options:
  *   --realm <id>    Realm to scan (or set CURRENT_REALM env var)
@@ -59,7 +59,7 @@ function showHelp(): void {
 Scan rulesets and ensure statute source files are downloaded and indexed.
 
 Usage:
-  tsx app/analyzer/lib/ensureStatutes.cli.ts --realm <realmId> [options]
+  tsx app/analyzer/lib/ensureStatutes.ts --realm <realmId> [options]
 
 Options:
   --realm <id>    Realm to scan (or set CURRENT_REALM)

@@ -20,7 +20,7 @@ interface Target {
 }
 
 const USAGE = `
-Usage: cleanupBackups.cli.ts --realm <realm> --delete <mode> [options]
+Usage: cleanupBackups.ts --realm <realm> --delete <mode> [options]
 
 Required:
   --realm <realm>            Realm ID (e.g. "ny")
@@ -40,13 +40,13 @@ Options:
 
 Examples:
   # Delete all analysis backups across the entire realm
-  cleanupBackups.cli.ts --realm ny --delete analysis
+  cleanupBackups.ts --realm ny --delete analysis
 
   # Keep one backup per day for metadata in a specific domain
-  cleanupBackups.cli.ts --realm ny --delete metadata --domain police-transparency --keep-last-per-day
+  cleanupBackups.ts --realm ny --delete metadata --domain police-transparency --keep-last-per-day
 
   # Delete only analysis backups from May 2026
-  cleanupBackups.cli.ts --realm ny --delete analysis --ofdate 2026-05
+  cleanupBackups.ts --realm ny --delete analysis --ofdate 2026-05
 `.trim();
 
 function parseArgs(args: string[]): Args {

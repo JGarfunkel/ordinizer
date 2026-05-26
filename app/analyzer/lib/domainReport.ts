@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * domainReport.cli.ts
+ * domainReport.ts
  *
  * Generates a markdown report for a given domain:
  *   - All domain questions (with weight/category)
@@ -12,7 +12,7 @@
  * Output: <cwd>/local/report-<domainId>.md
  *
  * Usage:
- *   tsx app/analyzer/lib/domainReport.cli.ts --realm <realmId> --domain <domainId>
+ *   tsx app/analyzer/lib/domainReport.ts --realm <realmId> --domain <domainId>
  */
 
 import dotenv from "dotenv";

@@ -18,7 +18,7 @@ switch (subcommand) {
     break;
   }
   case "report": {
-    const { main } = await import("./lib/domainReport.cli.js");
+    const { main } = await import("./lib/domainReport.js");
     await main();
     break;
   }

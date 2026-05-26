@@ -22,6 +22,8 @@ import {
   loadWebsitesFile,
   fetchPageContent,
   extractLinksAndText,
+  type SpiderDownloadRecord,
+  fromRelativeDownloadsPath,
 } from "./spiderHistory.js";
 import {
   scoreDomainDetailed,
@@ -347,49 +349,106 @@ async function runRepl(args: Args): Promise<void> {
       const normalizedUrl = normalizeUrlForMatch(rawUrl) ?? rawUrl;
       const isStatuteLib = isStatuteLibraryUrl(normalizedUrl);
 
-      // --- Step 2: Download ---
-      console.log(isStatuteLib ? "Statute library URL detected, downloading..." : "Downloading...");
-      const { page: downloadedPage, status: downloadStatus } = await fetchPageContent(normalizedUrl);
-
-      let crawledPage: CrawledPage | null = null;
-      if (downloadedPage?.kind === "html" && downloadedPage.html) {
-        crawledPage = buildCrawledPage(normalizedUrl, downloadedPage.html);
-        console.log(`Title: ${crawledPage.title}`);
-      } else if (downloadedPage?.kind === "pdf") {
-        console.log("Downloaded a PDF — domain scoring will be skipped.");
-      } else {
-        console.log(`Could not download page (status: ${downloadStatus}).`);
-      }
-
-      // --- Step 3: Entity detection ---
-      const candidates = detectEntityCandidates(normalizedUrl, hostEntityMap, entities, crawledPage?.title);
+      // --- Step 2: Entity detection (hostname-based, before download) ---
+      const hostCandidates = isStatuteLib ? [] : detectEntityCandidates(normalizedUrl, hostEntityMap, entities);
       let selectedEntity: Entity | null = null;
 
-      if (candidates.length > 0) {
-        const source = isStatuteLib ? "title match" : "websites.json";
-        console.log(`\nDetected entity candidates (from ${source}):`);
-        for (let i = 0; i < candidates.length; i++) {
-          console.log(`  ${i + 1}. ${candidates[i].name} (${candidates[i].id})`);
+      if (hostCandidates.length > 0) {
+        console.log(`\nDetected entity candidates (from websites.json):`);
+        for (let i = 0; i < hostCandidates.length; i++) {
+          console.log(`  ${i + 1}. ${hostCandidates[i].name} (${hostCandidates[i].id})`);
         }
-        const answer = (
-          await rl.question("Pick entity [1-N, entity-id, or Enter to skip]: ")
-        ).trim();
+        const answer = (await rl.question("Pick entity [1-N, entity-id, or Enter to skip]: ")).trim();
         if (answer) {
           const idx = parseInt(answer, 10);
-          if (idx >= 1 && idx <= candidates.length) {
-            selectedEntity = candidates[idx - 1];
-          } else {
-            selectedEntity = entities.find((e) => e.id === answer) ?? null;
-            if (!selectedEntity) console.log(`Entity ID not found: ${answer}`);
-          }
+          selectedEntity = (idx >= 1 && idx <= hostCandidates.length)
+            ? hostCandidates[idx - 1]
+            : (entities.find((e) => e.id === answer) ?? null);
+          if (!selectedEntity) console.log(`Entity ID not found: ${answer}`);
         }
-      } else {
-        const answer = (
-          await rl.question("Entity not detected. Enter entity ID (or Enter to skip): ")
-        ).trim();
+      } else if (!isStatuteLib) {
+        const answer = (await rl.question("Entity not detected. Enter entity ID (or Enter to skip): ")).trim();
         if (answer) {
           selectedEntity = entities.find((e) => e.id === answer) ?? null;
           if (!selectedEntity) console.log(`Entity ID not found: ${answer}`);
+        }
+      }
+
+      // --- Step 3: History check ---
+      let existingEntry: SpiderDownloadRecord | undefined;
+      let historyMap: Map<string, SpiderDownloadRecord> | null = null;
+      let menuLinks: Awaited<ReturnType<typeof loadHistoryData>>["menuLinks"] | null = null;
+
+      if (selectedEntity) {
+        await ensureEntityHistoryLayout(storage, selectedEntity.id);
+        const loaded = await loadHistoryData(storage, selectedEntity.id);
+        historyMap = loaded.historyMap;
+        menuLinks = loaded.menuLinks;
+        existingEntry = historyMap.get(normalizedUrl);
+        if (existingEntry) {
+          console.log(`\n[INDEX] URL already in history:`);
+          console.log(`  status:    ${existingEntry.status}`);
+          console.log(`  domains:   ${existingEntry.matchedDomainIds?.join(", ") || "(none)"}`);
+          console.log(`  title:     ${existingEntry.title || "(none)"}`);
+          console.log(`  timestamp: ${existingEntry.timestamp || "(unknown)"}`);
+          const proceed = (await rl.question("Already indexed. Continue to update? [y/N]: ")).trim().toLowerCase();
+          if (proceed !== "y" && proceed !== "yes") {
+            console.log("Skipped.\n");
+            continue;
+          }
+        }
+      }
+
+      // --- Step 4: Download (or use cache) ---
+      let crawledPage: CrawledPage | null = null;
+      let cachedHtml: string | null = null;
+      if (existingEntry?.localFile) {
+        try {
+          const htmlPath = fromRelativeDownloadsPath(storage, existingEntry.localFile);
+          if (await fs.pathExists(htmlPath)) cachedHtml = await fs.readFile(htmlPath, "utf-8");
+        } catch { /* fall through to download */ }
+      }
+
+      if (cachedHtml) {
+        crawledPage = buildCrawledPage(normalizedUrl, cachedHtml);
+        console.log(`Using cached HTML. Title: ${crawledPage.title}`);
+      } else {
+        console.log(isStatuteLib ? "Statute library URL detected, downloading..." : "Downloading...");
+        const { page: downloadedPage, status: downloadStatus } = await fetchPageContent(normalizedUrl);
+        if (downloadedPage?.kind === "html" && downloadedPage.html) {
+          crawledPage = buildCrawledPage(normalizedUrl, downloadedPage.html);
+          console.log(`Title: ${crawledPage.title}`);
+        } else if (downloadedPage?.kind === "pdf") {
+          console.log("Downloaded a PDF — domain scoring will be skipped.");
+        } else {
+          console.log(`Could not download page (status: ${downloadStatus}).`);
+        }
+      }
+
+      // --- Step 5: Entity detection for statute library URLs (needs title) ---
+      if (isStatuteLib && !selectedEntity) {
+        const titleCandidates = detectEntityCandidates(normalizedUrl, hostEntityMap, entities, crawledPage?.title);
+        if (titleCandidates.length > 0) {
+          console.log(`\nDetected entity candidates (from title match):`);
+          for (let i = 0; i < titleCandidates.length; i++) {
+            console.log(`  ${i + 1}. ${titleCandidates[i].name} (${titleCandidates[i].id})`);
+          }
+          const answer = (await rl.question("Pick entity [1-N, entity-id, or Enter to skip]: ")).trim();
+          if (answer) {
+            const idx = parseInt(answer, 10);
+            selectedEntity = (idx >= 1 && idx <= titleCandidates.length)
+              ? titleCandidates[idx - 1]
+              : (entities.find((e) => e.id === answer) ?? null);
+          }
+        } else {
+          const answer = (await rl.question("Entity not detected. Enter entity ID (or Enter to skip): ")).trim();
+          if (answer) selectedEntity = entities.find((e) => e.id === answer) ?? null;
+        }
+        if (selectedEntity && !historyMap) {
+          await ensureEntityHistoryLayout(storage, selectedEntity.id);
+          const loaded = await loadHistoryData(storage, selectedEntity.id);
+          historyMap = loaded.historyMap;
+          menuLinks = loaded.menuLinks;
         }
       }
 
@@ -446,8 +505,12 @@ async function runRepl(args: Args): Promise<void> {
         }
       } else {
         // Entity website document: save to EntityDownloads + update history.json
-        await ensureEntityHistoryLayout(storage, selectedEntity.id);
-        const { historyMap, menuLinks } = await loadHistoryData(storage, selectedEntity.id);
+        if (!historyMap || !menuLinks) {
+          await ensureEntityHistoryLayout(storage, selectedEntity.id);
+          const loaded = await loadHistoryData(storage, selectedEntity.id);
+          historyMap = loaded.historyMap;
+          menuLinks = loaded.menuLinks;
+        }
 
         let localFile: string | undefined;
         let localFileText: string | undefined;
@@ -471,7 +534,7 @@ async function runRepl(args: Args): Promise<void> {
           ...(localFileText ? { localFileText } : {}),
         });
 
-        await saveHistoryData(storage, selectedEntity.id, historyMap, menuLinks);
+        await saveHistoryData(storage, selectedEntity.id, historyMap!, menuLinks!);
         console.log(`history.json updated for ${selectedEntity.id}.`);
       }
 
@@ -528,7 +591,40 @@ async function runRepl(args: Args): Promise<void> {
 // Entry point
 // ---------------------------------------------------------------------------
 
+function printHelp(): void {
+  console.log(`
+addUrl — interactive REPL for indexing URLs into the spider history
+
+Usage:
+  tsx addUrl.ts [options]
+
+Options:
+  --realm <realm-id>      Realm to use (or set CURRENT_REALM env var)
+  --data-root <path>      Path to the data root directory (or set DATA_ROOT env var)
+  --help                  Show this help message and exit
+
+Interactive workflow:
+  1. Enter a URL to index
+  2. Entity is auto-detected by hostname (or prompted)
+  3. If already in history, shows current status and asks whether to update
+  4. If cached HTML exists, it is reused; otherwise the page is downloaded
+  5. Domain is scored and selected interactively
+  6. Entry is saved to history.json (or processed as a statute source for library URLs)
+  7. Optionally runs indexEntity and analyzeStatutes
+
+Supported URL types:
+  - Municipal website pages (matched by hostname from websites.json)
+  - Statute library pages (library.municode.com, ecode360.com, generalcode.com, etc.)
+
+Type 'quit' or press Ctrl+C to exit the REPL.
+`);
+}
+
 async function main(): Promise<void> {
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    printHelp();
+    process.exit(0);
+  }
   const { common } = parseCommonCliArgs(process.argv.slice(2));
   requireDataRootAndRealm(common);
   await runRepl({ realm: common.realm! });

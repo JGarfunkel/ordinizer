@@ -570,3 +570,12 @@ export async function generateMetaAnalysis(st: IStorage, domainId: string, verbo
 }
 
 export { findBestPracticesForQuestion };
+
+const entryFile = process.argv[1] ? process.argv[1].replace(/\\/g, "/") : "";
+if (/(^|\/)createMetaAnalysis\.(ts|js)$/.test(entryFile)) {
+  const domainId = process.argv[2] || 'trees';
+  const storage = getDefaultStorage('data');
+  generateMetaAnalysis(storage, domainId)
+    .then(() => process.exit(0))
+    .catch((error: unknown) => { console.error('Meta-analysis generation failed:', error); process.exit(1); });
+}
