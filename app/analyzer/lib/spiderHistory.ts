@@ -27,6 +27,7 @@ export interface SpiderDownloadRecord extends LinkedResource {
   localFile?: string; // relative path to HTML artifact
   localFileText?: string; // relative path to TXT artifact
   localFileTextSize?: number; // length of the text content in the TXT artifact, for quick reference
+  fileType?: "HTML" | "PDF"; // optional hint about the type of the downloaded file
 }
 
 // Backward-compatible alias while call sites migrate to SpiderDownloadRecord.
@@ -169,6 +170,7 @@ export function migrateHistoryEntry(raw: any): SpiderDownloadRecord | null {
   const matchedDomainIds = Array.isArray(raw.matchedDomainIds)
     ? raw.matchedDomainIds.filter((v: unknown): v is string => typeof v === "string")
     : [];
+  const fileType: "PDF" | "HTML" | undefined = raw.fileType === "PDF" || raw.fileType === "HTML" ? raw.fileType : undefined;
   const localFile = typeof raw.localFile === "string" && raw.localFile ? raw.localFile : undefined;
   const localFileText = typeof raw.localFileText === "string" && raw.localFileText ? raw.localFileText : undefined;
   const documentTitle = typeof raw.documentTitle === "string" && raw.documentTitle.trim()
@@ -193,6 +195,7 @@ export function migrateHistoryEntry(raw: any): SpiderDownloadRecord | null {
     matchedDomainIds,
     status,
     timestamp,
+    ...(fileType ? { fileType } : {}),
     ...(documentTitle ? { documentTitle } : {}),
     ...(migratedLocalFile ? { localFile: migratedLocalFile } : {}),
     ...(migratedLocalFileText ? { localFileText: migratedLocalFileText } : {}),
@@ -286,6 +289,7 @@ export function upsertHistoryEntry(
     status: HistoryStatus;
     entityId?: string;
     title?: string;
+    fileType?: "HTML" | "PDF";
     localFile?: string;
     localFileText?: string;
     localFileTextSize?: number;
@@ -432,7 +436,7 @@ export async function saveCrawledArtifacts(
   options?: {
     contentSelector?: string;
   },
-): Promise<{ localFile?: string; localFileText?: string }> {
+): Promise<{ localFile?: string; localFileText?: string; fileType?: "HTML" | "PDF" }> {
   const destinationDir = path.join(getEntityDownloadsRoot(storage), entityId);
   await fs.ensureDir(destinationDir);
 
@@ -443,13 +447,21 @@ export async function saveCrawledArtifacts(
 
   let localFile: string | undefined;
   let localFileText: string | undefined;
+  let fileType: "HTML" | "PDF" | undefined;
 
-  console.log(`[SAVE-ARTIFACTS] page.url=${page.url} hasHtmlContent=${!!page.htmlContent} hasPlainText=${!!page.plainText} plainTextLen=${page.plainText?.length || 0}`);
+  console.log(`[SAVE-ARTIFACTS] page.url=${page.url} isPdf=${page.isPdf} hasHtmlContent=${!!page.htmlContent} hasPlainText=${!!page.plainText} plainTextLen=${page.plainText?.length || 0}`);
 
-  if (page.htmlContent) {
+  if (page.isPdf && page.pdfBuffer) {
+    const pdfPath = path.join(destinationDir, `${baseSlug}.pdf`);
+    await fs.writeFile(pdfPath, page.pdfBuffer);
+    localFile = toRelativeDownloadsPath(storage, pdfPath);
+    fileType = "PDF";
+    console.log(`[SAVE-ARTIFACTS] saved PDF: ${localFile}`);
+  } else if (page.htmlContent) {
     const htmlPath = path.join(destinationDir, `${baseSlug}.html`);
     await fs.writeFile(htmlPath, page.htmlContent, "utf-8");
     localFile = toRelativeDownloadsPath(storage, htmlPath);
+    fileType = "HTML";
     console.log(`[SAVE-ARTIFACTS] saved HTML: ${localFile}`);
   }
   let textForArtifact = (page.plainText || "").trim();
@@ -478,6 +490,7 @@ export async function saveCrawledArtifacts(
   return {
     ...(localFile ? { localFile } : {}),
     ...(localFileText ? { localFileText } : {}),
+    ...(fileType ? { fileType } : {}),
   };
 }
 

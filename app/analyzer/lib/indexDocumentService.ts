@@ -3,6 +3,7 @@
 import dotenv from "dotenv";
 dotenv.config();
 import { pathToFileURL } from "node:url";
+import { styleText } from "node:util";
 import { getDefaultStorage, getRealmsFromStorage, IStorageReadOnly } from "@civillyengaged/ordinizer-servercore";
 import { getVectorService, getDocumentKey } from "../services/vectorService.js";
 import { parseCommonCliArgs } from "./scriptArgs.js";
@@ -20,6 +21,8 @@ export interface IndexOptions {
   only?: string;
   prune?: boolean;
   removeUrl?: string;
+  sinceHours?: number;
+  forcePdf?: boolean;
 }
 
 let VERBOSE = false;
@@ -125,30 +128,53 @@ export async function indexEntity(
         return;
       }
 
-      if (!options.force) {
-        const prefix = getDocumentKey(entityId, ["shared"], "shared");
-        const already = await vectorService.hasIndexedDocument(prefix);
-        if (already) {
-          log(`Guidance vectors already exist for ${entityId}/"shared", skipping`);
-          return;
-        }
-      }
-
-      // Find the matching SpiderHistoryEntry for provenance
-      let url = undefined;
-      let fetchedAt = undefined;
+      // Find the matching SpiderHistoryEntry for provenance + recency check
+      let url: string | undefined;
+      let fetchedAt: string | undefined;
+      let fileType: "HTML" | "PDF" | undefined;
       if (historyMap) {
         for (const entry of historyMap.values()) {
           const fileMatch = entry.localFileText || entry.localFile;
           if (fileMatch && fileMatch.split("/").pop() === filename) {
             url = entry.url;
             fetchedAt = entry.timestamp;
+            fileType = entry.fileType;
             break;
           }
         }
       }
 
-      console.log(`📎 ${entityId}: Indexing downloaded document (domains: ${domainsToIndex.join(", ")})...`);
+      console.log(`\n${styleText('bold', url || filename)}`);
+
+      if (options.sinceHours !== undefined && fetchedAt) {
+        const cutoff = Date.now() - options.sinceHours * 60 * 60 * 1000;
+        if (Date.parse(fetchedAt) < cutoff) {
+          const downloadedAt = new Date(fetchedAt).toLocaleString();
+          console.log(`  ⏭  Skipping — downloaded ${downloadedAt}, older than ${options.sinceHours}h cutoff`);
+          return;
+        }
+      }
+
+      // Guard against PDF indexing: match on fileType record OR URL extension.
+      // URL-extension check alone misses PDFs served from non-.pdf URLs.
+      const isPdf = fileType === "PDF" || (!!url && /\.pdf(\?.*)?$/i.test(url));
+      if (!options.forcePdf && isPdf) {
+        const reason = fileType === "PDF" ? "fileType=PDF" : "URL ends in .pdf";
+        console.log(`  ⏭  Skipping — PDF document (${reason}; use --force-pdf to index)`);
+        return;
+      }
+
+      if (!options.force) {
+        const prefix = getDocumentKey(entityId, ["shared"], "shared");
+        const already = await vectorService.hasIndexedDocument(prefix);
+        if (already) {
+          console.log(`  ⏭  Skipping — already indexed (use --force to reindex)`);
+          return;
+        }
+      }
+
+      const dryRunTag = options.dryRun ? " [dry-run]" : "";
+      console.log(`  📎  Indexing (domains: ${domainsToIndex.join(", ")})${dryRunTag}...`);
       await vectorService.indexDocumentInPinecone(
         content,
         entityId,
@@ -157,6 +183,7 @@ export async function indexEntity(
         { url: url || "", fileName: filename, fetchedAt: fetchedAt || "" },
         { verbose: options.verbose, dryRun: options.dryRun }
       );
+      console.log(`  ✅  Done`);
       downloadCount++;
     });
 
@@ -366,6 +393,8 @@ Options:
   --domain <id>          Scope indexing to one domain (e.g., "trees")
   --realm <id>           Realm to use (defaults to CURRENT_REALM env var or default realm)
   --force                Re-index even if vectors already exist
+  --force-pdf            Re-index PDF documents (skipped by default; PDFs are unlikely to change)
+  --since <hours>        Only index downloads from the last N hours (e.g., --since 48)
   --prune                Delete vector chunks for history entries with status=unrelated or status=index
   --removeUrl <url>      Mark a URL as "unrelated" in the entity's history and delete its index chunks
                          Requires --entity <entityId>
@@ -384,6 +413,9 @@ Examples:
 
   # Index all entities for a domain in a specific realm
   tsx app/analyzer/lib/indexDocumentService.ts --domain trees --realm westchester-municipal-environmental
+
+  # Only index documents downloaded in the last 48 hours
+  tsx app/analyzer/lib/indexDocumentService.ts --since 48
 
 Environment Variables Required:
   OPENAI_API_KEY     OpenAI API key for embeddings
@@ -428,6 +460,12 @@ async function parseArgs(): Promise<IndexOptions> {
       case "--removeUrl":
       case "--remove-url":
         options.removeUrl = rest[++i];
+        break;
+      case "--since":
+        options.sinceHours = parseFloat(rest[++i]);
+        break;
+      case "--force-pdf":
+        options.forcePdf = true;
         break;
       default:
         if (rest[i].startsWith("-")) {

@@ -25,6 +25,7 @@ export interface CrawledPage {
   title: string;
   headers?: string[];
   htmlContent?: string;
+  pdfBuffer?: Buffer;
   plainText: string;
   textSample: string;
   isPdf: boolean;

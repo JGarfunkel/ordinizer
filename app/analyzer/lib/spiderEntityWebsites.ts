@@ -122,6 +122,7 @@ interface Args {
   refetch: boolean;
   generateSummary: boolean;
   force: boolean;
+  forcePdf: boolean;
   seedUrl?: string;
   review: boolean;
   fix?: string;
@@ -485,6 +486,7 @@ function parseArgs(args: string[]): Args {
     refetch: false,
     generateSummary: false,
     force: false,
+    forcePdf: false,
     seedUrl: undefined,
     review: false,
   };
@@ -602,6 +604,10 @@ function parseArgs(args: string[]): Args {
     }
     if (arg === "--force") {
       options.force = true;
+      continue;
+    }
+    if (arg === "--force-pdf") {
+      options.forcePdf = true;
       continue;
     }
     if (arg === "--review") {
@@ -1448,6 +1454,7 @@ async function spiderEntity(
       let localFile: string | undefined = priorEntry?.localFile;
       let localFileText: string | undefined = priorEntry?.localFileText;
       let localFileTextSize: number | undefined = priorEntry?.localFileTextSize;
+      let fileType: "HTML" | "PDF" | undefined = priorEntry?.fileType;
 
       const hasHtmlArtifact = localFile
         ? await fs.pathExists(fromRelativeDownloadsPath(storage, localFile))
@@ -1467,6 +1474,7 @@ async function spiderEntity(
           contentSelector: hostRecordBefore?.contentSelector,
         });
         if (saved.localFile) localFile = saved.localFile;
+        if (saved.fileType) fileType = saved.fileType;
         if (saved.localFileText) {
           localFileText = saved.localFileText;
           localFileTextSize = await recordFileSize(storage, historyMap, {
@@ -1497,11 +1505,12 @@ async function spiderEntity(
           matchedDomainIds,
           status: finalStatus,
           timestamp: statusTimestamp,
+          ...(fileType ? { fileType } : {}),
           ...(localFile ? { localFile } : {}),
           ...(localFileText ? { localFileText } : {}),
           ...(typeof localFileTextSize === "number" ? { localFileTextSize } : {}),
         });
-        console.log(`[HISTORY] entry for ${finalStatus}: url=${normalizedPageUrl} localFile=${localFile || '(none)'} localFileText=${localFileText || '(none)'}`);
+        console.log(`[HISTORY] entry for ${finalStatus}: url=${normalizedPageUrl} fileType=${fileType || '(none)'} localFile=${localFile || '(none)'} localFileText=${localFileText || '(none)'}`);
       }
 
       // if (finalStatus !== "index") {
@@ -1763,6 +1772,25 @@ async function spiderEntity(
       continue;
     }
 
+    if (args.dryRun) {
+      console.log(`[DRY-RUN][SKIP-FETCH] ${task.url} (no cached artifact available)`);
+      continue;
+    }
+
+    const isPdfUrl = /\.pdf(\?.*)?$/i.test(task.url);
+    if (isPdfUrl && !args.forcePdf && existingHistory?.localFileText) {
+      const absPath = fromRelativeDownloadsPath(storage, existingHistory.localFileText);
+      if (await fs.pathExists(absPath)) {
+        console.log(`[PDF][SKIP] already downloaded: ${task.url} (use --force-pdf to re-download)`);
+        const cached = await loadCachedPageFromHistory(storage, existingHistory, task.depth);
+        if (cached) {
+          pages.push(cached.page);
+          pagesBySource[task.source] += 1;
+        }
+        continue;
+      }
+    }
+
     console.log(`[FETCH] ${entity.id} source=${task.source} depth=${task.depth} ${task.url}`);
 
     const fetchResult = await fetchPageWithBotFallback(task.url, consecutiveBotRejections, args.notbot);
@@ -1807,6 +1835,7 @@ async function spiderEntity(
         plainText,
         textSample: plainText.slice(0, 3000),
         isPdf: true,
+        pdfBuffer: fetched.page.pdfBuffer,
         links: [],
       });
       pagesBySource[task.source] += 1;
@@ -2507,7 +2536,6 @@ async function runReviewMode(storage: any, targets: Entity[], domains: Domain[],
                   url: entry.url,
                   depth: 0,
                   title: entry.title ?? "",
-                  headers: {},
                   htmlContent: downloaded.html,
                   plainText: "",
                   textSample: "",
@@ -2521,7 +2549,7 @@ async function runReviewMode(storage: any, targets: Entity[], domains: Domain[],
                   ...(saved.localFile ? { localFile: saved.localFile } : {}),
                   ...(saved.localFileText ? { localFileText: saved.localFileText } : {}),
                 });
-                ff = { page: builtPage, fromCache: false };
+                ff = { page: builtPage, linkCandidates: [] };
               }
             }
             if (ff) {
