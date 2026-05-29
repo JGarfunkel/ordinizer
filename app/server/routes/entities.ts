@@ -1,10 +1,9 @@
 import type { Express } from "express";
 import { getReadOnlyStorage } from "../storage";
-import { Entity } from "@civillyengaged/ordinizer-core";
-
 
 export function registerEntityRoutes(app: Express, apiPrefix: string = "/api") {
   // Get entities for a specific realm
+
   app.get(`${apiPrefix}/realms/:realmId/entities`, async (req, res) => {
     try {
       const { realmId } = req.params;

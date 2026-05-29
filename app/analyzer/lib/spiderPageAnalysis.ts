@@ -27,7 +27,7 @@ import { getLikelyHostname } from "./spiderBoilerplate.js";
 import { convertHtmlToTextSimple } from "./simpleHtmlToText.js";
 import { title } from "node:process";
 
-export const SKIP_URL_PATTERN = /(calendar|account|alert|login|directory|mailto|instagra|search|profile|contact|png|jpg|jpeg|gif|bmp|svg|webp)/i;
+export const SKIP_URL_PATTERN = /(calendar|account|login|directory|mailto|instagra|search|profile|contact|png|jpg|jpeg|gif|bmp|svg|webp)/i;
 
 const MENU_LINK_REDETERMINE_DAYS = 7;
 

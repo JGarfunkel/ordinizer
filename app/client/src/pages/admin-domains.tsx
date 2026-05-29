@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { useParams, Link } from 'wouter';
+import { Link } from 'wouter';
+import { useRealmId } from '../hooks/useRealmId';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui";
 import { Badge } from "../ui";
 import { Button } from "../ui";
@@ -10,7 +11,7 @@ import type { Question, DomainWithQuestions, DataSource, Realm } from '@civillye
 import { useRealms } from '../hooks/useRealms';
 
 export default function AdminDomains() {
-  const { realmid } = useParams<{ realmid: string }>();
+  const realmid = useRealmId();
   const { buildPath } = useBasePath();
   
   const { data: domains, isLoading, error } = useQuery<DomainWithQuestions[]>({

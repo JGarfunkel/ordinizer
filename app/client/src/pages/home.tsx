@@ -3,7 +3,7 @@ import { useLocation, useSearch, useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiPath } from "../lib/apiConfig";
 import { queryClient } from "../lib/queryClient";
-import { getDefaultRealmId } from '../lib/realmUtils';
+import { useRealmId } from '../hooks/useRealmId';
 import { useBasePath } from "../contexts/BasePathContext";
 import { useRealms } from "../hooks/useRealms";
 import { useEntities } from "../hooks/useEntities";
@@ -24,6 +24,7 @@ export default function Home() {
   const [, navigate] = useLocation();
   const search = useSearch();
   const params = useParams();
+  const realmFromUrl = useRealmId();
   const { buildPath } = useBasePath();
   const [selectedEntityId, setSelectedEntityId] = useState<string>("");
   const [selectedDomainId, setSelectedDomainId] = useState<string>("");
@@ -99,25 +100,12 @@ export default function Home() {
     return municipalities.find(m => m.id === slug);
   };
 
-  // Extract realm ID from route parameters first
+  // Sync resolved realm into selectedRealmId state
   useEffect(() => {
-    const realmIdFromRoute = params.realmid;
-    if (realmIdFromRoute && realmIdFromRoute !== selectedRealmId) {
-      // console.log('Setting realm ID from route:', realmIdFromRoute);
-      setSelectedRealmId(realmIdFromRoute);
-    } else if (!realmIdFromRoute && !selectedRealmId) {
-      // Fallback to dynamically determined default realm
-      // console.log('ðŸ›ï¸ No realm in route, determining default dynamically');
-      getDefaultRealmId().then(defaultRealmId => {
-        if (defaultRealmId) {
-          // console.log('ðŸ›ï¸ Using default realm:', defaultRealmId);
-          setSelectedRealmId(defaultRealmId);
-        }
-      }).catch(error => {
-        console.warn('ðŸ›ï¸ Failed to get default realm:', error);
-      });
+    if (realmFromUrl && realmFromUrl !== selectedRealmId) {
+      setSelectedRealmId(realmFromUrl);
     }
-  }, [params.realmid]);
+  }, [realmFromUrl]);
 
   // Parse both path parameters and query parameters
   useEffect(() => {
@@ -129,17 +117,10 @@ export default function Home() {
     // });
     
     // Handle path-based routing (/realm/westchester-municipal-environmental/trees/NY-Ardsley or /realm/westchester-municipal-environmental/trees)
-    if (params.realmid && params.domain) {
-      const realmId = params.realmid;
+    if (params.domain) {
       const domainId = params.domain;
-      // console.log('Path-based routing - realm:', realmId, 'domain:', domainId, 'municipality:', params.municipality);
-      
-      // Set realm if different
-      if (realmId !== selectedRealmId) {
-        // console.log('Setting realm from URL:', realmId);
-        setSelectedRealmId(realmId);
-      }
-      
+      // console.log('Path-based routing - realm:', selectedRealmId, 'domain:', domainId, 'municipality:', params.municipality);
+
       // Set domain if different
       if (domainId !== selectedDomainId) {
         // console.log('Setting domain from URL:', domainId);
@@ -197,7 +178,7 @@ export default function Home() {
       setSelectedDomainId("");
       setShowResults(false);
     }
-  }, [search, params, municipalities, selectedDomainId, selectedEntityId]);
+  }, [search, params, municipalities, selectedDomainId, selectedEntityId, selectedRealmId]);
 
   // Update URL when selections change - prefer path-based routing
   const updateURL = useCallback((municipalityId: string, domainId: string) => {

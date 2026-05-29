@@ -1,0 +1,2 @@
+declare const __ORDINIZER_CONTEXT_PATH__: string;
+export const ORDINIZER_CONTEXT_PATH = __ORDINIZER_CONTEXT_PATH__;

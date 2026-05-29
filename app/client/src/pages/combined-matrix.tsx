@@ -5,9 +5,9 @@ import { Button } from "../ui";
 import { Badge } from "../ui";
 import { ArrowLeft, ExternalLink, Files } from 'lucide-react';
 import { apiPath } from "../lib/apiConfig";
-import { Link, useParams } from 'wouter';
-import { useEffect, useState } from 'react';
-import { getDefaultRealmId } from '../lib/realmUtils';
+import { Link } from 'wouter';
+import { useState } from 'react';
+import { useRealmId } from '../hooks/useRealmId';
 import { useBasePath } from '../contexts/BasePathContext';
 import { useRealms } from '../hooks/useRealms';
 import {
@@ -49,25 +49,8 @@ interface CombinedMatrixData {
 
 
 export default function CombinedMatrix() {
-  const params = useParams();
-  const [realmId, setRealmId] = useState<string>(params.realmid || '');
+  const realmId = useRealmId() ?? '';
   const { buildPath } = useBasePath();
-
-  // Resolve realm ID dynamically if not provided in URL
-  useEffect(() => {
-    async function resolveRealm() {
-      if (!params.realmid) {
-        const defaultRealmId = await getDefaultRealmId();
-        if (defaultRealmId) {
-          setRealmId(defaultRealmId);
-        }
-      } else {
-        setRealmId(params.realmid);
-      }
-    }
-    
-    resolveRealm();
-  }, [params.realmid]);
 
   // Fetch realm info to determine terminology
   const { data: realms } = useRealms();

@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useParams, Link } from 'wouter';
+import { useRealmId } from '../hooks/useRealmId';
 import { ArrowLeft, Info, ExternalLink, RotateCcw } from 'lucide-react';
 import { apiPath } from "../lib/apiConfig";
 import { useState } from 'react';
@@ -109,7 +110,8 @@ function CellPopup({ entity, question, score, confidence, answer, sourceRefs, an
 // Functions now imported from centralized scoreColors utility
 
 export default function MatrixPage() {
-  const { domain, realmid } = useParams<{ domain: string; realmid: string }>();
+  const { domain } = useParams<{ domain: string }>();
+  const realmid = useRealmId();
   const { buildPath } = useBasePath();
   const [selectedCell, setSelectedCell] = useState<{
     entity: string;
