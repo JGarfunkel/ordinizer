@@ -12,7 +12,7 @@ import type {
   Domain, EntityDomain,
   Statute, Question, Analysis, AnalysisVersionRef,
   InsertEntity, InsertDomain, InsertQuestion, InsertAnalysis,
-  Realm, Ruleset,
+  Realm, RealmsConfig, Ruleset,
   EntityCollection, Entity,
   DomainSummaryRow, CombinedMatrixRow, SectionIndexEntry, DataSourcesConfig, SourceMapEntity,
 } from "@civillyengaged/ordinizer-core";
@@ -26,16 +26,21 @@ const readOnlyStorageInstanceMap: Record<string, IStorageReadOnly> = {};
 
 let realms: Realm[] | null = null;
 
-export async function getRealmsFromStorage(): Promise<Realm[]> {
-  if (!realms) {
+let realmsConfig: RealmsConfig | null = null;
+
+export async function getRealmsConfigFromStorage(): Promise<RealmsConfig> {
+  if (!realmsConfig) {
     const realmsFile = path.join(await PathResolver.getRealmDir(), "realms.json");
-    if (!await fs.pathExists(realmsFile)) return [];
+    if (!await fs.pathExists(realmsFile)) return { realms: [], lastUpdated: '' };
     const data = await fs.readJson(realmsFile);
-    if (data) {
-      realms = data.realms || [];
-    }
+    realmsConfig = data ?? { realms: [], lastUpdated: '' };
   }
-  return realms ?? [];
+  return realmsConfig!;
+}
+
+export async function getRealmsFromStorage(): Promise<Realm[]> {
+  const config = await getRealmsConfigFromStorage();
+  return config.realms ?? [];
 }
 
 
@@ -335,7 +340,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     // backwards compatibility if not created
     if (!ruleset.entityId) {
       let realm = await this.getRealmConfig();
-      ruleset.entityId = realm?.stateProvince + "-" + ruleset.municipality + "-" + ruleset.municipalityType;
+      ruleset.entityId = realm?.geo?.stateProvince + "-" + ruleset.municipality + "-" + ruleset.municipalityType;
     }
     return ruleset.entityId;
   }
@@ -393,6 +398,11 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     }
   }
 
+
+  async useGeo(): Promise<boolean> {
+    const config = await this.getRealmConfig();
+    return !!config?.geo;
+  }
 
   async getRealm(id: string): Promise<Realm | undefined> {
     const realms = await getRealmsFromStorage();
@@ -560,7 +570,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   ): Promise<Statute | undefined> {
     const realmConfig = await this.getRealmConfig();
     const realmType = realmConfig.ruleType ?? 'statute';
-    const territory = realmConfig.stateProvince ?? '';
+    const territory = realmConfig.geo?.stateProvince ?? '';
 
     // Check for state-code redirect in metadata
     const stateFolder = territory ? `${territory}-State` : "";
@@ -773,7 +783,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
   async getDomainSummary(domainId: string, realmId: string): Promise<DomainSummaryRow[]> {
     const realmConfig = await this.getRealmConfig();
-    const territory = realmConfig.stateProvince ?? '';
+    const territory = realmConfig.geo?.stateProvince ?? '';
     const municipalities = await this.getEntities();
 
     const result: DomainSummaryRow[] = [];
@@ -1143,7 +1153,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     if (effective === "policy") {
       return nonHidden.map((e) => e.name);
     }
-    const prefix = realmConfig.stateProvince ? `${realmConfig.stateProvince}-` : null;
+    const prefix = realmConfig.geo?.stateProvince ? `${realmConfig.geo.stateProvince}-` : null;
     return (prefix ? nonHidden.filter((e) => e.name.startsWith(prefix)) : nonHidden).map((e) => e.name);
   }
 
@@ -1215,11 +1225,11 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
       console.log("No realm config found for realmId:", realmId);
       return undefined;
     }
-    if (!realm.mapBoundaries) {
+    if (!realm.geo?.mapBoundaries) {
       console.log("No mapBoundaries property in realm config for realmId:", realmId);
       return undefined;
-    } 
-    const file = path.join(DEFAULT_DATA_ROOT, realm.mapBoundaries);
+    }
+    const file = path.join(DEFAULT_DATA_ROOT, realm.geo.mapBoundaries);
     console.log("Loading map boundaries from file:", file);
     if (!await fs.pathExists(file)) return undefined;
     if ((await fs.stat(file)).isDirectory()) {

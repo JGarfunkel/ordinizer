@@ -5,9 +5,9 @@ import { apiPath } from "../lib/apiConfig";
 import { queryClient } from "../lib/queryClient";
 import { useRealmId } from '../hooks/useRealmId';
 import { useBasePath } from "../contexts/BasePathContext";
-import { useRealms } from "../hooks/useRealms";
+import { useRealms, useRealmsConfig } from "../hooks/useRealms";
 import { useEntities } from "../hooks/useEntities";
-import type { Entity, EntityDomain, Realm, MetaAnalysis, Analysis } from "@civillyengaged/ordinizer-core";
+import type { Entity, EntityDomain, Realm, MetaAnalysis, Analysis, DomainDataFile } from "@civillyengaged/ordinizer-core";
 import { AppHeader } from "./home/AppHeader";
 import { EntityCombobox } from "./home/EntityCombobox";
 import { DomainSelector } from "./home/DomainSelector";
@@ -15,6 +15,7 @@ import { MapPanel } from "./home/MapPanel";
 import { DomainOverviewCard } from "./home/DomainOverviewCard";
 import { MetaAnalysisPanel } from "./home/MetaAnalysisPanel";
 import { SidebarAnalysis } from "./home/SidebarAnalysis";
+import { SidebarData } from "./home/SidebarData";
 import { FullAnalysisView } from "./home/FullAnalysisView";
 import { QuestionMunicipalitiesDialog } from "./home/QuestionMunicipalitiesDialog";
 import { MunicipalityAnswerPopup } from "./home/MunicipalityAnswerPopup";
@@ -76,6 +77,9 @@ export default function Home() {
 
   // Fetch realms
   const { data: realms, isLoading: realmsLoading } = useRealms();
+  const { data: realmsConfig } = useRealmsConfig();
+  const isSingleRealm = !!realms && realms.length === 1;
+  const showHeader = !isSingleRealm && realmsConfig?.layout?.showHeader !== false;
 
   // Get current realm info for terminology
   const currentRealm = realms?.find(r => r.id === selectedRealmId);
@@ -200,7 +204,7 @@ export default function Home() {
   // Get current realm configuration (already declared above)
   
   // Fetch all domains for the buttons (filtered by "show" property on server)
-  const { data: allDomains, isLoading: allDomainsLoading } = useQuery<{id: string; name: string; displayName: string; description: string; show?: boolean}[]>({
+  const { data: allDomains, isLoading: allDomainsLoading } = useQuery<{id: string; name: string; displayName: string; description: string; show?: boolean; kind?: 'analysis' | 'data'; legend?: import('@civillyengaged/ordinizer-core').DomainLegend}[]>({
     queryKey: [apiPath('realms'), selectedRealmId, 'domains'],
     enabled: !!selectedRealmId,
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
@@ -231,7 +235,20 @@ export default function Home() {
   const usesStateCode = selectedEntitySummary?.stateCodeApplies || false;
   
   // Determine which municipality ID to use for analysis fetch
-  const analysisTargetEntityId = usesStateCode ? `${currentRealm?.stateProvince}-State` : selectedEntityId;
+  const analysisTargetEntityId = usesStateCode ? `${currentRealm?.geo?.stateProvince}-State` : selectedEntityId;
+  const currentDomainKind = allDomains?.find(d => d.id === selectedDomainId)?.kind;
+  const currentDomainLegend = allDomains?.find(d => d.id === selectedDomainId)?.legend;
+
+  const { data: currentDomainDataFile } = useQuery<DomainDataFile | null>({
+    queryKey: [apiPath('realms'), selectedRealmId, 'domains', selectedDomainId, 'data'],
+    queryFn: async () => {
+      const response = await fetch(apiPath(`realms/${selectedRealmId}/domains/${selectedDomainId}/data`));
+      if (!response.ok) return null;
+      return response.json();
+    },
+    enabled: !!selectedDomainId && !!selectedRealmId && currentDomainKind === 'data',
+    staleTime: 1000 * 60 * 10,
+  });
 
   // Fetch available analysis versions
   const { data: versionsData } = useQuery<{versions: Array<{version: string; filename: string; displayName: string; timestamp: string; isCurrent: boolean}>}>({
@@ -247,7 +264,7 @@ export default function Home() {
       if (!response.ok) throw new Error('Failed to fetch analysis');
       return response.json();
     },
-    enabled: (showResults || showSidebarAnalysis) && !!selectedEntityId && !!selectedDomainId && !!selectedRealmId
+    enabled: (showResults || showSidebarAnalysis) && !!selectedEntityId && !!selectedDomainId && !!selectedRealmId && currentDomainKind !== 'data'
   });
 
   // Fetch environmental protection scores for the selected municipality
@@ -422,11 +439,13 @@ export default function Home() {
   
   return (  
     <div className="bg-civic-bg" style={{ minHeight: 'calc(100vh - 52px)' }}>
-      <AppHeader
-        selectedRealmId={selectedRealmId}
-        realms={realms}
-        onRealmChange={handleRealmChange}
-      />
+      {showHeader && (
+        <AppHeader
+          selectedRealmId={selectedRealmId}
+          realms={realms}
+          onRealmChange={handleRealmChange}
+        />
+      )}
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {!showResults ? (
@@ -482,6 +501,9 @@ export default function Home() {
                 entitiesLoading={entitiesLoading}
                 onEntityClick={handleMapEntityClick}
                 buildPath={buildPath}
+                domainLegend={currentDomainLegend}
+                domainDataFile={currentDomainDataFile ?? undefined}
+                onMapClick={realmsConfig?.layout?.onMapClick}
               />
 
               <div className="flex-1 space-y-4 w-full min-h-0">
@@ -501,19 +523,29 @@ export default function Home() {
                 )}
 
                 {showSidebarAnalysis && selectedEntityId && selectedDomainId && (
-                  <SidebarAnalysis
-                    analysisData={analysisData}
-                    analysisLoading={analysisLoading}
-                    versionsData={versionsData as VersionsData | undefined}
-                    scoreData={scoreData as ScoreData | undefined}
-                    selectedVersion={selectedVersion}
-                    onVersionChange={setSelectedVersion}
-                    usesStateCode={usesStateCode}
-                    municipalities={municipalities}
-                    selectedEntityId={selectedEntityId}
-                    currentRealm={currentRealm}
-                    onQuestionMarkClick={handleQuestionMarkClick}
-                  />
+                  currentDomainKind === 'data' ? (
+                    <SidebarData
+                      realmId={selectedRealmId}
+                      domainId={selectedDomainId}
+                      selectedEntityId={selectedEntityId}
+                      entities={municipalities}
+                      currentRealm={currentRealm}
+                    />
+                  ) : (
+                    <SidebarAnalysis
+                      analysisData={analysisData}
+                      analysisLoading={analysisLoading}
+                      versionsData={versionsData as VersionsData | undefined}
+                      scoreData={scoreData as ScoreData | undefined}
+                      selectedVersion={selectedVersion}
+                      onVersionChange={setSelectedVersion}
+                      usesStateCode={usesStateCode}
+                      municipalities={municipalities}
+                      selectedEntityId={selectedEntityId}
+                      currentRealm={currentRealm}
+                      onQuestionMarkClick={handleQuestionMarkClick}
+                    />
+                  )
                 )}
 
                 <MetaAnalysisPanel

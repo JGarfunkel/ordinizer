@@ -4,8 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { ChevronUp, ChevronDown, X, Map, MapPin } from "lucide-react";
-import { Entity, EntityDomain, Realm } from "@civillyengaged/ordinizer-core";
+import { Entity, EntityDomain, Realm, DomainDataFile, DomainLegend, LayoutOptions } from "@civillyengaged/ordinizer-core";
 import { getEnvironmentalScoreLegend } from '../lib/scoreColors';
+import { getEntityScoreColor, buildScoringLegend } from '../lib/domainScoring';
 import { apiPath } from '../lib/apiConfig';
 import { useRealmEntities } from '../hooks/useRealmEntities';
 
@@ -17,6 +18,8 @@ interface EntityMapProps {
   selectedEntityId?: string;
   realmId: string;
   realm?: Realm;
+  domainLegend?: DomainLegend;
+  onMapClick?: LayoutOptions['onMapClick'];
 }
 
 interface GeoFeature {
@@ -41,17 +44,22 @@ interface GeoJSON {
 
 type MapStyle = "roads" | "outline";
 
-export default function EntityMap({ 
-  selectedDomain, 
+export default function EntityMap({
+  selectedDomain,
   onEntityClick,
   className = "",
   allowCollapse = false,
   selectedEntityId,
   realmId,
   realm,
+  domainLegend,
+  onMapClick,
 }: EntityMapProps) {
   const [selectedFeature, setSelectedFeature] = useState<GeoFeature | null>(null);
-  const [mapStyle, setMapStyle] = useState<MapStyle>("roads");
+  const [mapStyle, setMapStyle] = useState<MapStyle>(() => {
+    const stored = sessionStorage.getItem('map-style');
+    return (stored === 'roads' || stored === 'outline') ? stored : 'roads';
+  });
   const [isMapCollapsed, setIsMapCollapsed] = useState(false);
   const [showMobilePopup, setShowMobilePopup] = useState(false);
   const [hoverTooltip, setHoverTooltip] = useState<{
@@ -60,6 +68,7 @@ export default function EntityMap({
     y: number;
     entityName: string;
     score?: number;
+    scoreLabel?: string;
   }>({ visible: false, x: 0, y: 0, entityName: '' });
   const geoJsonRef = useRef<any>();
 
@@ -358,10 +367,31 @@ export default function EntityMap({
     enabled: !!(selectedEntity && selectedDomain),
   });
 
+  // Fetch data.json for data-type domains (present when no AI analysis, just hard stats)
+  const { data: domainDataFile } = useQuery<DomainDataFile | null>({
+    queryKey: [apiPath('realms'), realmId, 'domains', selectedDomain, 'data'],
+    queryFn: async () => {
+      if (!selectedDomain || !realmId) return null;
+      const response = await fetch(apiPath(`realms/${realmId}/domains/${selectedDomain}/data`));
+      if (!response.ok) return null;
+      return response.json();
+    },
+    enabled: !!selectedDomain && !!realmId,
+    staleTime: 1000 * 60 * 10,
+  });
+
   // Color coding function based on environmental protection scores
   const getFeatureColor = (feature: GeoFeature): string => {
     if (!selectedDomain) {
       return '#94a3b8'; // Default gray
+    }
+
+    // For data-type domains, use scoring rules from data-config.json
+    if (domainDataFile?.scoring?.length) {
+      const scoring = domainDataFile.scoring[0];
+      const entityId = feature.properties.ENTITY_ID || feature.properties.DISTRICT_ID;
+      const row = entityId ? domainDataFile.rows.find(r => r.entityId === entityId) : undefined;
+      return getEntityScoreColor(row, scoring) ?? '#e2e8f0';
     }
 
     // For school districts realm, use policy-based coloring with new DISTRICT_ID
@@ -477,22 +507,40 @@ export default function EntityMap({
   const showTooltip = (e: any) => {
     const feature = e.target.feature as GeoFeature;
     const municipality = findEntityByGeoFeature({ ...feature, properties: { ...feature.properties, _suppressLogging: true } });
-    
+
     if (municipality && entityCacheRef.current[realmId]?.[municipality.id]) {
       const cachedData = entityCacheRef.current[realmId][municipality.id];
       const container = e.target._map.getContainer();
       const containerRect = container.getBoundingClientRect();
-      
-      // Ensure tooltip positioning works correctly in both map styles
+
       const x = e.originalEvent.clientX - containerRect.left + 10;
       const y = e.originalEvent.clientY - containerRect.top - 10;
-      
+
+      let scoreLabel: string | undefined;
+      let dataScore: number | undefined;
+      if (domainDataFile?.scoring?.length) {
+        const scoring = domainDataFile.scoring[0];
+        const row = domainDataFile.rows.find(r => r.entityId === municipality.id);
+        const rawValue = row?.[scoring.scoreColumn];
+        if (rawValue !== undefined && rawValue !== null) {
+          const colLabel = domainDataFile.columns.find(c => c.key === scoring.scoreColumn)?.label ?? scoring.scoreColumn;
+          const numVal = typeof rawValue === 'number' ? rawValue : parseFloat(String(rawValue));
+          if (!isNaN(numVal)) {
+            scoreLabel = colLabel;
+            dataScore = numVal;
+          } else {
+            scoreLabel = `${colLabel}: ${rawValue}`;
+          }
+        }
+      }
+
       setHoverTooltip({
         visible: true,
-        x: Math.max(0, Math.min(x, container.offsetWidth - 200)), // Keep within bounds
-        y: Math.max(0, Math.min(y, container.offsetHeight - 80)), // Keep within bounds
+        x: Math.max(0, Math.min(x, container.offsetWidth - 200)),
+        y: Math.max(0, Math.min(y, container.offsetHeight - 80)),
         entityName: cachedData.name,
-        score: cachedData.score
+        score: domainDataFile ? dataScore : cachedData.score,
+        scoreLabel,
       });
     }
   };
@@ -502,22 +550,20 @@ export default function EntityMap({
   };
 
   const clickFeature = (e: any) => {
+    const behaviors = onMapClick ?? [];
+    if (behaviors.length === 0) return;
+
     const feature = e.target.feature as GeoFeature;
     const municipality = findEntityByGeoFeature(feature);
-    
+
     if (municipality) {
       setSelectedFeature(feature);
-      
-      // Always call onEntityClick to update parent state
-      if (onEntityClick) {
-        console.log('Calling onEntityClick with:', municipality.id);
+
+      if (behaviors.includes('sidebar') && onEntityClick) {
         onEntityClick(municipality.id);
-      } else {
-        console.log('No onEntityClick callback provided');
       }
-      
-      // Additionally, on mobile, show popup overlay
-      if (window.innerWidth < 768) {
+
+      if (behaviors.includes('floatingPopup')) {
         setShowMobilePopup(true);
       }
     } else {
@@ -545,8 +591,8 @@ export default function EntityMap({
 
   // Map center: use realm config if available, otherwise default to US center
   const defaultCenter: [number, number] = [39.8283, -98.5795];
-  const mapCenter: [number, number] = (realm?.mapCenter as [number, number]) || defaultCenter;
-  const mapZoom = realm?.mapZoom || 10;
+  const mapCenter: [number, number] = (realm?.geo?.mapCenter as [number, number]) || defaultCenter;
+  const mapZoom = (realm?.geo?.mapZoom as number) || 10;
 
   // Map style configurations
   const mapConfigs = {
@@ -604,9 +650,15 @@ export default function EntityMap({
           }}
         >
           <div className="font-medium">{hoverTooltip.entityName}</div>
-          {selectedDomain && hoverTooltip.score !== undefined && (
+          {selectedDomain && (hoverTooltip.scoreLabel || hoverTooltip.score !== undefined) && (
             <div className="text-xs text-gray-300 mt-1">
-              {hoverTooltip.score > 0 ? `Score: ${(hoverTooltip.score * 10).toFixed(1)}` : 'Data available'}
+              {hoverTooltip.scoreLabel && hoverTooltip.score !== undefined
+                ? `${hoverTooltip.scoreLabel}: ${hoverTooltip.score}`
+                : hoverTooltip.scoreLabel
+                  ? hoverTooltip.scoreLabel
+                  : hoverTooltip.score! > 0
+                    ? `Score: ${(hoverTooltip.score! * 10).toFixed(1)}`
+                    : 'Data available'}
             </div>
           )}
         </div>
@@ -640,41 +692,75 @@ export default function EntityMap({
         </MapContainer>
       </div>
 
-      {/* Environmental Protection Legend - Only show when roads are displayed */}
+      {/* Legend - Only show when roads are displayed */}
       {selectedDomain && mapStyle === "roads" && (
         <div className="absolute bottom-4 right-4 bg-white p-3 rounded-lg shadow-lg border max-w-xs">
-          <h4 className="font-medium mb-2 text-sm">Environmental Protection</h4>
-          
-          {/* Environmental Scores (Green Gradient) */}
-          {domainSummary && domainSummary.some(s => s.score && s.score > 0) && (
-            <div className="mb-3">
-              <h5 className="text-xs font-medium text-gray-600 mb-1">Strength Scores</h5>
+          {domainLegend ? (
+            /* Custom domain legend */
+            <>
+              {domainLegend.title && <h4 className="font-medium mb-2 text-sm">{domainLegend.title}</h4>}
               <div className="space-y-1 text-xs">
-                {getEnvironmentalScoreLegend().map((item, index) => (
-                  <div key={index} className="flex items-center gap-2">
+                {domainLegend.items.map((item, i) => (
+                  <div key={i} className="flex items-center gap-2">
                     <div className="w-3 h-3 rounded" style={{backgroundColor: item.color}}></div>
                     <span>{item.label}</span>
                   </div>
                 ))}
               </div>
-            </div>
+            </>
+          ) : domainDataFile?.scoring?.length ? (
+            /* Data domain scoring legend */
+            <>
+              <h4 className="font-medium mb-2 text-sm">
+                {domainDataFile.columns.find(c => c.key === domainDataFile.scoring![0].scoreColumn)?.label
+                  ?? domainDataFile.scoring[0].scoreColumn}
+              </h4>
+              <div className="space-y-1 text-xs">
+                {buildScoringLegend(domainDataFile.scoring[0].scoreMapping, domainDataFile.scoring[0].scoreColumnFormat).map((item, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded" style={{backgroundColor: item.color}}></div>
+                    <span>{item.label}</span>
+                  </div>
+                ))}
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded" style={{backgroundColor: '#e2e8f0'}}></div>
+                  <span>No Data</span>
+                </div>
+              </div>
+            </>
+          ) : (
+            /* Environmental protection legend */
+            <>
+              <h4 className="font-medium mb-2 text-sm">Environmental Protection</h4>
+              {domainSummary && domainSummary.some(s => s.score && s.score > 0) && (
+                <div className="mb-3">
+                  <h5 className="text-xs font-medium text-gray-600 mb-1">Strength Scores</h5>
+                  <div className="space-y-1 text-xs">
+                    {getEnvironmentalScoreLegend().map((item, index) => (
+                      <div key={index} className="flex items-center gap-2">
+                        <div className="w-3 h-3 rounded" style={{backgroundColor: item.color}}></div>
+                        <span>{item.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="space-y-1 text-xs">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded" style={{backgroundColor: '#3b82f6'}}></div>
+                  <span>Uses NY State Code</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded" style={{backgroundColor: '#8b5cf6'}}></div>
+                  <span>WEN Graded (No Score)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded" style={{backgroundColor: '#e2e8f0'}}></div>
+                  <span>No Data Available</span>
+                </div>
+              </div>
+            </>
           )}
-          
-          {/* Other indicators */}
-          <div className="space-y-1 text-xs">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded" style={{backgroundColor: '#3b82f6'}}></div>
-              <span>Uses NY State Code</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded" style={{backgroundColor: '#8b5cf6'}}></div>
-              <span>WEN Graded (No Score)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded" style={{backgroundColor: '#e2e8f0'}}></div>
-              <span>No Data Available</span>
-            </div>
-          </div>
         </div>
       )}
 
@@ -791,8 +877,32 @@ export default function EntityMap({
                 );
               })()}
 
-              {/* Simple Analysis Summary */}
-              {analysisLoading ? (
+              {/* Simple Analysis / Data Summary */}
+              {domainDataFile ? (
+                (() => {
+                  const municipality = findEntityByGeoFeature(selectedFeature);
+                  const dataRow = municipality
+                    ? domainDataFile.rows.find(r => r.entityId === municipality.id)
+                    : null;
+                  if (!dataRow) return <div className="mb-4 text-center"><p className="text-sm text-gray-500">No data available</p></div>;
+                  return (
+                    <div className="mb-4">
+                      <table className="w-full text-xs">
+                        <tbody>
+                          {domainDataFile.columns.slice(0, 4).map(col => (
+                            <tr key={col.key} className="border-b border-gray-100 last:border-0">
+                              <td className="py-1 pr-2 text-gray-500 font-medium w-1/2">{col.label}</td>
+                              <td className="py-1 text-gray-800">
+                                {dataRow[col.key] != null ? String(dataRow[col.key]) : "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()
+              ) : analysisLoading ? (
                 <div className="mb-4 text-center">
                   <div className="animate-pulse">
                     <div className="h-3 bg-gray-200 rounded mb-2"></div>
@@ -832,12 +942,10 @@ export default function EntityMap({
                           if (onEntityClick) {
                             onEntityClick(municipality.id);
                           }
-                          // In mobile mode, show analysis in right pane instead of navigating
-                          // The onEntityClick callback will handle showing the analysis
                         }}
                         className="flex-1 bg-civic-blue text-white font-medium py-2 px-3 rounded-md hover:bg-civic-blue-dark transition-colors text-sm"
                       >
-                        View Analysis
+                        {domainDataFile ? "View Data" : "View Analysis"}
                       </button>
                       <button
                         onClick={closeMobilePopup}
@@ -856,7 +964,7 @@ export default function EntityMap({
 
       {/* Desktop Analysis Popup */}
       {selectedFeature && selectedDomain && !showMobilePopup && (
-        <div className="absolute top-4 right-4 bg-white rounded-lg shadow-xl border max-w-sm z-50 hidden md:block">
+        <div className="absolute top-4 right-4 bg-white rounded-lg shadow-xl border max-w-sm z-[1000] hidden md:block">
           <div className="p-4">
             {/* Header */}
             <div className="flex items-start justify-between mb-3">
@@ -915,44 +1023,86 @@ export default function EntityMap({
               );
             })()}
 
-            {/* Analysis Preview */}
-            {analysisLoading ? (
-              <div className="mb-4">
-                <div className="animate-pulse">
-                  <div className="h-4 bg-gray-200 rounded mb-2"></div>
-                  <div className="h-4 bg-gray-200 rounded mb-2 w-3/4"></div>
-                  <div className="h-4 bg-gray-200 rounded w-1/2"></div>
-                </div>
-              </div>
-            ) : analysisData && analysisData.questions?.length > 0 ? (
-              <div className="mb-4">
-                <h5 className="font-medium text-gray-900 mb-2">Key Questions:</h5>
-                <div className="space-y-2">
-                  {analysisData.questions.slice(0, 2).map((question: any, idx: number) => (
-                    <div key={idx} className="text-sm">
-                      <p className="font-medium text-gray-800 mb-1">
-                        {question.title}
-                      </p>
-                      <p className="text-gray-600 text-xs leading-relaxed">
-                        {question.answer.length > 120 
-                          ? `${question.answer.substring(0, 120)}...` 
-                          : question.answer
-                        }
-                      </p>
+            {/* Data preview (data-type domains) or Analysis preview */}
+            {(() => {
+              if (domainDataFile) {
+                const municipality = findEntityByGeoFeature(selectedFeature);
+                const dataRow = municipality
+                  ? domainDataFile.rows.find(r => r.entityId === municipality.id)
+                  : null;
+                if (!dataRow) {
+                  return (
+                    <div className="mb-4">
+                      <p className="text-sm text-gray-500">No data available for this entity.</p>
                     </div>
-                  ))}
-                  {analysisData.questions.length > 2 && (
-                    <p className="text-xs text-gray-500 italic">
-                      +{analysisData.questions.length - 2} more questions
-                    </p>
-                  )}
+                  );
+                }
+                return (
+                  <div className="mb-4">
+                    <h5 className="font-medium text-gray-900 mb-2">Data:</h5>
+                    <table className="w-full text-xs">
+                      <tbody>
+                        {domainDataFile.columns.slice(0, 6).map(col => (
+                          <tr key={col.key} className="border-b border-gray-100 last:border-0">
+                            <td className="py-1 pr-2 text-gray-500 font-medium w-1/2">{col.label}</td>
+                            <td className="py-1 text-gray-800">
+                              {dataRow[col.key] != null ? String(dataRow[col.key]) : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                        {domainDataFile.columns.length > 6 && (
+                          <tr>
+                            <td colSpan={2} className="pt-1 text-xs text-gray-400 italic">
+                              +{domainDataFile.columns.length - 6} more columns
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              }
+              if (analysisLoading) {
+                return (
+                  <div className="mb-4">
+                    <div className="animate-pulse">
+                      <div className="h-4 bg-gray-200 rounded mb-2"></div>
+                      <div className="h-4 bg-gray-200 rounded mb-2 w-3/4"></div>
+                      <div className="h-4 bg-gray-200 rounded w-1/2"></div>
+                    </div>
+                  </div>
+                );
+              }
+              if (analysisData && analysisData.questions?.length > 0) {
+                return (
+                  <div className="mb-4">
+                    <h5 className="font-medium text-gray-900 mb-2">Key Questions:</h5>
+                    <div className="space-y-2">
+                      {analysisData.questions.slice(0, 2).map((question: any, idx: number) => (
+                        <div key={idx} className="text-sm">
+                          <p className="font-medium text-gray-800 mb-1">{question.title}</p>
+                          <p className="text-gray-600 text-xs leading-relaxed">
+                            {question.answer.length > 120
+                              ? `${question.answer.substring(0, 120)}...`
+                              : question.answer}
+                          </p>
+                        </div>
+                      ))}
+                      {analysisData.questions.length > 2 && (
+                        <p className="text-xs text-gray-500 italic">
+                          +{analysisData.questions.length - 2} more questions
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div className="mb-4">
+                  <p className="text-sm text-gray-500">No analysis available for this domain.</p>
                 </div>
-              </div>
-            ) : (
-              <div className="mb-4">
-                <p className="text-sm text-gray-500">No analysis available for this domain.</p>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Action Buttons */}
             <div className="flex gap-2">
@@ -971,13 +1121,16 @@ export default function EntityMap({
                         if (onEntityClick) {
                           onEntityClick(municipality.id);
                         }
-                        // Navigate to full analysis
-                        const url = `/${selectedDomain}/${municipalitySlug}`;
-                        window.location.href = url;
+                        if (domainDataFile) {
+                          setSelectedFeature(null);
+                        } else {
+                          const url = `/${selectedDomain}/${municipalitySlug}`;
+                          window.location.href = url;
+                        }
                       }}
                       className="flex-1 bg-civic-blue text-white text-sm font-medium py-2 px-3 rounded-lg hover:bg-civic-blue-dark transition-colors"
                     >
-                      View Full Analysis
+                      {domainDataFile ? "View Data" : "View Full Analysis"}
                     </button>
                     <button
                       onClick={() => setSelectedFeature(null)}
@@ -1000,7 +1153,11 @@ export default function EntityMap({
             <input
               type="checkbox"
               checked={mapStyle === "roads"}
-              onChange={(e) => setMapStyle(e.target.checked ? "roads" : "outline")}
+              onChange={(e) => {
+                const next: MapStyle = e.target.checked ? "roads" : "outline";
+                sessionStorage.setItem('map-style', next);
+                setMapStyle(next);
+              }}
               className="rounded border-gray-300 dark:border-gray-600 text-civic-blue focus:ring-civic-blue focus:ring-2"
               data-testid="checkbox-show-roads"
             />

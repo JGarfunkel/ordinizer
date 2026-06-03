@@ -71,7 +71,7 @@ export function SidebarAnalysis({
 
   // Fetch statute metadata to get the source URL for the statute link
   const statuteEntityId = usesStateCode
-    ? `${currentRealm?.stateProvince}-State`
+    ? `${currentRealm?.geo?.stateProvince}-State`
     : analysisData?.municipality?.id;
   const statuteDomainId = analysisData?.domain?.id;
   const { data: statuteMetadata } = useQuery<Ruleset>({
@@ -292,7 +292,7 @@ export function SidebarAnalysis({
                                 {(() => {
                                   const refs = qa.relevantSections as (string | { name: string; url?: string })[];
                                   const stateEntityId = usesStateCode
-                                    ? `${currentRealm?.stateProvince}-State`
+                                    ? `${currentRealm?.geo?.stateProvince}-State`
                                     : analysisData?.municipality?.id;
                                   return refs.map((ref, i) => {
                                     if (typeof ref === "string") {
@@ -330,7 +330,7 @@ export function SidebarAnalysis({
                               <StatuteLink
                                 municipalityId={
                                   usesStateCode
-                                    ? `${currentRealm?.stateProvince}-State`
+                                    ? `${currentRealm?.geo?.stateProvince}-State`
                                     : analysisData?.municipality?.id
                                 }
                                 domainId={analysisData?.domain?.id}

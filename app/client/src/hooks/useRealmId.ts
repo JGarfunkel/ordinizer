@@ -1,16 +1,11 @@
-import { useState, useEffect } from "react";
 import { useParams } from "wouter";
-import { getDefaultRealmId } from "../lib/realmUtils";
+import { useRealms } from "./useRealms";
 
 export function useRealmId(): string | undefined {
   const { realmid } = useParams<{ realmid?: string }>();
-  const [fallback, setFallback] = useState<string | undefined>(undefined);
+  const { data: realms } = useRealms();
 
-  useEffect(() => {
-    if (!realmid) {
-      getDefaultRealmId().then(id => { if (id) setFallback(id); });
-    }
-  }, [realmid]);
-
-  return realmid || fallback;
+  if (realmid) return realmid;
+  if (realms?.length === 1) return realms[0].id;
+  return undefined;
 }

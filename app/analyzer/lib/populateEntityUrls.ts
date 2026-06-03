@@ -136,7 +136,7 @@ async function fetchSuggestedUrlsFromAi(
     return null;
   }
 
-  const geography = [realm.county, realm.stateProvince || entity.state].filter(Boolean).join(", ");
+  const geography = [realm.geo?.county, realm.geo?.stateProvince || entity.state].filter(Boolean).join(", ");
   const boardContext = domainContext
     ? `${domainContext} board or ${domainContext} advisory committee`
     : "advisory committee or board page relevant to this organization's governance";

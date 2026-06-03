@@ -314,29 +314,33 @@ export interface EntityScore {
  */
 
 
+export interface RealmGeo {
+  stateProvince?: string;
+  county?: string;
+  mapBoundaries?: string;
+  mapCenter?: [number, number];
+  mapZoom?: number;
+}
+
 export interface Realm {
   id: string;
   name: string;
   displayName: string;
   description: string;
   ruleType: 'statute' | 'policy';
-  stateProvince: string;
-  county: string;
+  geo?: RealmGeo;
   datapath: string;
   entityType: 'municipalities' | 'school-districts';
   entityFile: string;
-  mapBoundaries: string;
   dataSource: {
     type: 'google-sheets' | 'json-file';
     url?: string;
     path?: string;
   };
-  domains: string[];
+  domains?: string[];
   isDefault?: boolean;
   realmType?: string;
   dataPath: string;
-  mapCenter?: [number, number];
-  mapZoom?: number;
   geoBoundaryProvider?: {
     kind: 'file' | 'url' | 'service';
     options?: Record<string, any>;
@@ -368,9 +372,17 @@ export interface Realm {
   };
 }
 
+export type MapClickBehavior = 'floatingPopup' | 'sidebar';
+
+export interface LayoutOptions {
+  showHeader?: boolean;
+  onMapClick?: MapClickBehavior[];
+}
+
 export interface RealmsConfig {
   realms: Realm[];
   lastUpdated: string;
+  layout?: LayoutOptions;
 }
 
 export interface Entity {
@@ -406,6 +418,16 @@ export interface EntityLink {
   url: string;
 }
 
+export interface LegendItem {
+  color: string;
+  label: string;
+}
+
+export interface DomainLegend {
+  title?: string;
+  items: LegendItem[];
+}
+
 export interface Domain {
   id: string;
   name: string;
@@ -421,6 +443,67 @@ export interface Domain {
   keywords?: string[];
   type?: 'statutory' | 'policy' | 'general';
   searchEnhancements?: Array<{ conditions: string[]; terms: string[] }>;
+  /** 'analysis' = AI Q&A driven; 'data' = hard statistical data from a spreadsheet */
+  kind?: 'analysis' | 'data';
+  /** URL of the source spreadsheet or dataset for this domain */
+  source?: string;
+  /** Custom map legend for this domain */
+  legend?: DomainLegend;
+}
+
+/**
+ * Configuration stored in {realmDir}/{domainId}/data-config.json.
+ * Tells the parseDataDomain script how to read the source spreadsheet.
+ */
+export interface DataDomainConfig {
+  /** Google Sheets URL (or any CSV URL) */
+  sourceUrl: string;
+  /** 1-indexed row number that contains column headers (default: 1) */
+  headerRow?: number;
+  /** Header label of the column containing the entity name */
+  entityNameColumn: string;
+  /** Header label of the column containing the entity type (e.g. "Town", "City") */
+  entityTypeColumn?: string;
+  /** Optional scoring rules for map coloring */
+  scoring?: DataDomainScoring[];
+}
+
+/** One scoring rule: maps ranges of a column's values to display colors */
+export interface DataDomainScoring {
+  /** Key of the column in data.json rows to evaluate */
+  scoreColumn: string;
+  /**
+   * Range → CSS color name or hex string.
+   * Supported range formats:
+   *   ">N"   value > N
+   *   ">=N"  value >= N
+   *   "<N"   value < N
+   *   "N-M"  N ≤ value ≤ M  (leading-zero tokens: "01" = 0.1, "05" = 0.5)
+   */
+  scoreMapping: Record<string, string>;
+  /** How to format the score column value for display (e.g. legend labels, badges) */
+  scoreColumnFormat?: 'percentage' | 'number' | 'string';
+}
+
+/** A single typed data column descriptor written into data.json */
+export interface DataColumn {
+  key: string;
+  label: string;
+  type: 'number' | 'string' | 'boolean' | 'percentage';
+}
+
+/**
+ * Output written to {realmDir}/{domainId}/data.json by parseDataDomain.
+ * The server merges scoring rules from data-config.json before serving.
+ */
+export interface DomainDataFile {
+  domain: string;
+  generated: string;
+  sourceUrl?: string;
+  columns: DataColumn[];
+  rows: Array<{ entityId: string; entityName?: string; [key: string]: any }>;
+  /** Scoring rules injected by the server from data-config.json */
+  scoring?: DataDomainScoring[];
 }
 
 export interface AnalyzedQuestion {

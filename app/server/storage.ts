@@ -12,6 +12,7 @@ export {
   getDefaultStorage,
   getReadOnlyStorage,
   getRealmsFromStorage,
+  getRealmsConfigFromStorage,
   type IStorage,
   type IStorageReadOnly,
 } from "@civillyengaged/ordinizer-servercore";

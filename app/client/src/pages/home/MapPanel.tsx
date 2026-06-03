@@ -4,7 +4,8 @@ import { Card, CardContent } from "../../ui";
 import { Button } from "../../ui";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "../../ui/collapsible";
 import EntityMap from "../../components/EntityMap";
-import type { Realm } from "@civillyengaged/ordinizer-core";
+import type { Realm, DomainLegend, DomainDataFile, LayoutOptions } from "@civillyengaged/ordinizer-core";
+import { buildScoringLegend } from "../../lib/domainScoring";
 
 interface MapPanelProps {
   selectedDomainId: string;
@@ -14,6 +15,9 @@ interface MapPanelProps {
   entitiesLoading: boolean;
   onEntityClick: (entityId: string) => void;
   buildPath: (path: string) => string;
+  domainLegend?: DomainLegend;
+  domainDataFile?: DomainDataFile;
+  onMapClick?: LayoutOptions['onMapClick'];
 }
 
 export function MapPanel({
@@ -24,6 +28,9 @@ export function MapPanel({
   entitiesLoading,
   onEntityClick,
   buildPath,
+  domainLegend,
+  domainDataFile,
+  onMapClick,
 }: MapPanelProps) {
   return (
     <div className="flex-shrink-0 w-full lg:w-auto">
@@ -39,6 +46,8 @@ export function MapPanel({
                 selectedEntityId={selectedEntityId}
                 realmId={selectedRealmId}
                 realm={currentRealm}
+                domainLegend={domainLegend}
+                onMapClick={onMapClick}
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center bg-gray-50">
@@ -60,47 +69,84 @@ export function MapPanel({
                 Map Legend
               </CollapsibleTrigger>
               <CollapsibleContent>
-                <div className="mb-3">
-                  <h5 className="text-xs font-medium text-gray-600 mb-2">
-                    Environmental Protection Scores
-                  </h5>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded" style={{ backgroundColor: "#22c55e" }}></div>
-                      <span>Strong (8.0-10.0)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded" style={{ backgroundColor: "#65d47f" }}></div>
-                      <span>Moderate (5.0-7.9)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded" style={{ backgroundColor: "#a7e6b7" }}></div>
-                      <span>Weak (2.0-4.9)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded" style={{ backgroundColor: "#bbf7d0" }}></div>
-                      <span>Very Weak (0.0-1.9)</span>
+                {domainLegend ? (
+                  <div className="mb-3">
+                    {domainLegend.title && (
+                      <h5 className="text-xs font-medium text-gray-600 mb-2">{domainLegend.title}</h5>
+                    )}
+                    <div className="space-y-1 text-xs">
+                      {domainLegend.items.map((item, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded" style={{ backgroundColor: item.color }}></div>
+                          <span>{item.label}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                </div>
+                ) : domainDataFile?.scoring?.length ? (
+                  <div className="mb-3">
+                    <h5 className="text-xs font-medium text-gray-600 mb-2">
+                      {domainDataFile.columns.find(c => c.key === domainDataFile.scoring![0].scoreColumn)?.label
+                        ?? domainDataFile.scoring[0].scoreColumn}
+                    </h5>
+                    <div className="space-y-1 text-xs">
+                      {buildScoringLegend(domainDataFile.scoring[0].scoreMapping, domainDataFile.scoring[0].scoreColumnFormat).map((item, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded" style={{ backgroundColor: item.color }}></div>
+                          <span>{item.label}</span>
+                        </div>
+                      ))}
+                      <div className="flex items-center gap-2">
+                        <div className="w-3 h-3 rounded" style={{ backgroundColor: "#e2e8f0" }}></div>
+                        <span>No Data</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="mb-3">
+                      <h5 className="text-xs font-medium text-gray-600 mb-2">
+                        Environmental Protection Scores
+                      </h5>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded" style={{ backgroundColor: "#22c55e" }}></div>
+                          <span>Strong (8.0-10.0)</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded" style={{ backgroundColor: "#65d47f" }}></div>
+                          <span>Moderate (5.0-7.9)</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded" style={{ backgroundColor: "#a7e6b7" }}></div>
+                          <span>Weak (2.0-4.9)</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded" style={{ backgroundColor: "#bbf7d0" }}></div>
+                          <span>Very Weak (0.0-1.9)</span>
+                        </div>
+                      </div>
+                    </div>
 
-                <div>
-                  <h5 className="text-xs font-medium text-gray-600 mb-2">Other Indicators</h5>
-                  <div className="grid grid-cols-1 gap-2 text-xs">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded" style={{ backgroundColor: "#3b82f6" }}></div>
-                      <span>Uses NY State Code</span>
+                    <div>
+                      <h5 className="text-xs font-medium text-gray-600 mb-2">Other Indicators</h5>
+                      <div className="grid grid-cols-1 gap-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded" style={{ backgroundColor: "#3b82f6" }}></div>
+                          <span>Uses NY State Code</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded" style={{ backgroundColor: "#8b5cf6" }}></div>
+                          <span>Available Data (No Score)</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded" style={{ backgroundColor: "#e2e8f0" }}></div>
+                          <span>No Data Available</span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded" style={{ backgroundColor: "#8b5cf6" }}></div>
-                      <span>Available Data (No Score)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded" style={{ backgroundColor: "#e2e8f0" }}></div>
-                      <span>No Data Available</span>
-                    </div>
-                  </div>
-                </div>
+                  </>
+                )}
 
                 <div className="pt-3 border-t">
                   <Link href={buildPath(`/questions/${selectedRealmId}/domains`)}>

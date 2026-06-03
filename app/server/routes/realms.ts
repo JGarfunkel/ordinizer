@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { getReadOnlyStorage, getRealmsFromStorage } from "../storage";
+import { getReadOnlyStorage, getRealmsFromStorage, getRealmsConfigFromStorage } from "../storage";
 
 export function registerRealmRoutes(app: Express, apiPrefix: string = "/api") {
   // Get all realms
@@ -9,6 +9,16 @@ export function registerRealmRoutes(app: Express, apiPrefix: string = "/api") {
       res.json(realms);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch realms" });
+    }
+  });
+
+  // Get realms config (layout options, etc.)
+  app.get(`${apiPrefix}/realms-config`, async (_req, res) => {
+    try {
+      const config = await getRealmsConfigFromStorage();
+      res.json({ layout: config.layout });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch realms config" });
     }
   });
 

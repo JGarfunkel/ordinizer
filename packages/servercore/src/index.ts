@@ -16,7 +16,7 @@ import type { IStorage, IStorageReadOnly } from './storage';
 // Utility exports
 export type { ScoreOptions, QuestionWithScore, DetailedEntityScore } from './scoring';
 export type { StatuteMetadata, MetadataSource, Metadata, RealmType } from './metadata';
-export { JsonFileStorage, getDefaultStorage, getReadOnlyStorage, getRealmsFromStorage } from './storage';
+export { JsonFileStorage, getDefaultStorage, getReadOnlyStorage, getRealmsFromStorage, getRealmsConfigFromStorage } from './storage';
 export type { IStorage, IStorageReadOnly, FileStat } from './storage';
 export { getSourceForRealm } from './metadata';
 

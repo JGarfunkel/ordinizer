@@ -80,7 +80,7 @@ export async function downloadEntitySources(
 
   const sp = parser ?? new DefaultSpreadsheetParser(realm);
   let downloadCount = 0;
-  const stateProvince = realm.stateProvince ?? '';
+  const stateProvince = realm.geo?.stateProvince ?? '';
 
   for (const row of rows) {
     // Parse "Name (Type)" format from first column
@@ -810,6 +810,7 @@ export async function generateSummaryFile(realm: Realm): Promise<void> {
   );
 
   const storage = getDefaultStorage(realm.id);
+  const domains = await storage.getDomains();
 
   const dataDir = path.join(storage.getRealmDir(), realm.datapath);
   const summaryPath = path.join(
@@ -857,8 +858,8 @@ export async function generateSummaryFile(realm: Realm): Promise<void> {
     };
 
     // Check each domain for this entity
-    for (const domain of realm.domains) {
-      const domainDir = domain.toLowerCase().replace(/\s+/g, "-");
+    for (const domain of domains) {
+      const domainDir = domain.id;
       const entityDir = path.join(dataDir, domainDir, entity.id);
 
       if (await fs.pathExists(entityDir)) {
@@ -942,7 +943,7 @@ export async function generateSummaryFile(realm: Realm): Promise<void> {
             domainData.characterCount = 0;
           }
 
-          entData.domains[domain] = domainData;
+          entData.domains[domain.id] = domainData;
         }
       }
     }
@@ -960,7 +961,7 @@ export async function generateSummaryFile(realm: Realm): Promise<void> {
   const summaryWithMetadata = {
     generated: new Date().toISOString(),
     [`total${realm.entityType.charAt(0).toUpperCase()}${realm.entityType.slice(1)}`]: summary.length,
-    availableDomains: realm.domains,
+    availableDomains: domains.map(d => d.id),
     summary: summary,
   };
 
@@ -970,7 +971,7 @@ export async function generateSummaryFile(realm: Realm): Promise<void> {
     `✅ Generated summary file: ${path.relative(getProjectRootDir(), summaryPath)}`,
   );
   console.log(`   📍 Total ${realm.entityType} with data: ${summary.length}`);
-  console.log(`   📂 Total domains checked: ${realm.domains.length}`);
+  console.log(`   📂 Total domains checked: ${domains.length}`);
 
   // Generate summary statistics
   const domainStats: { [domain: string]: number } = {};

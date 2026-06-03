@@ -1,4 +1,6 @@
 import type { Express } from "express";
+import fs from "fs-extra";
+import path from "path";
 import { getDefaultStorage } from "../storage";
 
 export function registerDomainRoutes(app: Express, apiPrefix: string = "/api") {
@@ -44,6 +46,31 @@ export function registerDomainRoutes(app: Express, apiPrefix: string = "/api") {
     } catch (error) {
       console.log(`Error fetching questions for domain ${req.params.domainId} in realm ${req.params.realmId}:`, error);
       res.status(500).json({ error: "Failed to fetch domain questions" });
+    }
+  });
+
+  // Serve data.json for a data-type domain, merged with scoring config from data-config.json
+  app.get(`${apiPrefix}/realms/:realmId/domains/:domainId/data`, async (req, res) => {
+    try {
+      const { realmId, domainId } = req.params;
+      const storage = getDefaultStorage(realmId);
+      const dataPath = path.join(storage.getRealmDir(), domainId, "data.json");
+      if (!(await fs.pathExists(dataPath))) {
+        return res.status(404).json({ error: "data.json not found for this domain" });
+      }
+      const data = await fs.readJson(dataPath);
+
+      const configPath = path.join(storage.getRealmDir(), domainId, "data-config.json");
+      if (await fs.pathExists(configPath)) {
+        const config = await fs.readJson(configPath);
+        if (config.scoring) {
+          data.scoring = config.scoring;
+        }
+      }
+
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to read domain data" });
     }
   });
 

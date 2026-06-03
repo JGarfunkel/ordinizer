@@ -572,6 +572,7 @@ export async function parseAndWriteEntities(
   let headers: string[];
   let columnMap: Record<string, number> = {};
   let domainsToProcess: string[] = [];
+  let availableDomainIds: string[] = [];
 
   if (realm.dataSource.type === 'google-sheets') {
     // Build column map from spreadsheet parser
@@ -601,19 +602,22 @@ export async function parseAndWriteEntities(
     });
 
     console.log(`Using JSON data headers:`, headers);
-    
-    // For schools realm, use the configured domains directly
-    domainsToProcess = targetDomain
-      ? realm.domains.filter((d) => d.toLowerCase() === targetDomain.toLowerCase())
-      : realm.domains;
 
-    console.log(`Available domains for this realm:`, realm.domains);
+    // Load domains from storage (authoritative source: domains.json)
+    const storageDomains = await storage.getDomains();
+    availableDomainIds = storageDomains.map(d => d.id);
+
+    domainsToProcess = targetDomain
+      ? availableDomainIds.filter((d) => d.toLowerCase() === targetDomain.toLowerCase())
+      : availableDomainIds;
+
+    console.log(`Available domains for this realm:`, availableDomainIds);
   }
 
 
   if (targetDomain && domainsToProcess.length === 0) {
     console.error(
-      `Domain "${targetDomain}" not found. Available domains: ${realm.domains.join(", ")}`,
+      `Domain "${targetDomain}" not found. Available domains: ${availableDomainIds.join(", ")}`,
     );
     return { rows, headers, columnMap, domainsToProcess, entities: [] };
   }
@@ -705,7 +709,7 @@ export async function parseAndWriteEntities(
 
   // Create domains.json (if not exists) in realm-specific directory
   const domainsFile = path.join(storage.getRealmDir(), realm.datapath, "domains.json");
-  if (!(await fs.pathExists(domainsFile))) {
+  if (!(await fs.pathExists(domainsFile)) && realm.domains?.length) {
     const domains = realm.domains.map((domain) => {
       return {
         id: domain.toLowerCase().replace(/\s+/g, "-"),
