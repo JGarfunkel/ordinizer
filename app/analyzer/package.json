@@ -1,6 +1,6 @@
 {
   "name": "@civillyengaged/ordinizer-analyzer",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Analysis and offline data preparation tools for Ordinizer.",
   "type": "module",
   "main": "lib/index.ts",
@@ -26,8 +26,8 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.77",
     "@ai-sdk/openai": "^3.0.63",
-    "@civillyengaged/ordinizer-core": "1.0.3",
-    "@civillyengaged/ordinizer-servercore": "1.0.6",
+    "@civillyengaged/ordinizer-core": "1.0.4",
+    "@civillyengaged/ordinizer-servercore": "1.0.7",
     "@pinecone-database/pinecone": "^6.1.2",
     "@types/jsdom": "^28.0.1",
     "@types/node": "^20.19.39",

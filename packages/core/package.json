@@ -1,6 +1,6 @@
 {
   "name": "@civillyengaged/ordinizer-core",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Core types and utilities for the Ordinizer library",
   "publishConfig": {
     "access": "public"
