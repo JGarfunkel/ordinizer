@@ -16,7 +16,7 @@ export function registerRealmRoutes(app: Express, apiPrefix: string = "/api") {
   app.get(`${apiPrefix}/realms-config`, async (_req, res) => {
     try {
       const config = await getRealmsConfigFromStorage();
-      res.json({ layout: config.layout });
+      res.json(config);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch realms config" });
     }
