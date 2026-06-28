@@ -1,74 +1,68 @@
-import { Scale, AlertCircle, Grid } from "lucide-react";
+import { Scale, Grid } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui";
 import type { Realm } from "@civillyengaged/ordinizer-core";
-
-const contextPath = import.meta.env.BASE_URL;
+import type { ReactNode } from "react";
+import { useBasePath } from "../../contexts/BasePathContext";
 
 interface AppHeaderProps {
   selectedRealmId: string;
   realms: Realm[] | undefined;
+  showRealmSelector: boolean;
   onRealmChange: (realmId: string) => void;
+  children?: ReactNode;
 }
 
 export function AppHeader({
   selectedRealmId,
   realms,
+  showRealmSelector,
   onRealmChange,
+  children,
 }: AppHeaderProps) {
-  const currentRealm = realms?.find(r => r.id === selectedRealmId);
-  const documentType = currentRealm?.ruleType || 'statute';
-  const entityType = currentRealm?.entityType || 'municipality';
-  const entityTypeCapitalized = entityType.charAt(0).toUpperCase() + entityType.slice(1);
-  const documentTypeCapitalized = documentType.charAt(0).toUpperCase() + documentType.slice(1);
+  const { buildPath } = useBasePath();
+  const matrixHref = selectedRealmId ? buildPath(`/matrix/${selectedRealmId}`) : buildPath("/");
 
   return (
-    <header className="bg-white shadow-sm border-b border-gray-200">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-civic-blue rounded-lg flex items-center justify-center">
-              <Scale className="text-white text-lg" />
-            </div>
-            <div>
-              <h1 className="text-xl font-semibold text-gray-900">Ordinizer</h1>
-              <p className="text-sm text-civic-gray-light">
-                {entityTypeCapitalized} {documentTypeCapitalized} Comparison
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2">
-              <Select value={selectedRealmId} onValueChange={onRealmChange}>
-                <SelectTrigger
-                  className="w-96 h-8 text-sm border-gray-300"
-                  data-testid="select-realm"
-                >
-                  <SelectValue placeholder="Select realm..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {realms?.map((realm: any) => (
-                    <SelectItem
-                      key={realm.id}
-                      value={realm.id}
-                      data-testid={`realm-${realm.id}`}
-                    >
-                      {realm.displayName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <a
-              href={`${contextPath}matrix/${selectedRealmId}`}
-              className="text-civic-gray-light hover:text-gray-900 transition-colors font-medium flex items-center gap-1"
-              title="View complete analysis matrix for all municipalities and domains"
-            >
-              <Grid className="w-4 h-4" />
-              Matrix
-            </a>
-          </div>
+    <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="w-9 h-9 bg-civic-blue rounded-lg flex items-center justify-center shrink-0">
+          <Scale className="text-white text-lg" />
         </div>
+        {children}
       </div>
-    </header>
+
+      <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-3">
+        {showRealmSelector && (
+          <Select value={selectedRealmId} onValueChange={onRealmChange}>
+            <SelectTrigger
+              className="h-9 text-sm border-gray-300 w-full md:w-[18rem] max-w-full [&>span]:truncate"
+              data-testid="select-realm"
+            >
+              <SelectValue placeholder="Select realm..." />
+            </SelectTrigger>
+            <SelectContent>
+              {realms?.map((realm: any) => (
+                <SelectItem
+                  key={realm.id}
+                  value={realm.id}
+                  data-testid={`realm-${realm.id}`}
+                >
+                  {realm.displayName}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
+        <a
+          href={matrixHref}
+          className="h-9 w-9 rounded-md border border-gray-300 text-civic-gray-light hover:text-gray-900 hover:bg-gray-50 transition-colors flex items-center justify-center"
+          title="View complete analysis matrix"
+          aria-label="View matrix"
+        >
+          <Grid className="w-4 h-4" />
+        </a>
+      </div>
+    </div>
   );
 }

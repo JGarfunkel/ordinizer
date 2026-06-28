@@ -79,7 +79,6 @@ export default function Home() {
   const { data: realms, isLoading: realmsLoading } = useRealms();
   const { data: realmsConfig } = useRealmsConfig();
   const isSingleRealm = !!realms && realms.length === 1;
-  const showHeader = !isSingleRealm && realmsConfig?.layout?.showHeader !== false;
 
   // Get current realm info for terminology
   const currentRealm = realms?.find(r => r.id === selectedRealmId);
@@ -437,19 +436,16 @@ export default function Home() {
   }, [municipalities, createEntitySlug, updateURL]);
 
   
-  return (  
+  return (
     <div className="bg-civic-bg" style={{ minHeight: 'calc(100vh - 52px)' }}>
-      {showHeader && (
-        <AppHeader
-          selectedRealmId={selectedRealmId}
-          realms={realms}
-          onRealmChange={handleRealmChange}
-        />
-      )}
-
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {!showResults ? (
-          <div className="space-y-6">
+      <div className="bg-white shadow-sm border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
+          <AppHeader
+            selectedRealmId={selectedRealmId}
+            realms={realms}
+            showRealmSelector={!isSingleRealm}
+            onRealmChange={handleRealmChange}
+          >
             <EntityCombobox
               selectedEntityId={selectedEntityId}
               selectedDomainId={selectedDomainId}
@@ -457,6 +453,7 @@ export default function Home() {
               municipalities={municipalities}
               municipalityComboOpen={municipalityComboOpen}
               currentRealm={currentRealm}
+              className="w-full md:w-auto"
               onOpenChange={setEntityComboOpen}
               onEntityChange={handleEntityChange}
               onClearEntity={() => {
@@ -477,7 +474,13 @@ export default function Home() {
                 navigate(buildPath(`/realm/${selectedRealmId}`));
               }}
             />
+          </AppHeader>
+        </div>
+      </div>
 
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {!showResults ? (
+          <div className="space-y-6">
             <DomainSelector
               allDomains={allDomains}
               selectedDomainId={selectedDomainId}

@@ -17,6 +17,7 @@ interface EntityComboboxProps {
   onEntityChange: (entityId: string) => void;
   onClearEntity: () => void;
   onResetAll: () => void;
+  className?: string;
 }
 
 export function EntityCombobox({
@@ -30,6 +31,7 @@ export function EntityCombobox({
   onEntityChange,
   onClearEntity,
   onResetAll,
+  className,
 }: EntityComboboxProps) {
   const entityLabel =
     currentRealm?.entityType === "school-districts" ? "school district" : "municipality";
@@ -56,14 +58,14 @@ export function EntityCombobox({
   };
 
   return (
-    <div className="flex items-center gap-2 relative z-10">
+    <div className={`flex items-center gap-2 relative z-10 ${className ?? ""}`}>
       <Popover open={municipalityComboOpen} onOpenChange={onOpenChange}>
         <PopoverTrigger asChild>
           <Button
             variant="outline"
             role="combobox"
             aria-expanded={municipalityComboOpen}
-            className="w-1/2 justify-between"
+            className="w-full md:w-[24rem] justify-between"
           >
             {selectedEntityId
               ? municipalities?.find((m) => m.id === selectedEntityId)?.displayName
@@ -71,7 +73,7 @@ export function EntityCombobox({
             <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-[400px] p-0" style={{ zIndex: 9999 }}>
+        <PopoverContent className="w-[--radix-popover-trigger-width] p-0" style={{ zIndex: 9999 }}>
           <Command>
             <CommandInput placeholder={`Search ${entityLabel}s...`} />
             <CommandEmpty>No {entityLabel} found.</CommandEmpty>
