@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'wouter';
+import { Link, useSearch } from 'wouter';
 import { useRealmId } from '../hooks/useRealmId';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui";
 import { Badge } from "../ui";
@@ -7,15 +7,28 @@ import { Button } from "../ui";
 import { apiPath } from "../lib/apiConfig";
 import { ArrowLeft, ExternalLink, Database } from 'lucide-react';
 import { useBasePath } from '../contexts/BasePathContext';
-import type { Question, DomainWithQuestions, DataSource, Realm } from '@civillyengaged/ordinizer-core';
+import type { Question, QuestionWithScore, DomainWithQuestions, DataSource } from '@civillyengaged/ordinizer-core';
 import { useRealms } from '../hooks/useRealms';
+
+type DomainQuestion = Question | QuestionWithScore;
+
+function isQuestionWithScore(q: DomainQuestion): q is QuestionWithScore {
+  return 'answer' in q && 'score' in q;
+}
 
 export default function AdminDomains() {
   const realmid = useRealmId();
   const { buildPath } = useBasePath();
-  
+  const search = useSearch();
+  const entityId = new URLSearchParams(search).get('entity') ?? undefined;
+
+  const apiUrl = entityId
+    ? apiPath(`realms/${realmid}/domains/questions?entity=${encodeURIComponent(entityId)}`)
+    : apiPath(`realms/${realmid}/domains/questions`);
+
   const { data: domains, isLoading, error } = useQuery<DomainWithQuestions[]>({
-    queryKey: [apiPath(`realms/${realmid}/domains/questions`)],
+    queryKey: [apiPath(`realms/${realmid}/domains/questions`), entityId],
+    queryFn: () => fetch(apiUrl).then(r => r.json()),
     enabled: !!realmid
   });
 
@@ -62,7 +75,9 @@ export default function AdminDomains() {
           <div>
             <h1 className="text-3xl font-bold">Questions & Scoring - {currentRealm?.name || realmid}</h1>
             <p className="text-muted-foreground">
-              Configure questions and scoring weights for {currentRealm?.entityType || 'entities'} in this realm
+              {entityId
+                ? `Answers and scores for: ${entityId}`
+                : `Configure questions and scoring weights for ${currentRealm?.entityType || 'entities'} in this realm`}
             </p>
           </div>
         </div>
@@ -131,20 +146,28 @@ export default function AdminDomains() {
             <CardContent>
               {domain.questions.length > 0 ? (
                 <ol className="list-decimal list-inside space-y-3 text-sm">
-                  {domain.questions.map((question) => (
+                  {(domain.questions as DomainQuestion[]).map((question) => (
                     <li key={question.id} data-testid={`question-${domain.id}-${question.id}`} className="leading-relaxed">
-                      <span className="font-semibold">{question.category}:</span> 
-                      <div>
+                      {'category' in question && <span className="font-bold">{question.category}:</span>}
+                      <span className="font-bold ml-1">
                         {question.question}
                         {question.weight > 1 && (
-                          <span className="ml-2 text-xs text-muted-foreground font-medium" data-testid={`question-weight-${domain.id}-${question.id}`}>
+                          <span className="ml-2 text-muted-foreground font-medium" data-testid={`question-weight-${domain.id}-${question.id}`}>
                             (x{question.weight})
                           </span>
                         )}
-                      </div>
-                      {question.scoreInstructions && (
+                      </span>
+                      {'scoreInstructions' in question && question.scoreInstructions && (
                         <div className="text-xs text-muted-foreground mt-1 italic">
                           {question.scoreInstructions}
+                        </div>
+                      )}
+                      {isQuestionWithScore(question) && question.answer && (
+                        <div className="mt-1 flex items-center gap-2">
+                          <span className="text-muted-foreground italic">{question.answer}</span>
+                          <Badge variant="outline" className="text-xs">
+                            {Math.round(question.score * 100)}%
+                          </Badge>
                         </div>
                       )}
                     </li>

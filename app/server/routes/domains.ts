@@ -1,23 +1,32 @@
 import type { Express } from "express";
 import fs from "fs-extra";
 import path from "path";
-import { getDefaultStorage } from "../storage";
+import { getDefaultStorage, getReadOnlyStorage } from "../storage";
+import { ScoringEngine } from "@civillyengaged/ordinizer-servercore";
 
 export function registerDomainRoutes(app: Express, apiPrefix: string = "/api") {
-  // Get domains with questions for a specific realm
+  // Get domains with questions for a specific realm; if ?entity=<entityId>, each question includes the entity's answer and score
   app.get(`${apiPrefix}/realms/:realmId/domains/questions`, async (req, res) => {
     try {
       const { realmId } = req.params;
+      const { entity: entityId } = req.query as { entity?: string };
       const storage = getDefaultStorage(realmId);
       const realm = await storage.getRealm(realmId);
       if (!realm) {
         return res.status(404).json({ error: "Realm not found" });
       }
       const domains = await storage.getDomains();
+      const scoring = entityId ? new ScoringEngine(getReadOnlyStorage(realmId)) : null;
       const domainsWithQuestions = await Promise.all(
         domains.map(async (domain) => {
           try {
-            const questions = await storage.getQuestionsByDomain(domain.id, realmId); // Validate domain and realm
+            if (scoring && entityId) {
+              const detailed = await scoring.calculateDetailedScore(domain.id, entityId);
+              const questions = detailed?.questions ?? [];
+              const totalWeight = questions.reduce((sum, q) => sum + (q.weight || 1), 0);
+              return { id: domain.id, name: domain.name, displayName: domain.displayName || domain.name, questions, questionCount: questions.length, totalWeight, overallScore: detailed?.overallScore, normalizedScore: detailed?.normalizedScore };
+            }
+            const questions = await storage.getQuestionsByDomain(domain.id, realmId);
             const totalWeight = questions.reduce((sum, q) => sum + (q.weight || 1), 0);
             return { id: domain.id, name: domain.name, displayName: domain.displayName || domain.name, questions, questionCount: questions.length, totalWeight };
           } catch {
@@ -31,16 +40,27 @@ export function registerDomainRoutes(app: Express, apiPrefix: string = "/api") {
     }
   });
 
-  // get domain and questions for it
+  // get domain and questions for it; if ?entity=<entityId> is provided, each question includes the entity's answer and score
   app.get(`${apiPrefix}/realms/:realmId/domains/:domainId/questions`, async (req, res) => {
     try {
       const { realmId, domainId } = req.params;
-      console.log(`[questions] realmId=${realmId} domainId=${domainId}`);
+      const { entity: entityId } = req.query as { entity?: string };
+      console.log(`[questions] realmId=${realmId} domainId=${domainId}${entityId ? ` entity=${entityId}` : ""}`);
       const storage = getDefaultStorage(realmId);
       const domain = await storage.getDomain(domainId);
       if (!domain) {
         return res.status(404).json({ error: "Domain not found" });
       }
+
+      if (entityId) {
+        const scoring = new ScoringEngine(getReadOnlyStorage(realmId));
+        const detailed = await scoring.calculateDetailedScore(domainId, entityId);
+        if (!detailed) {
+          return res.status(404).json({ error: "No analysis found for this entity and domain" });
+        }
+        return res.json({ ...domain, questions: detailed.questions, overallScore: detailed.overallScore, normalizedScore: detailed.normalizedScore });
+      }
+
       const questions = await storage.getQuestionsByDomain(domainId, realmId);
       res.json({ ...domain, questions });
     } catch (error) {

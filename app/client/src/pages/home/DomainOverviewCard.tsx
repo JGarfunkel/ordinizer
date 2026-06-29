@@ -1,8 +1,9 @@
-import { AlertCircle, Ban, ExternalLink } from "lucide-react";
+import { AlertCircle, Ban, ExternalLink, ListChecks } from "lucide-react";
 import { Link } from "wouter";
 import { Card, CardContent } from "../../ui";
 import type { Entity, EntityDomain } from "@civillyengaged/ordinizer-core";
 import type { DomainItem } from "./types";
+import { useRealmId } from "../../hooks/useRealmId";
 
 interface DomainOverviewCardProps {
   selectedEntity: Entity | undefined;
@@ -23,6 +24,7 @@ export function DomainOverviewCard({
   navigate,
   buildPath,
 }: DomainOverviewCardProps) {
+  const realmId = useRealmId();
   return (
     <Card className="shadow-sm border border-gray-200">
       <CardContent className="p-6">
@@ -114,10 +116,19 @@ export function DomainOverviewCard({
               })}
           </div>
 
-          <div className="pt-3 border-t text-center">
+          <div className="pt-3 border-t flex items-center justify-between">
             <p className="text-xs text-gray-500">
               Click on a domain with local regulations to view detailed analysis
             </p>
+            {realmId && (
+              <Link
+                href={buildPath(`/questions/${realmId}/domains?entity=${encodeURIComponent(selectedEntityId)}`)}
+                className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 transition-colors whitespace-nowrap ml-4"
+              >
+                <ListChecks className="w-3 h-3" />
+                All Q&amp;A
+              </Link>
+            )}
           </div>
         </div>
       </CardContent>
