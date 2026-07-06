@@ -24,7 +24,7 @@ export class OrdinizerConfig {
     };
   }
 
-  getEntityType(): 'municipalities' | 'school-districts' {
+  getEntityType(): 'municipalities' | 'school-districts' | 'product' {
     return this.realm.entityType;
   }
 

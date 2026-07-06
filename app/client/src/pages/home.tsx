@@ -496,18 +496,20 @@ export default function Home() {
             />
 
             <div className="flex flex-col lg:flex-row gap-6">
-              <MapPanel
-                selectedDomainId={selectedDomainId}
-                selectedEntityId={selectedEntityId}
-                selectedRealmId={selectedRealmId}
-                currentRealm={currentRealm}
-                entitiesLoading={entitiesLoading}
-                onEntityClick={handleMapEntityClick}
-                buildPath={buildPath}
-                domainLegend={currentDomainLegend}
-                domainDataFile={currentDomainDataFile ?? undefined}
-                onMapClick={realmsConfig?.layout?.onMapClick}
-              />
+              {currentRealm?.geo && (
+                <MapPanel
+                  selectedDomainId={selectedDomainId}
+                  selectedEntityId={selectedEntityId}
+                  selectedRealmId={selectedRealmId}
+                  currentRealm={currentRealm}
+                  entitiesLoading={entitiesLoading}
+                  onEntityClick={handleMapEntityClick}
+                  buildPath={buildPath}
+                  domainLegend={currentDomainLegend}
+                  domainDataFile={currentDomainDataFile ?? undefined}
+                  onMapClick={realmsConfig?.layout?.onMapClick}
+                />
+              )}
 
               <div className="flex-1 space-y-4 w-full min-h-0">
                 {selectedEntityId && !selectedDomainId && availableDomains && (
@@ -571,6 +573,7 @@ export default function Home() {
             selectedEntity={selectedEntity}
             selectedDomain={selectedDomain}
             documentType={documentType}
+            scoreText={currentRealm?.terminology?.scoreText ?? 'Score'}
             onBack={() => {
               setShowResults(false);
               navigate(buildPath("/"));

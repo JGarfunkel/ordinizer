@@ -59,6 +59,7 @@ export default function CombinedMatrix() {
   const documentType = currentRealm?.ruleType;
   const documentTypeCapitalized = documentType ? documentType.charAt(0).toUpperCase() + documentType.slice(1) : '';
   const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
+  const scoreText = currentRealm?.terminology?.scoreText ?? 'Score';
 
   const { data: matrixData, isLoading, error } = useQuery<CombinedMatrixData>({
     queryKey: [apiPath('realms'), realmId, 'combined-matrix'],
@@ -315,7 +316,7 @@ export default function CombinedMatrix() {
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <div>
-              <h5 className="text-sm font-medium text-gray-700 mb-2">Environmental Protection Scores</h5>
+              <h5 className="text-sm font-medium text-gray-700 mb-2">{scoreText}s</h5>
               <div className="space-y-1">
                 {getEnvironmentalScoreLegend().map((item, index) => (
                   <div key={index} className="flex items-center gap-2">

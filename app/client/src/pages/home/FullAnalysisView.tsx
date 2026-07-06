@@ -24,6 +24,7 @@ interface FullAnalysisViewProps {
   selectedEntity: Entity | undefined;
   selectedDomain: EntityDomain | undefined;
   documentType: string;
+  scoreText: string;
   onBack: () => void;
   onQuestionMarkClick: (questionId: string, domainId: string) => void;
 }
@@ -38,6 +39,7 @@ export function FullAnalysisView({
   selectedEntity,
   selectedDomain,
   documentType,
+  scoreText,
   onBack,
   onQuestionMarkClick,
 }: FullAnalysisViewProps) {
@@ -110,7 +112,7 @@ export function FullAnalysisView({
                         <span className="text-white text-sm font-bold">★</span>
                       </div>
                       <h2 className="text-xl font-semibold text-gray-900">
-                        Environmental Protection Score
+                        {scoreText}
                       </h2>
                     </div>
                     <div className="text-3xl font-bold text-green-700">
@@ -143,7 +145,7 @@ export function FullAnalysisView({
                       Common Questions & Answers
                       {scoreData && (
                         <span className="ml-2 text-sm text-gray-500 font-normal">
-                          (with Environmental Protection Scores)
+                          (with {scoreText}s)
                         </span>
                       )}
                     </h2>

@@ -45,6 +45,7 @@ export function SidebarAnalysis({
   currentRealm,
   onQuestionMarkClick,
 }: SidebarAnalysisProps) {
+  const scoreText = currentRealm?.terminology?.scoreText ?? 'Score';
 
   const [bestPracticesExpanded, setBestPracticesExpanded] = useState(!selectedEntityId);
   const [showGaps, setShowGaps] = useState(false);
@@ -191,7 +192,7 @@ export function SidebarAnalysis({
                       className="w-4 h-4 rounded-full mr-2"
                       style={{ backgroundColor: scoreData.scoreColor }}
                     ></div>
-                    Environmental Protection Score
+                    {scoreText}
                   </h5>
                   <div className="text-lg font-bold text-green-700" title="score out of 10.0">
                     {scoreData.overallScore.toFixed(1)}/10
@@ -226,7 +227,9 @@ export function SidebarAnalysis({
                 <div className="space-y-4">
                   {analysisData?.questions?.map((qa, index) => {
                     const scoredQuestion = scoreData?.questions.find((sq) => sq.id === qa.id);
-                    const hasGap = (scoredQuestion && scoredQuestion.score < 1.0) || qa.gap;
+                    const effectiveScore = scoredQuestion?.score ?? (qa.score > 0 ? qa.score : undefined);
+                    const effectiveConfidence = scoredQuestion?.confidence ?? qa.confidence;
+                    const hasGap = (effectiveScore != null && effectiveScore < 1.0) || qa.gap;
 
                     return (
                       <div
@@ -235,9 +238,16 @@ export function SidebarAnalysis({
                       >
                         <div className="flex items-start justify-between mb-2">
                           <p className="font-medium text-gray-800 flex-1">{qa.question}</p>
-                          {scoredQuestion && (
-                            <div className="ml-3 flex-shrink-0">
-                              <ScoreVisualization score={scoredQuestion.score} maxScore={1} />
+                          {effectiveScore != null && (
+                            <div className="ml-3 flex-shrink-0 flex flex-col items-end gap-0.5">
+                              <ScoreVisualization score={effectiveScore} maxScore={1} />
+                              {effectiveConfidence != null && (
+                                <span className="text-[10px] text-gray-400">
+                                  {effectiveConfidence > 1
+                                    ? Math.round(effectiveConfidence)
+                                    : Math.round(effectiveConfidence * 100)}% confidence
+                                </span>
+                              )}
                             </div>
                           )}
                         </div>
@@ -338,6 +348,43 @@ export function SidebarAnalysis({
                                 <span className="ml-1">{qa.sourceReference}</span>
                               </StatuteLink>
                             )}
+                          </p>
+                        )}
+                        {qa.sourceRefs && qa.sourceRefs.length > 0 && (
+                          <p className="text-xs text-blue-600 italic mt-1">
+                            <span className="font-medium">Sources:</span>{" "}
+                            {qa.sourceRefs.map((ref, i) => {
+                              const isLast = i === (qa.sourceRefs as typeof qa.sourceRefs)!.length - 1;
+                              const stateEntityId = usesStateCode
+                                ? `${currentRealm?.geo?.stateProvince}-State`
+                                : analysisData?.municipality?.id;
+                              if (typeof ref === "string") {
+                                return (
+                                  <span key={i}>
+                                    <StatuteLink
+                                      municipalityId={stateEntityId}
+                                      domainId={analysisData?.domain?.id}
+                                    >
+                                      {ref}
+                                    </StatuteLink>
+                                    {!isLast && ", "}
+                                  </span>
+                                );
+                              }
+                              const label = ref.name || ref.document || ref.section || "Source";
+                              return (
+                                <span key={i}>
+                                  <StatuteLink
+                                    href={ref.url}
+                                    municipalityId={stateEntityId}
+                                    domainId={analysisData?.domain?.id}
+                                  >
+                                    {label}
+                                  </StatuteLink>
+                                  {!isLast && ", "}
+                                </span>
+                              );
+                            })}
                           </p>
                         )}
                       </div>

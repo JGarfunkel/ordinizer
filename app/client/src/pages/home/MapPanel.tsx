@@ -32,6 +32,7 @@ export function MapPanel({
   domainDataFile,
   onMapClick,
 }: MapPanelProps) {
+  const scoreText = currentRealm?.terminology?.scoreText ?? 'Score';
   return (
     <div className="flex-shrink-0 w-full lg:w-auto">
       <Card className="shadow-sm border border-gray-200">
@@ -106,7 +107,7 @@ export function MapPanel({
                   <>
                     <div className="mb-3">
                       <h5 className="text-xs font-medium text-gray-600 mb-2">
-                        Environmental Protection Scores
+                        {scoreText}s
                       </h5>
                       <div className="grid grid-cols-2 gap-2 text-xs">
                         <div className="flex items-center gap-2">
