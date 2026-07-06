@@ -13,6 +13,7 @@ import { BestPractice } from "@civillyengaged/ordinizer-core";
 
 const responseSchema = z.object({
   answer: z.string(),
+  shortAnswer: z.string(),
   sourceRefs: z.array(z.string()),
   confidence: z.number().int().min(0).max(100),
   gap: z.string().optional(),
@@ -50,12 +51,13 @@ export function generateAnalysisPrompt(context: AnalysisPromptContext, doScoring
     : "";
 
   const promptGuidance = `
-  Based on the provided excerpts, answer the user's question with 200 words or less.
-  Report only what IS present in the sources.
-  Never describe what is absent, missing, or not provided — even when the question asks whether something is present.
-  Do not make value judgments about the information provided.
+  Answer using as few words as the answer requires — a one-sentence fact needs one sentence, not a paragraph.
+  If a question is conditional and the condition does not apply, state the relevant fact directly and stop (e.g., "It's free" rather than addressing free-tier sub-questions).
+  Report only what IS present in the sources. Do not make value judgments.
 
-  If not found, respond with \"${NOT_SPECIFIED}\" 
+  Also provide a "shortAnswer" of 10 words or less — the briefest possible answer for a datasheet cell (e.g., "Yes", "No", "Presumed No", "$20/user/month", "open source group decision software"). If not found, use "Not specified".
+
+  If not found, respond with \"${NOT_SPECIFIED}\"
   Cite references when available.
   Focus on unique information for this specific question.${extraSourceText}${scoreText}`;
 
@@ -93,7 +95,7 @@ export interface AnalyzeQuestionsInput {
   domain: string;
   entity: string;
   domainForEntityText: string;
-  questions: Array<{ id?: number; question: string; scoreInstructions?: string; additionalSource?: string }>;
+  questions: Array<{ id?: number; question: string; scoreInstructions?: string; additionalSource?: string; dependsOn?: number[] }>;
   model?: string;
   verbose?: boolean;
   dryRun?: boolean;
@@ -102,12 +104,15 @@ export interface AnalyzeQuestionsInput {
   additionalSources?: { data?: string[] };
   getDiscoveredChunks?: (question: string) => Promise<ChunkDiscoveryResult>;
   existingAnswersContextBuilder?: (questionIndex: number) => string;
+  /** Answers from questions that were kept from a prior analysis run (not re-analyzed), keyed by question id */
+  priorAnswersByQuestionId?: Record<number, string>;
   /** When provided, each question with a matching id will have its gap/score/nextPrompts computed in the same call */
   bestPracticesByQuestionId?: Record<number, BestPractice>;
 }
 
 export interface AnalyzedQuestionResult {
   answer: string;
+  shortAnswer?: string;
   confidence: number;
   sourceRefs: string[];
   vectorTokensUsed: number;
@@ -161,6 +166,9 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
   const verbose = input.verbose === true;
   const dryRun = input.dryRun === true;
   const seenChunkFingerprints = new Set<string>();
+  const answeredById = new Map<number, string>(
+    Object.entries(input.priorAnswersByQuestionId || {}).map(([k, v]) => [Number(k), v])
+  );
 
   const additionalSourceText = (input.additionalSources?.data || [])
     .map((content, idx) => `=== ADDITIONAL SOURCE ${idx + 1} ===\n${content}`)
@@ -247,6 +255,7 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
       // For statutory domains, no chunks means the statute doesn't address this topic.
       // For general domains, no sources means there are genuinely no shared sources.
       const noSourceAnswer = input.isGeneralDomain ? NO_SOURCES_AVAILABLE : NOT_SPECIFIED;
+      if (q.id !== undefined) answeredById.set(q.id, noSourceAnswer);
       results.push({
         answer: noSourceAnswer,
         confidence: 0,
@@ -262,6 +271,20 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
       ? input.existingAnswersContextBuilder(i)
       : "";
 
+    const dependencyContext = (() => {
+      if (!q.dependsOn?.length) return "";
+      const lines = q.dependsOn
+        .map((id) => {
+          const ans = answeredById.get(id);
+          if (!ans) return null;
+          const depQ = input.questions.find((dq) => dq.id === id);
+          return `- Q${id}${depQ ? ` ("${depQ.question}")` : ""}: ${ans}`;
+        })
+        .filter(Boolean);
+      if (!lines.length) return "";
+      return `\n\nCONTEXT FROM RELATED QUESTIONS:\n${lines.join("\n")}\n\nIf these answers make this question moot or already resolved, respond in one sentence and stop.`;
+    })();
+
     const bestPractice = (q.id !== undefined && input.bestPracticesByQuestionId)
       ? input.bestPracticesByQuestionId[q.id]
       : undefined;
@@ -270,7 +293,7 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
       ? `\n\nBEST PRACTICE FOR THIS QUESTION: "${bestPractice.bestAnswer}"\nAfter answering, compare this entity's answer to the best practice and provide: a gap statement (or "No gap" if fully aligned), a normalized score 0.0–1.0, and up to 2 next research prompts if further investigation is needed.`
       : "";
 
-    const userPrompt = `${prompt.userPromptPrefix}${sourceBody}${existingAnswersContext}${enrichmentSection}`;
+    const userPrompt = `${prompt.userPromptPrefix}${sourceBody}${existingAnswersContext}${dependencyContext}${enrichmentSection}`;
     if (verbose) {
       console.log(`[VERBOSE] ${input.entity} Q${i + 1}/${input.questions.length} (${input.mode}) prompt`);
       console.log("[VERBOSE] System prompt:\n" + prompt.systemPrompt);
@@ -281,6 +304,7 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
       if (verbose) {
         console.log(`[VERBOSE] ${input.entity} Q${i + 1}: dry-run enabled; skipping AI completion call.`);
       }
+      if (q.id !== undefined) answeredById.set(q.id, NO_SOURCES_AVAILABLE);
       results.push({
         answer: NO_SOURCES_AVAILABLE,
         confidence: 0,
@@ -310,11 +334,13 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
       console.log(`[VERBOSE] ${input.entity} Q${i + 1}: AI response parsed successfully:`, parsed);
     }
     const answer = parsed.answer || NOT_SPECIFIED;
+    if (q.id !== undefined) answeredById.set(q.id, answer);
     const confidence = Math.max(0, Math.min(100, parsed.confidence || 50));
     const sourceRefs = parsed.sourceRefs?.length ? parsed.sourceRefs : fallbackSourceRefs;
 
     const result: AnalyzedQuestionResult = {
       answer,
+      shortAnswer: parsed.shortAnswer || undefined,
       confidence,
       sourceRefs,
       vectorTokensUsed: completionTokens + retrievalTokens,

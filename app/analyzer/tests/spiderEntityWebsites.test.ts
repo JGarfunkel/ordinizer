@@ -280,17 +280,16 @@ describe("spiderEntityWebsites helpers", () => {
     expect(score.matchedKeywords).toEqual([]);
   });
 
-  it("extracts boilerplate candidates from top and bottom lines", () => {
-    const candidates = detectBoilerplateCandidates([
-      "Village of Example Public Works",
-      "Official Policy Portal",
-      "Main body sentence one.",
-      "Main body sentence two.",
-      "Copyright 2026 Example Village",
-      "Contact us",
-    ].join("\n"));
+  it("detects header/footer selectors from HTML", () => {
+    const html = `<html><body><header><nav>Site Nav</nav></header><main>Content</main><footer>Copyright</footer></body></html>`;
+    const candidates = detectBoilerplateCandidates("", html);
+    expect(candidates.headerSelector).toBe("header");
+    expect(candidates.footerSelector).toBe("footer");
+  });
 
-    expect(candidates.header).toContain("village of example public works");
-    expect(candidates.footer).toContain("copyright 2026 example village");
+  it("returns no selectors when no semantic zone elements are present", () => {
+    const candidates = detectBoilerplateCandidates("Some plain text content here.");
+    expect(candidates.headerSelector).toBeUndefined();
+    expect(candidates.footerSelector).toBeUndefined();
   });
 });

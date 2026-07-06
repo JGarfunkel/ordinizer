@@ -3,8 +3,10 @@
  * domainReport.ts
  *
  * Generates a markdown report for a given domain:
+ *   - Answer matrix (entities × questions, shortAnswer + confidence)
+ *   - Score distribution tables
  *   - All domain questions (with weight/category)
- *   - For each entity with data: applicable sources + analyzed questions (score, confidence, gap, answer)
+ *   - For each entity with data: analyzed questions (score, confidence, gap, answer)
  *
  * Sources are pulled from both analysis.sources and EntityDownloads/{entity}/history.json.
  * Any history sources not yet present in analysis.sources are copied into analysis.json and saved.
@@ -59,6 +61,11 @@ function getQuestionId(q: AnalyzedQuestion): string | number {
 /** Compute a forward-slash relative path from a base directory to a target file (for markdown links). */
 function relLink(fromDir: string, toFile: string): string {
   return path.relative(fromDir, toFile).replace(/\\/g, "/");
+}
+
+/** Sanitize a string for use inside a markdown table cell. */
+function tableCell(text: string): string {
+  return text.replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
 }
 
 /** Read history.json for an entity and return records relevant to a domain. */
@@ -124,13 +131,41 @@ function renderQuestions(questions: Question[], questionsFilePath: string, local
   return lines.join("\n");
 }
 
+interface EntityAnswerData {
+  displayName: string;
+  answers: Map<string, { shortAnswer: string; confidence: number }>;
+}
+
+function renderAnswerMatrix(questions: Question[], entityData: EntityAnswerData[]): string {
+  if (questions.length === 0 || entityData.length === 0) return "";
+
+  const lines: string[] = ["---\n", "## Answer Matrix\n"];
+
+  const headers = questions.map((q) => q.category || `Q${q.id}`);
+  lines.push(`| Entity | ${headers.join(" | ")} |`);
+  lines.push(`|--------|${headers.map(() => "--------").join("|")}|`);
+
+  for (const ed of entityData) {
+    const cells = questions.map((q) => {
+      const qid = String(q.id);
+      const a = ed.answers.get(qid);
+      if (!a || !a.shortAnswer) return "—";
+      return `${a.shortAnswer} (${confidenceLabel(a.confidence)})`;
+    });
+    lines.push(`| ${ed.displayName} | ${cells.join(" | ")} |`);
+  }
+  lines.push("");
+
+  return lines.join("\n");
+}
+
 function renderEntitySection(
   entityId: string,
   entityDisplayName: string,
-  sources: SourceLink[],
+  _sources: SourceLink[],
   analysis: Analysis | null,
   questions: Question[],
-  ruleset: Ruleset | null,
+  _ruleset: Ruleset | null,
   analysisFilePath: string,
   metadataFilePath: string,
   localDir: string,
@@ -141,6 +176,7 @@ function renderEntitySection(
   lines.push(`**Entity ID:** \`${entityId}\`  `);
   lines.push(`**Files:** [analysis.json](${relLink(localDir, analysisFilePath)}) · [metadata.json](${relLink(localDir, metadataFilePath)})\n`);
 
+  /*
   // Statute sources from ruleset (metadata.json)
   lines.push("### Statute Sources\n");
   if (!ruleset || ruleset.sources.length === 0) {
@@ -170,6 +206,7 @@ function renderEntitySection(
     }
     lines.push("");
   }
+  */
 
   // Analysis
   if (!analysis) {
@@ -197,30 +234,25 @@ function renderEntitySection(
   for (const aq of analysis.questions ?? []) {
     const qid = getQuestionId(aq);
     const baseQ = qid ? questionMap.get(Number(qid)) : undefined;
-    const questionText = aq.question || baseQ?.question || `Question ${qid}`;
+    const category = baseQ?.category || `Q${qid}`;
 
-    lines.push(`#### Q${qid}: ${questionText}\n`);
+    lines.push(`#### ${category}\n`);
 
     const score = (aq as any).score;
     const conf = aq.confidence;
     const gap = aq.gap ?? (aq as any).gapAnalysis;
 
-    lines.push(`| Score | Confidence |`);
-    lines.push(`|-------|------------|`);
-    lines.push(`| ${scoreBar(score)} | ${confidenceLabel(conf)} |\n`);
+    const answerCell = tableCell(aq.answer || "—");
+    const sourcesCell = Array.isArray(aq.sourceRefs) && aq.sourceRefs.length > 0
+      ? tableCell(aq.sourceRefs.map((r) => (typeof r === "string" ? r : (r as any).name ?? JSON.stringify(r))).join("; "))
+      : tableCell(aq.sourceReference || "—");
 
-    if (aq.answer) {
-      lines.push(`**Answer:**\n\n${aq.answer}\n`);
-    }
+    lines.push(`| Score | Confidence | Answer | Sources |`);
+    lines.push(`|-------|------------|--------|---------|`);
+    lines.push(`| ${scoreBar(score)} | ${confidenceLabel(conf)} | ${answerCell} | ${sourcesCell} |\n`);
 
     if (gap) {
-      lines.push(`**Gap:**\n\n${gap}\n`);
-    }
-
-    if (Array.isArray(aq.sourceRefs) && aq.sourceRefs.length > 0) {
-      lines.push(`**Source refs:** ${aq.sourceRefs.map((r) => (typeof r === "string" ? r : (r as any).name ?? JSON.stringify(r))).join("; ")}\n`);
-    } else if (aq.sourceReference) {
-      lines.push(`**Source ref:** ${aq.sourceReference}\n`);
+      lines.push(`**Gap:** ${tableCell(gap)}\n`);
     }
   }
 
@@ -233,6 +265,7 @@ function renderEntitySection(
 
 interface QuestionScoreData {
   text: string;
+  category?: string;
   scores: number[];
   naCount: number;
   bestEntity: { displayName: string; score: number } | null;
@@ -265,7 +298,6 @@ function renderScoreDistribution(
   }
 
   // Per-question distribution table (quartile buckets)
-  // Build ordered question ID list once — reused below for the decile table too
   const orderedQIds: string[] = [];
   {
     const seenIds = new Set<string>();
@@ -279,11 +311,12 @@ function renderScoreDistribution(
 
   if (orderedQIds.length > 0) {
     lines.push("### Per-Question Score Distribution\n");
-    lines.push("| Q# | Question | Count | Avg | Min | Max | 0–25% | 25–50% | 50–75% | 75–100% | n/a |");
+    lines.push("| Q# | Category | Count | Avg | Min | Max | 0–25% | 25–50% | 50–75% | 75–100% | n/a |");
     lines.push("|----|----------|-------|-----|-----|-----|-------|--------|--------|---------|-----|");
 
     for (const qid of orderedQIds) {
-      const { text, scores, naCount } = questionScores.get(qid)!;
+      const { text, category, scores, naCount } = questionScores.get(qid)!;
+      const label = category || text;
       const avg = scores.length > 0 ? scores.reduce((s, n) => s + n, 0) / scores.length : 0;
       const min = scores.length > 0 ? Math.min(...scores) : 0;
       const max = scores.length > 0 ? Math.max(...scores) : 0;
@@ -291,7 +324,7 @@ function renderScoreDistribution(
       const b1 = scores.filter((s) => s >= 2.5 && s < 5.0).length;
       const b2 = scores.filter((s) => s >= 5.0 && s < 7.5).length;
       const b3 = scores.filter((s) => s >= 7.5).length;
-      const shortText = text.length > 60 ? text.slice(0, 57) + "…" : text;
+      const shortText = label.length > 60 ? label.slice(0, 57) + "…" : label;
       lines.push(`| ${qid} | ${shortText} | ${scores.length} | ${scoreBar(avg)} | ${scoreBar(min)} | ${scoreBar(max)} | ${b0} | ${b1} | ${b2} | ${b3} | ${naCount} |`);
     }
     lines.push("");
@@ -323,9 +356,10 @@ function renderScoreDistribution(
 
     // Per-question rows
     for (const qid of orderedQIds) {
-      const { text, scores, naCount, bestEntity } = questionScores.get(qid)!;
+      const { text, category, scores, naCount, bestEntity } = questionScores.get(qid)!;
+      const label = category || text;
       const deciles = Array.from({ length: 10 }, (_, d) => bucketCount(scores, d));
-      const shortText = text.length > 50 ? text.slice(0, 47) + "…" : text;
+      const shortText = label.length > 50 ? label.slice(0, 47) + "…" : label;
       const bestCell = bestEntity ? `${bestEntity.displayName} (${scoreBar(bestEntity.score)})` : "—";
       lines.push(`| Q${qid}: ${shortText} | ${deciles.join(" | ")} | ${naCount} | ${bestCell} |`);
     }
@@ -346,6 +380,7 @@ async function generateDomainReport(
   realmDir: string,
   localDir: string,
   storage: ReturnType<typeof getDefaultStorage>,
+  realm: any,
 ): Promise<void> {
   const [domain, questions] = await Promise.all([
     storage.getDomain(domainId),
@@ -384,6 +419,9 @@ async function generateDomainReport(
 
   console.log(`  Entities with data: ${allEntityIds.size}`);
 
+  // Build question lookup for category resolution
+  const questionByIdMap = new Map(questions.map((q) => [String(q.id), q]));
+
   // --- Build report ---
   const reportLines: string[] = [];
   reportLines.push(`# Domain Report: ${domain.displayName}\n`);
@@ -403,6 +441,7 @@ async function generateDomainReport(
   const questionScores = new Map<string, QuestionScoreData>();
   const entityScores: Array<{ displayName: string; score: number; lowConfidence: boolean }> = [];
   const entitySections: string[] = [];
+  const allEntityAnswerData: EntityAnswerData[] = [];
 
   for (const entityId of [...allEntityIds].sort()) {
     const entity = entityById.get(entityId);
@@ -459,6 +498,19 @@ async function generateDomainReport(
       }
     }
 
+    // Collect answer matrix data
+    if (analysis) {
+      const answers = new Map<string, { shortAnswer: string; confidence: number }>();
+      for (const aq of analysis.questions ?? []) {
+        const qid = String(getQuestionId(aq));
+        answers.set(qid, {
+          shortAnswer: (aq as any).shortAnswer ?? "",
+          confidence: aq.confidence ?? 0,
+        });
+      }
+      allEntityAnswerData.push({ displayName, answers });
+    }
+
     // Collect scores for distribution summary
     if (!analysis) {
       noDataCount++;
@@ -475,7 +527,8 @@ async function generateDomainReport(
         const qid = String(getQuestionId(aq));
         const raw = (aq as any).score;
         if (!questionScores.has(qid)) {
-          questionScores.set(qid, { text: aq.question, scores: [], naCount: 0, bestEntity: null });
+          const baseQ = questionByIdMap.get(qid);
+          questionScores.set(qid, { text: aq.question, category: baseQ?.category, scores: [], naCount: 0, bestEntity: null });
         }
         const entry = questionScores.get(qid)!;
         if (aq.answer === NO_SOURCES_AVAILABLE || aq.answer === NOT_SPECIFIED) {
@@ -499,8 +552,13 @@ async function generateDomainReport(
     );
   }
 
+  reportLines.push(renderAnswerMatrix(questions, allEntityAnswerData));
   reportLines.push(renderScoreDistribution(questions, questionScores, entityScores, noDataCount));
   reportLines.push(renderQuestions(questions, questionsFilePath, localDir));
+
+  const entityTypeLabel = realm?.entityType ?? "Entities";
+  reportLines.push(`---\n`);
+  reportLines.push(`## ${entityTypeLabel} details\n`);
   reportLines.push(...entitySections);
 
   const reportPath = path.join(localDir, `report-${domainId}.md`);
@@ -531,19 +589,22 @@ export async function main(): Promise<void> {
   const localDir = path.join(process.cwd(), "local");
   await fs.mkdir(localDir, { recursive: true });
 
-  const entities = await storage.getEntities();
+  const [entities, realm] = await Promise.all([
+    storage.getEntities(),
+    storage.getRealm(realmId),
+  ]);
   const entityById = new Map(entities.map((e) => [e.id, e]));
 
   if (common.domain) {
     // Single domain mode
-    await generateDomainReport(realmId, common.domain, entityById, realmDir, localDir, storage);
+    await generateDomainReport(realmId, common.domain, entityById, realmDir, localDir, storage, realm);
   } else {
     // All-domains mode
     const domainIds = await storage.listDomainIds();
     const reportable = domainIds.filter((id) => id !== "EntityDownloads");
     console.log(`No domain specified — generating reports for ${reportable.length} domain(s): ${reportable.join(", ")}`);
     for (const domainId of reportable) {
-      await generateDomainReport(realmId, domainId, entityById, realmDir, localDir, storage);
+      await generateDomainReport(realmId, domainId, entityById, realmDir, localDir, storage, realm);
     }
     console.log(`\nDone. Reports written to: ${localDir}`);
   }

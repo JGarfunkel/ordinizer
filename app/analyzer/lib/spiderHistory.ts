@@ -50,7 +50,17 @@ export interface WebsiteHostRecord {
   footerCandidates: Record<string, number>;
   activeHeader?: string;
   activeFooter?: string;
+  /** CSS selector → count; promoted to activeHeaderSelector after 2+ pages */
+  headerSelectorCandidates?: Record<string, number>;
+  /** CSS selector → count; promoted to activeFooterSelector after 2+ pages */
+  footerSelectorCandidates?: Record<string, number>;
+  /** Promoted CSS selector identifying the header zone element */
+  activeHeaderSelector?: string;
+  /** Promoted CSS selector identifying the footer zone element */
+  activeFooterSelector?: string;
   contentSelector?: string;
+  preferredLanguage?: string;
+  skipOtherLanguages?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -435,15 +445,29 @@ export async function saveCrawledArtifacts(
   timestamp: string,
   options?: {
     contentSelector?: string;
+    /** Relative path to an existing HTML artifact — overwrite it instead of generating a new filename. */
+    existingLocalFile?: string;
+    /** Relative path to an existing TXT artifact — overwrite it instead of generating a new filename. */
+    existingLocalFileText?: string;
   },
 ): Promise<{ localFile?: string; localFileText?: string; fileType?: "HTML" | "PDF" }> {
   const destinationDir = path.join(getEntityDownloadsRoot(storage), entityId);
   await fs.ensureDir(destinationDir);
 
-  const slugFromUrl = inferSlugFromUrl(page.url);
-  const slugFromTitle = sanitizeFileSlug(page.title || "source");
-  const baseSlugSeed = slugFromUrl || slugFromTitle || "source";
-  const baseSlug = await getUniqueArtifactBaseName(destinationDir, baseSlugSeed);
+  let baseSlug: string;
+  const existingAbsPath = options?.existingLocalFile
+    ? fromRelativeDownloadsPath(storage, options.existingLocalFile)
+    : options?.existingLocalFileText
+      ? fromRelativeDownloadsPath(storage, options.existingLocalFileText)
+      : undefined;
+  if (existingAbsPath) {
+    baseSlug = path.basename(existingAbsPath).replace(/\.(html|txt|pdf)$/i, "");
+  } else {
+    const slugFromUrl = inferSlugFromUrl(page.url);
+    const slugFromTitle = sanitizeFileSlug(page.title || "source");
+    const baseSlugSeed = slugFromUrl || slugFromTitle || "source";
+    baseSlug = await getUniqueArtifactBaseName(destinationDir, baseSlugSeed);
+  }
 
   let localFile: string | undefined;
   let localFileText: string | undefined;

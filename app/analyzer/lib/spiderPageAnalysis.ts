@@ -24,6 +24,7 @@ import {
   upsertHistoryEntry,
 } from "./spiderHistory.js";
 import { getLikelyHostname } from "./spiderBoilerplate.js";
+import type { WebsiteHostRecord } from "./spiderHistory.js";
 import { convertHtmlToTextSimple } from "./simpleHtmlToText.js";
 import { title } from "node:process";
 
@@ -65,24 +66,39 @@ function computeJaccardSimilarity(a: string, b: string): number {
  * Ordered list of CSS selectors to probe as "main content" candidates.
  */
 const CONTENT_SELECTOR_CANDIDATES = [
+  // CivicPlus / legacy government CMS
   "[data-cprole='mainContentContainer']",
   "#moduleContent",
   "#moduleContent #page",
   "#page.moduleContentNew",
+  "#ContentPlaceHolder1_UpdatePanel1",
+  "#ContentArea",
+  "#TopContentArea",
+  // Semantic / ARIA
   "main",
   "[role='main']",
+  "article",
+  // WordPress
+  "#primary",
+  ".site-main",
+  ".entry-content",
+  ".hentry",
+  // Drupal
+  ".region-content",
+  "#content-area",
+  ".block-system-main-block",
+  // Generic CMS / custom
   "#content",
   "#main-content",
   "#page-content",
   "#main",
+  "#maincontent",
   ".content",
   ".main-content",
-  ".normal_content_area",
   ".page-content",
-  ".entry-content",
-  "article",
-  "#maincontent",
-  "#ContentPlaceHolder1_UpdatePanel1",
+  ".normal_content_area",
+  ".inner-content",
+  ".content-area",
 ] as const;
 
 
@@ -676,6 +692,77 @@ export function extractContentBlockText(html: string, baseUrl: string, contentSe
     return convertHtmlToTextSimple(htmlToConvert).trim() || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Single-page quick-win content selector discovery.
+ *
+ * Checks obvious semantic/ARIA elements without needing a second page for comparison.
+ * Covers ~70% of modern sites where <main>, [role="main"], or a lone <article> carries
+ * the page content with substantial text.
+ */
+export function discoverContentSelectorQuick(html: string, url: string): string | undefined {
+  try {
+    const dom = new JSDOM(html, { url });
+    const doc = dom.window.document;
+
+    const checks: Array<{ selector: string; minLen?: number }> = [
+      { selector: "main" },
+      { selector: "[role='main']" },
+      { selector: "#primary" },
+      { selector: ".site-main" },
+      { selector: ".region-content" },
+    ];
+
+    for (const { selector, minLen = 300 } of checks) {
+      const el = doc.querySelector(selector);
+      if (!el) continue;
+      const text = normalizeText(el.textContent || "");
+      if (text.length >= minLen) return selector;
+    }
+
+    // Single <article> is a reliable signal (multi-article = listing page)
+    const articles = doc.querySelectorAll("article");
+    if (articles.length === 1) {
+      const text = normalizeText(articles[0].textContent || "");
+      if (text.length >= 300) return "article";
+    }
+
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Remove the header and footer zone elements from a page's HTML using the
+ * CSS selectors stored in the host record.  Returns the cleaned HTML so that
+ * subsequent content extraction and text conversion work on a reduced document.
+ */
+export function stripBoilerplateZonesFromHtml(
+  html: string,
+  baseUrl: string,
+  hostRecord?: WebsiteHostRecord,
+): string {
+  if (!hostRecord) return html;
+  const { activeHeaderSelector, activeFooterSelector } = hostRecord;
+  if (!activeHeaderSelector && !activeFooterSelector) return html;
+
+  try {
+    const dom = new JSDOM(html, { url: baseUrl });
+    const doc = dom.window.document;
+
+    if (activeHeaderSelector) {
+      doc.querySelector(activeHeaderSelector)?.remove();
+    }
+    if (activeFooterSelector) {
+      doc.querySelector(activeFooterSelector)?.remove();
+    }
+
+    return dom.window.document.documentElement.outerHTML;
+  } catch {
+    return html;
   }
 }
 

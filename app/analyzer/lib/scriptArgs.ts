@@ -3,6 +3,7 @@ export interface CommonCliOptions {
   realm?: string;
   domain?: string;
   entity?: string;
+  all?: boolean;
   notbot: boolean;
   force: boolean;
   dryRun: boolean;
@@ -46,6 +47,11 @@ export function parseCommonCliArgs(args: string[]): ParsedCommonCli {
     if (arg === "--entity") {
       common.entity = args[i + 1];
       i += 1;
+      continue;
+    }
+
+    if (arg === "--all") {
+      common.all = true;
       continue;
     }
 

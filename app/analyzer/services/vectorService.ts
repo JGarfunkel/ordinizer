@@ -427,6 +427,53 @@ export class VectorService {
 	}
 
 	/**
+	 * Count all indexed vectors whose ID starts with the given prefix.
+	 * Handles Pinecone pagination transparently.
+	 */
+	async countChunksForPrefix(prefix: string): Promise<number> {
+		await this.initializeIndex();
+		const index = this.getIndex();
+		let count = 0;
+		let paginationToken: string | undefined;
+		while (true) {
+			const response = await index.listPaginated({ limit: 100, paginationToken, prefix });
+			count += (response.vectors ?? []).length;
+			paginationToken = response.pagination?.next;
+			if (!paginationToken) break;
+		}
+		return count;
+	}
+
+	/**
+	 * Count indexed vectors by metadata filter: entityId matches and domainIds contains domainId.
+	 * Uses the entity-prefix list to avoid scanning the full index, then filters by metadata.
+	 */
+	async countChunksByMetadata(entityId: string, domainId: string): Promise<number> {
+		await this.initializeIndex();
+		const index = this.getIndex();
+		let count = 0;
+		let paginationToken: string | undefined;
+		while (true) {
+			const response = await index.listPaginated({ limit: 100, paginationToken, prefix: `${entityId}-` });
+			const ids = (response.vectors ?? []).map((v) => v.id!);
+			if (ids.length > 0) {
+				const fetched = await index.fetch(ids);
+				for (const vector of Object.values(fetched.records ?? {})) {
+					const m = vector.metadata as Record<string, any> | undefined;
+					if (m?.entityId !== entityId) continue;
+					const domainIds: string[] = Array.isArray(m?.domainIds)
+						? m.domainIds
+						: m?.domainId ? [m.domainId as string] : [];
+					if (domainIds.includes(domainId)) count++;
+				}
+			}
+			paginationToken = response.pagination?.next;
+			if (!paginationToken) break;
+		}
+		return count;
+	}
+
+	/**
 	 * Get index statistics
 	 */
 	async getIndexStats() {

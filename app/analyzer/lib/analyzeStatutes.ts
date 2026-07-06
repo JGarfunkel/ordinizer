@@ -57,6 +57,7 @@ export interface AnalyzeOptions {
   recalcScoreOnly?: boolean; // Recalculate normalized scores from existing analyses without re-running AI
   forceBelow?: number; // Re-analyze questions whose score is below this normalised threshold (0–1)
   cleanOnly?: boolean; // Refresh metadata fields (municipality, domain) from storage without making AI calls
+  all?: boolean; // Analyze all entities regardless of other filters
 }
 
 // Global verbose flag
@@ -627,7 +628,7 @@ function compareQuestions(
   };
 }
 
-export async function analyzeStatutes(options: AnalyzeOptions = {}) {
+export async function doAnalysis(options: AnalyzeOptions = {}) {
   VERBOSE = options.verbose || false;
   if (!options.realm) {
     throw new Error(" Realm is required to analyze the statutes");
@@ -771,9 +772,9 @@ export async function analyzeStatutes(options: AnalyzeOptions = {}) {
 }
 
 async function getRequestedEntityIds(options: AnalyzeOptions, st: IStorage, domain: string) {
-  return options.entity
-    ? [options.entity]
-    : await st.getEntityIds(domain);
+  if (options.all) return await st.getEntityIds();
+  if (options.entity) return [options.entity];
+  return await st.getEntityIds(domain);
 }
 
 // Returns true if there are no questions or the array is empty
@@ -830,6 +831,13 @@ async function processEntity(
   options: AnalyzeOptions = {},
 ): Promise<boolean> {
   const st = await getStorage(options);
+
+  if (!await st.canWriteAnalysis(domain, entity)) {
+    const dir = `${st.getRealmDir()}/${domain}/${entity}`;
+    console.error(`❌ ${entity}: Cannot write to analysis directory: ${dir}`);
+    process.exit(1);
+  }
+
   let force = options.force || false;
   const useMeta = options.useMeta || false;
   const questionId = options.questionId;
@@ -899,32 +907,11 @@ async function processEntity(
     //   return false; // No OpenAI calls made
     // }
 
-    let metadata = await st.getRuleset(domain, entity) as Ruleset;
+    const metadata = await st.getRuleset(domain, entity) as Ruleset | null;
     log(
       `Loaded metadata for ${entity}:`,
       JSON.stringify(metadata, null, 2),
     );
-
-    // create metadata if it doesn't exist (to avoid errors in analysis)
-    if (!metadata) {
-      const entityObj = await st.getEntity(entity);
-      if (!entityObj) {
-        log(`Entity object not found for ${entity}, creating metadata with limited info`);
-        throw new Error(`Metadata not found for ${entity} and entity object could not be loaded`);
-      }
-      metadata = {
-        entityId: entity,
-        domainId: domain,
-        domain: domain,
-        sources: [],
-        metadataCreated: new Date().toISOString(),
-        homePage: "",
-        municipality: entityObj.name,
-        municipalityType: entityObj.type
-      };
-      await st.saveRuleset(metadata);
-      log(`Created default metadata for ${entity}`);
-    }
 
     const questionsArray = await st.getQuestionsByDomain(domain, options.realm);
     log(`Loaded ${questionsArray.length} questions for domain ${domain}`);
@@ -1121,6 +1108,7 @@ async function buildAnswersFromResults(
   questionsToAnalyze: any[],
   results: Array<{
     answer: string;
+    shortAnswer?: string;
     confidence: number;
     sourceRefs?: string[];
     vectorTokensUsed?: number;
@@ -1156,6 +1144,7 @@ async function buildAnswersFromResults(
       newAnswer.analyzedAt = new Date().toISOString();
     }
 
+    if (result.shortAnswer !== undefined) newAnswer.shortAnswer = result.shortAnswer;
     if (result.gap !== undefined) newAnswer.gap = result.gap;
     if (result.score !== undefined) newAnswer.score = result.score;
     if (result.nextPrompts !== undefined) newAnswer.nextPrompts = result.nextPrompts;
@@ -1314,6 +1303,7 @@ async function runConversationAnalysis(
       questionsToKeep.length > 0
         ? `\n\nNOTE: Other questions in this analysis have already covered these topics:\n${questionsToKeep.map((q) => `- Q${q.id}: ${q.answer.substring(0, 100)}...`).join("\n")}\n\nProvide unique information that doesn't repeat what's already been covered.`
         : "",
+    priorAnswersByQuestionId: Object.fromEntries(questionsToKeep.map((q: any) => [q.id, q.answer])),
     bestPracticesByQuestionId,
   });
 
@@ -1381,6 +1371,7 @@ async function runVectorAnalysis(
       questionsToKeep.length > 0
         ? `\n\nNOTE: Other questions in this analysis have already covered these topics:\n${questionsToKeep.map((q) => `- Q${q.id}: ${q.answer.substring(0, 100)}...`).join("\n")}\n\nProvide unique information that doesn't repeat what's already been covered.`
         : "",
+    priorAnswersByQuestionId: Object.fromEntries(questionsToKeep.map((q: any) => [q.id, q.answer])),
     bestPracticesByQuestionId,
   });
 
@@ -1501,9 +1492,6 @@ async function prepareAnalysisContent(
     };
   }
 
-  // for statute files
-  const ruleset = st.getRuleset(domain, entity); // will throw if ruleset/metadata.json is missing, which is required for analysis
-
   const text = await st.getDocumentText(domain, entity, options.realm);
   if (!text) {
     console.log("No text found in statute document, but we can use other documents.");
@@ -1555,7 +1543,7 @@ async function prepareAnalysisContent(
 async function generateVectorAnalysis(
   entity: string,
   domain: string,
-  metadata: Ruleset,
+  metadata: Ruleset | null,
   questions: any[],
   vectorService: VectorService,
   options: AnalyzeOptions = {},
@@ -1750,7 +1738,9 @@ async function generateVectorAnalysis(
     domainId: domain,
     entity: {
       id: entity,
-      displayName: `${metadata.municipality} - ${metadata.municipalityType}`,
+      displayName: metadata?.municipality
+        ? `${metadata.municipality}${metadata.municipalityType ? ` - ${metadata.municipalityType}` : ""}`
+        : entityObj.displayName,
     },
     domain: buildDomainInfo(domain, domainConfig),
     grades,
@@ -2126,6 +2116,7 @@ async function parseArgs() {
     realm: common.realm,
     domain: common.domain,
     entity: common.entity,
+    all: common.all,
     force: common.force,
     dryRun: common.dryRun
   };
@@ -2248,7 +2239,7 @@ async function parseArgs() {
 
 export async function main(): Promise<void> {
   const options = await parseArgs();
-  await analyzeStatutes(options);
+  await doAnalysis(options);
 }
 
 const isEntrypoint = process.argv[1]

@@ -17,6 +17,7 @@ import {
   type ExtractedLink,
   type DomainScore,
   DOMAIN_MATCH_SCORE_THRESHOLD,
+  PRODUCT_DOMAIN_MATCH_SCORE_THRESHOLD,
   isDomainScoreMatch,
   scoreDomainDetailed,
   classifyDomains,
@@ -66,6 +67,7 @@ import {
   updateWebsiteHostRecord,
   getLikelyHostname,
 } from "./spiderBoilerplate.js";
+import { getVectorService } from "../services/vectorService.js";
 import {
   SKIP_URL_PATTERN,
   shouldRedetermineMenuLinks,
@@ -75,7 +77,9 @@ import {
   extractContentBlockLinkCandidates,
   extractSecondaryNavLinkCandidates,
   discoverContentSelector,
+  discoverContentSelectorQuick,
   extractContentBlockText,
+  stripBoilerplateZonesFromHtml,
   getEntityLink
 } from "./spiderPageAnalysis.js";
 
@@ -84,7 +88,35 @@ export type { DomainScore };
 export { isDomainScoreMatch, scoreDomainDetailed };
 export { canSkipStatus, migrateHistoryEntry, formatTxtArtifact };
 export { detectBoilerplateCandidates, applyActiveBoilerplate, updateWebsiteHostRecord };
-export { discoverContentSelector, extractContentBlockText };
+export { discoverContentSelector, discoverContentSelectorQuick, extractContentBlockText, stripBoilerplateZonesFromHtml };
+
+// ---------------------------------------------------------------------------
+// Language-path filtering (product realms only)
+// ---------------------------------------------------------------------------
+
+const KNOWN_LANG_CODES = new Set([
+  'af','sq','am','ar','hy','az','eu','be','bn','bs','bg','ca','zh','co','hr',
+  'cs','da','nl','en','eo','et','fi','fr','fy','gl','ka','de','el','gu','ha',
+  'he','hi','hu','id','is','ig','ga','it','ja','jv','kn','kk','km','ko','ku',
+  'ky','lo','la','lv','lt','lb','mk','mg','ms','ml','mt','mi','mr','mn','my',
+  'ne','no','pl','pt','pt-BR','pa','ro','ru','sm','sr','sk','sl','so','es','su','sw',
+  'sv','tg','ta','te','th','tr','uk','ur','uz','vi','cy','yo','zu',
+]);
+
+/**
+ * Returns the 2-letter language code if the URL's first path segment looks like
+ * a language prefix (e.g. /en/, /fr/, /de/, /zh-cn/). Returns null otherwise.
+ */
+function getLangPathPrefix(url: string): string | null {
+  try {
+    const segments = new URL(url).pathname.split('/').filter(Boolean);
+    if (segments.length === 0) return null;
+    const base = segments[0].toLowerCase().replace(/-[a-z]{2,3}$/, ''); // en-us -> en
+    return KNOWN_LANG_CODES.has(base) ? base : null;
+  } catch {
+    return null;
+  }
+}
 
 const CRAWL_SOURCES = ["governingUrl", "mainUrl", "hubUrl", "authorityUrl"] as const;
 type CrawlSource = (typeof CRAWL_SOURCES)[number];
@@ -119,7 +151,7 @@ interface Args {
   scan: boolean;
   listLocal: boolean;
   reportRelatedWithoutDomains: boolean;
-  refetch: boolean;
+  rescore: boolean;
   generateSummary: boolean;
   force: boolean;
   forcePdf: boolean;
@@ -483,7 +515,7 @@ function parseArgs(args: string[]): Args {
     scan: false,
     listLocal: false,
     reportRelatedWithoutDomains: false,
-    refetch: false,
+    rescore: false,
     generateSummary: false,
     force: false,
     forcePdf: false,
@@ -594,11 +626,11 @@ function parseArgs(args: string[]): Args {
       options.reportRelatedWithoutDomains = true;
       continue;
     }
-    if (arg === "--refetch") {
-      options.refetch = true;
+    if (arg === "--rescore") {
+      options.rescore = true;
       continue;
     }
-    if (arg === "--generateSummary") {
+    if (arg === "--generateSummary" || arg === "--generate-summary") {
       options.generateSummary = true;
       continue;
     }
@@ -640,28 +672,28 @@ function parseArgs(args: string[]): Args {
     options.all = true;
   }
 
-  if (!options.cleanup && !options.rewriteText && !options.listLocal && !options.reportRelatedWithoutDomains && !options.refetch && !options.generateSummary && !options.review && !options.fix && !options.all && !options.entity && !options.specimenUrlsFile) {
+  if (!options.cleanup && !options.rewriteText && !options.listLocal && !options.reportRelatedWithoutDomains && !options.rescore && !options.generateSummary && !options.review && !options.fix && !options.all && !options.entity && !options.specimenUrlsFile) {
     throw new Error("Specify --entity <id>, --all, or --specimenUrlsFile <path>");
   }
 
-  if (options.scan && (options.cleanup || options.rewriteText || options.listLocal || options.reportRelatedWithoutDomains || options.refetch || options.generateSummary || Boolean(options.specimenUrlsFile))) {
-    throw new Error("--scan/--nospider cannot be combined with --cleanup, --rewriteText, --listlocal, --report-related-without-domains, --refetch, --generateSummary, or --specimenUrlsFile");
+  if (options.scan && (options.cleanup || options.rewriteText || options.listLocal || options.reportRelatedWithoutDomains || options.rescore || options.generateSummary || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--scan/--nospider cannot be combined with --cleanup, --rewriteText, --listlocal, --report-related-without-domains, --rescore, --generateSummary, or --specimenUrlsFile");
   }
 
-  if (options.listLocal && (options.cleanup || options.rewriteText || options.scan || options.reportRelatedWithoutDomains || options.refetch || options.generateSummary || Boolean(options.specimenUrlsFile))) {
-    throw new Error("--listlocal cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --report-related-without-domains, --refetch, --generateSummary, or --specimenUrlsFile");
+  if (options.listLocal && (options.cleanup || options.rewriteText || options.scan || options.reportRelatedWithoutDomains || options.rescore || options.generateSummary || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--listlocal cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --report-related-without-domains, --rescore, --generateSummary, or --specimenUrlsFile");
   }
 
-  if (options.reportRelatedWithoutDomains && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.refetch || options.generateSummary || Boolean(options.specimenUrlsFile))) {
-    throw new Error("--report-related-without-domains cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --refetch, --generateSummary, or --specimenUrlsFile");
+  if (options.reportRelatedWithoutDomains && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.rescore || options.generateSummary || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--report-related-without-domains cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --rescore, --generateSummary, or --specimenUrlsFile");
   }
 
-  if (options.refetch && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.reportRelatedWithoutDomains || options.generateSummary || Boolean(options.specimenUrlsFile))) {
-    throw new Error("--refetch cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --report-related-without-domains, --generateSummary, or --specimenUrlsFile");
+  if (options.rescore && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.reportRelatedWithoutDomains || options.generateSummary || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--rescore cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --report-related-without-domains, --generateSummary, or --specimenUrlsFile");
   }
 
-  if (options.generateSummary && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.reportRelatedWithoutDomains || options.refetch || Boolean(options.specimenUrlsFile))) {
-    throw new Error("--generateSummary cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --report-related-without-domains, --refetch, or --specimenUrlsFile");
+  if (options.generateSummary && (options.cleanup || options.rewriteText || options.scan || options.listLocal || options.reportRelatedWithoutDomains || options.rescore || Boolean(options.specimenUrlsFile))) {
+    throw new Error("--generateSummary cannot be combined with --cleanup, --rewriteText, --scan/--nospider, --listlocal, --report-related-without-domains, --rescore, or --specimenUrlsFile");
   }
 
   if (options.interactiveHonorHistory) {
@@ -679,12 +711,12 @@ function parseArgs(args: string[]): Args {
 function resolveDataRoot(inputPath: string): string {
   return path.isAbsolute(inputPath) ? inputPath : path.resolve(process.cwd(), inputPath);
 }
-export function isLikelyIndexPage(page: CrawledPage, contentAreaLinkCount?: number): boolean {
+export function isLikelyIndexPage(page: CrawledPage, contentAreaLinkCount?: number, realmNavSignals?: string[]): boolean {
   const urlLower = page.url.toLowerCase();
   const titleLower = page.title.toLowerCase();
   const hasIndexMarker = /\b(index|table of contents|contents|sitemap|directory)\b/.test(`${urlLower} ${titleLower}`);
   const bodyText = `${page.title}\n${page.plainText || page.textSample || ""}`;
-  const hasCapitalizedIndexDensity = hasHighCapitalizedIndexDensity(bodyText);
+  const hasCapitalizedIndexDensity = hasHighCapitalizedIndexDensity(bodyText, realmNavSignals);
   const linkCount = contentAreaLinkCount ?? page.links.length;
   return hasIndexMarker || linkCount >= 40 || hasCapitalizedIndexDensity;
 }
@@ -710,22 +742,24 @@ export function getCapitalizedWordStats(text: string): {
   };
 }
 
-export function hasHighCapitalizedIndexDensity(text: string): boolean {
+export function hasHighCapitalizedIndexDensity(text: string, realmNavSignals?: string[]): boolean {
   const lower = text.toLowerCase();
   const stats = getCapitalizedWordStats(text);
 
-  const navSignals = [
-    "quick links",
-    "site links",
-    "categories",
-    "government",
-    "departments",
-    "resident resources",
-    "how do i",
-    "home",
-    "site map",
-    "sign in",
-  ];
+  const navSignals = realmNavSignals && realmNavSignals.length > 0
+    ? realmNavSignals
+    : [
+      "quick links",
+      "site links",
+      "categories",
+      "government",
+      "departments",
+      "resident resources",
+      "how do i",
+      "home",
+      "site map",
+      "sign in",
+    ];
   const personnelSignals = [
     "board members",
     "staff directory",
@@ -918,6 +952,8 @@ function evaluateLinkCandidate(
     entityRecordUrls: Set<string>;
     recrawlDays: number;
     verbose: boolean;
+    /** When true, skip the localMenuUrls filter and allow re-queuing of previously-unrelated URLs. */
+    bypassMenuAndUnrelatedFilter?: boolean;
   },
 ): LinkCandidateEvaluation | null {
   const normalizedLinkUrl = normalizeUrlForMatch(linkUrl);
@@ -934,7 +970,7 @@ function evaluateLinkCandidate(
   if (context.visited.has(normalizedLinkUrl) || context.queuedNormalizedUrls.has(normalizedLinkUrl)) {
     return logSkip("already visited or already queued");
   }
-  if (context.localMenuUrls.has(normalizedLinkUrl)) {
+  if (!context.bypassMenuAndUnrelatedFilter && context.localMenuUrls.has(normalizedLinkUrl)) {
     return logSkip("known local menu URL");
   }
   if (SKIP_URL_PATTERN.test(normalizedLinkUrl)) {
@@ -954,7 +990,11 @@ function evaluateLinkCandidate(
 
   const existingLinkHistory = context.historyMap.get(normalizedLinkUrl);
   if (existingLinkHistory && canSkipStatus(existingLinkHistory.status)) {
-    return logSkip(`history status skip (${existingLinkHistory.status})`);
+    // Priority/seed-page links are allowed through even if previously marked unrelated,
+    // but not if the prior failure was a fetch error (404, blocked, timeout, etc.).
+    if (!context.bypassMenuAndUnrelatedFilter || existingLinkHistory.status !== "unrelated") {
+      return logSkip(`history status skip (${existingLinkHistory.status})`);
+    }
   }
   if (wasAttemptedRecently(existingLinkHistory, context.recrawlDays)) {
     return logSkip(`attempted recently (${existingLinkHistory?.timestamp || "unknown"})`);
@@ -1146,12 +1186,60 @@ async function readRobotsAllows(url: string, userAgent: string = USER_AGENT): Pr
 async function spiderEntity(
   entity: Entity,
   domains: Domain[],
+  realm: Realm,
   args: Args,
   storage: any,
   interactiveRl: ReturnType<typeof createInterface> | null,
 ) {
   const entityDownloadsDir = path.join(getEntityDownloadsRoot(storage), entity.id);
   await fs.ensureDir(entityDownloadsDir);
+
+  const isProductRealm = realm.entityType === 'product';
+  const priorityPathKeywords: string[] = realm.spiderHints?.priorityPathKeywords ?? [];
+  const indexNavSignals: string[] | undefined = realm.spiderHints?.indexNavSignals;
+
+  // Per-host language-prefix tracking for multilingual site detection (product realms only).
+  const hostLangCodes = new Map<string, Set<string>>();
+
+  function recordLangPrefixes(links: { url: string }[], fromUrl: string): void {
+    if (!isProductRealm) return;
+    const host = getLikelyHostname(fromUrl);
+    if (!host) return;
+    if (!hostLangCodes.has(host)) hostLangCodes.set(host, new Set());
+    const codes = hostLangCodes.get(host)!;
+    for (const link of links) {
+      const code = getLangPathPrefix(link.url);
+      if (code) codes.add(code);
+    }
+    // If the page being crawled has no language prefix (English-default root) and we found
+    // language-prefixed links, infer 'en' so the multilingual detection fires without needing
+    // an explicit /en/ path (e.g. asana.com serves English at / not /en/).
+    if (getLangPathPrefix(fromUrl) === null && codes.size > 0) {
+      codes.add('en');
+    }
+    // Persist multilingual preference when English + at least one other language are seen.
+    if (codes.has('en') && codes.size > 1) {
+      const hostRecord = websitesFile.hosts[host];
+      if (hostRecord && !hostRecord.skipOtherLanguages) {
+        hostRecord.preferredLanguage = 'en';
+        hostRecord.skipOtherLanguages = true;
+      }
+    }
+  }
+
+  // Returns true when the URL is a non-English localization path and should be fully ignored
+  // (no fetch, no analysis, no history entry). Checks both in-memory detection and persisted
+  // host settings from websites.json so the filter works across runs.
+  function shouldSkipLangPath(url: string): boolean {
+    if (!isProductRealm) return false;
+    const lang = getLangPathPrefix(url);
+    if (lang === null || lang === 'en') return false;
+    const host = getLikelyHostname(url);
+    const hostRecord = websitesFile.hosts[host];
+    if (hostRecord?.skipOtherLanguages) return true;
+    const codes = hostLangCodes.get(host);
+    return codes?.has('en') === true;
+  }
 
   const allSeeds = getSeedUrls(entity);
   const seeds = args.seedUrl ? filterSeeds(allSeeds, args.seedUrl) : allSeeds;
@@ -1184,6 +1272,20 @@ async function spiderEntity(
 
   const queue: CrawlTask[] = seeds.map((s) => ({ url: s.url, depth: 0, source: s.source }));
   const queuedNormalizedUrls = new Set<string>(queue.map((task) => normalizeUrlForMatch(task.url)));
+
+  // Enqueue a link, pushing to front of queue when it matches a priority path keyword.
+  function enqueueLink(url: string, depth: number, source: CrawlSource): void {
+    const isPriority = priorityPathKeywords.length > 0 &&
+      priorityPathKeywords.some(kw => url.toLowerCase().includes(kw));
+    if (isPriority) {
+      queue.unshift({ url, depth, source });
+      if (args.verbose) console.log(`[LINK][PRIORITY] ${url}`);
+    } else {
+      queue.push({ url, depth, source });
+    }
+    queuedNormalizedUrls.add(url);
+  }
+
   const entityRecordUrls = getEntityRecordUrls(entity);
   const visited = new Set<string>();
   const pages: CrawledPage[] = [];
@@ -1289,13 +1391,18 @@ async function spiderEntity(
     }
   };
 
-  const processCollectedPages = async (skipInteractivePrompts = false): Promise<void> => {
-    console.log(`[SUMMARY] ${entity.id} crawled pages: ${pages.length}`);
-    console.log(
-      `[SUMMARY] ${entity.id} pages by source: governing=${pagesBySource.governingUrl}, main=${pagesBySource.mainUrl}, hub=${pagesBySource.hubUrl}, authority=${pagesBySource.authorityUrl}`,
-    );
+  const processCollectedPages = async (skipInteractivePrompts = false, fromIndex = 0): Promise<void> => {
+    if (fromIndex === 0) {
+      console.log(`[SUMMARY] ${entity.id} crawled pages: ${pages.length}`);
+      console.log(
+        `[SUMMARY] ${entity.id} pages by source: governing=${pagesBySource.governingUrl}, main=${pagesBySource.mainUrl}, hub=${pagesBySource.hubUrl}, authority=${pagesBySource.authorityUrl}`,
+      );
+    } else {
+      console.log(`[COVERAGE][SUMMARY] ${entity.id} processing ${pages.length - fromIndex} extension page(s)`);
+    }
 
-    for (const page of pages) {
+    for (let _pi = fromIndex; _pi < pages.length; _pi++) {
+    const page = pages[_pi];
       const cacheLabel = page.fromCache ? "[CACHE]" : "[FETCH]";
       console.log(`${cacheLabel} processing ${page.url}`);
       const normalizedPageUrl = normalizeUrlForMatch(page.url);
@@ -1307,18 +1414,50 @@ async function spiderEntity(
       const hostname = getLikelyHostname(page.url);
       const hostRecordBefore = websitesFile.hosts[hostname];
 
-      // If a content selector was discovered, extract just the content block from the raw HTML.
-      // This removes nav/header/footer noise before any further boilerplate stripping.
-      const baseText = (hostRecordBefore?.contentSelector && page.htmlContent)
-        ? (extractContentBlockText(page.htmlContent, page.url, hostRecordBefore.contentSelector) ?? page.plainText)
-        : page.plainText;
+      // Quick-win content selector discovery: runs on every HTML page for hosts that
+      // don't yet have a selector, so coverage no longer depends on menu-link refresh timing.
+      if (!hostRecordBefore?.contentSelector && page.htmlContent) {
+        const quickSelector = discoverContentSelectorQuick(page.htmlContent, page.url);
+        if (quickSelector) {
+          let hostRecord = websitesFile.hosts[hostname];
+          if (!hostRecord) {
+            const now = statusTimestamp;
+            hostRecord = { hostname, observations: 0, headerCandidates: {}, footerCandidates: {}, createdAt: now, updatedAt: now };
+            websitesFile.hosts[hostname] = hostRecord;
+          }
+          if (!hostRecord.contentSelector) {
+            hostRecord.contentSelector = quickSelector;
+            hostRecord.updatedAt = statusTimestamp;
+            console.log(`[PROCESS] ${hostname}: quick-win content selector: ${quickSelector}`);
+          }
+        }
+      }
+
+      // Strip header/footer zone elements from HTML using promoted selectors before
+      // content extraction, so nav/chrome is removed at the DOM level rather than by text matching.
+      const htmlForExtraction = (page.htmlContent && (hostRecordBefore?.activeHeaderSelector || hostRecordBefore?.activeFooterSelector))
+        ? stripBoilerplateZonesFromHtml(page.htmlContent, page.url, hostRecordBefore)
+        : page.htmlContent;
+
+      // If a content selector is now known (possibly just discovered above), extract just that block.
+      // If no selector but zones were stripped, convert the stripped HTML to text rather than
+      // falling back to the pre-computed plainText (which came from the original unstripped HTML).
+      const effectiveHostRecord = websitesFile.hosts[hostname];
+      let baseText: string;
+      if (effectiveHostRecord?.contentSelector && htmlForExtraction) {
+        baseText = extractContentBlockText(htmlForExtraction, page.url, effectiveHostRecord.contentSelector) ?? page.plainText;
+      } else if (htmlForExtraction && htmlForExtraction !== page.htmlContent) {
+        baseText = convertHtmlToTextSimple(htmlForExtraction).trim() || page.plainText;
+      } else {
+        baseText = page.plainText;
+      }
 
       const trimmedByActive = applyActiveBoilerplate(baseText, hostRecordBefore);
-      const hostRecordAfter = updateWebsiteHostRecord(websitesFile, hostname, trimmedByActive, statusTimestamp);
+      const hostRecordAfter = updateWebsiteHostRecord(websitesFile, hostname, trimmedByActive, statusTimestamp, htmlForExtraction ?? page.htmlContent);
       const trimmedText = applyActiveBoilerplate(trimmedByActive, hostRecordAfter);
       const effectiveTextSample = trimmedText.slice(0, 3000);
 
-      console.log(`[PROCESS] ${page.url}: plainText=${page.plainText.length} -> baseText=${baseText.length} -> trimmedText=${trimmedText.length}${hostRecordBefore?.contentSelector ? ` (selector: ${hostRecordBefore.contentSelector})` : ""}`);
+      console.log(`[PROCESS] ${page.url}: plainText=${page.plainText.length} -> baseText=${baseText.length} -> trimmedText=${trimmedText.length}${effectiveHostRecord?.contentSelector ? ` (selector: ${effectiveHostRecord.contentSelector})` : ""}`);
 
       const scoredPage: CrawledPage = {
         ...page,
@@ -1327,7 +1466,9 @@ async function spiderEntity(
       };
 
       const scoredDomains = scoreDomainDetailed(domainsToUse, scoredPage, entity.governingBody);
-      let matchedScores = scoredDomains.filter((score) => isDomainScoreMatch(score));
+      let matchedScores = isProductRealm
+        ? scoredDomains.filter((s) => s.matchScore >= PRODUCT_DOMAIN_MATCH_SCORE_THRESHOLD)
+        : scoredDomains.filter((score) => isDomainScoreMatch(score));
       // Pages directly linked from the governing URL use a lower threshold to ensure
       // they are not missed. On a dedicated governing site, the threshold drops further.
       if (matchedScores.length === 0 && governingUrlLinkedUrls.has(normalizedPageUrl)) {
@@ -1351,25 +1492,38 @@ async function spiderEntity(
 
       // For non-hub pages use content-area link count (not whole-page) to avoid false positives.
       let contentAreaLinkCount: number | undefined;
-      if (!isHubPage && hostRecordBefore?.contentSelector && page.htmlContent) {
+      if (!isHubPage && effectiveHostRecord?.contentSelector && htmlForExtraction) {
         contentAreaLinkCount = extractContentBlockLinkCandidates(
-          page.htmlContent, page.url, hostRecordBefore.contentSelector,
+          htmlForExtraction, page.url, effectiveHostRecord.contentSelector,
         ).length;
       }
 
       // Index is only a valid classification if the page also matches a domain.
-      const isIndex = !isSeedEntityUrl && !isHubPage && matchedDomainIds.length > 0 && isLikelyIndexPage(scoredPage, contentAreaLinkCount);
+      // Product realms are dedicated product/vendor sites where index-style pages are rare.
+      const isIndex = !isProductRealm && !isSeedEntityUrl && !isHubPage && matchedDomainIds.length > 0 && isLikelyIndexPage(scoredPage, contentAreaLinkCount, indexNavSignals);
+
+      // A page whose URL or title contains a priority keyword (e.g. "faq", "features") is
+      // always saved as related, even when domain scoring finds no match.
+      const isPriorityPage = !isSeedEntityUrl && priorityPathKeywords.length > 0 && (
+        priorityPathKeywords.some(kw => scoredPage.url.toLowerCase().includes(kw)) ||
+        priorityPathKeywords.some(kw => scoredPage.title.toLowerCase().includes(kw))
+      );
+
       let finalStatus: HistoryStatus = isSeedEntityUrl
         ? "related"
-        : matchedDomainIds.length === 0
-          ? "unrelated"
-          : isIndex
-            ? "index"
-            : "related";
+        : isPriorityPage && matchedDomainIds.length === 0
+          ? "related"
+          : matchedDomainIds.length === 0
+            ? "unrelated"
+            : isIndex
+              ? "index"
+              : "related";
 
       const pageExplanationLines: string[] = [];
       if (isSeedEntityUrl) {
         pageExplanationLines.push("This URL is a depth-0 entity seed URL, which is always classified as related.");
+      } else if (isPriorityPage && matchedDomainIds.length === 0) {
+        pageExplanationLines.push(`Priority keyword matched in URL or title; saved as related despite no domain score.`);
       } else if (matchedDomainIds.length === 0) {
         pageExplanationLines.push("No domain-score match met threshold.");
       } else if (isIndex) {
@@ -1472,6 +1626,8 @@ async function spiderEntity(
       if (shouldPersistArtifacts) {
         const saved = await saveCrawledArtifacts(storage, entity.id, scoredPage, statusTimestamp, {
           contentSelector: hostRecordBefore?.contentSelector,
+          existingLocalFile: priorEntry?.localFile,
+          existingLocalFileText: priorEntry?.localFileText,
         });
         if (saved.localFile) localFile = saved.localFile;
         if (saved.fileType) fileType = saved.fileType;
@@ -1573,6 +1729,10 @@ async function spiderEntity(
     if (visited.has(normalizedTaskUrl)) {
       continue;
     }
+    if (shouldSkipLangPath(task.url)) {
+      console.log(`[TASK][LANG] ${task.url}`);
+      continue;
+    }
 
     const existingHistory = historyMap.get(normalizedTaskUrl);
     if (existingHistory && wasAttemptedRecently(existingHistory, args.recrawlDays)) {
@@ -1596,8 +1756,15 @@ async function spiderEntity(
         }
 
         console.log(`[EXTRACT][CACHE] ${entity.id} source=${task.source} depth=${task.depth} links=${linkCandidatesToEvaluate.length} ${task.url}`);
+        recordLangPrefixes(linkCandidatesToEvaluate, task.url);
         if (task.depth < args.maxDepth + (task.source === "hubUrl" ? 1 : 0) && linkCandidatesToEvaluate.length > 0) {
           for (const link of linkCandidatesToEvaluate) {
+            if (shouldSkipLangPath(link.url)) { if (args.verbose) console.log(`[LINK][LANG] ${link.url}`); continue; }
+            const isPriorityBySignalCache = priorityPathKeywords.length > 0 &&
+              priorityPathKeywords.some(kw =>
+                link.url.toLowerCase().includes(kw) || link.text.toLowerCase().includes(kw)
+              );
+            const bypassLinkFiltersCache = isPriorityBySignalCache || isProductRealm;
             const evaluatedLink = evaluateLinkCandidate(link.url, {
               visited,
               queuedNormalizedUrls,
@@ -1607,6 +1774,7 @@ async function spiderEntity(
               entityRecordUrls,
               recrawlDays: args.recrawlDays,
               verbose: args.verbose,
+              bypassMenuAndUnrelatedFilter: bypassLinkFiltersCache,
             });
             if (!evaluatedLink) {
               continue;
@@ -1616,9 +1784,11 @@ async function spiderEntity(
               const { normalizedLinkUrl, existingLinkHistory } = evaluatedLink;
               const linkScores = scoreDomainDetailed(domainsToUse, buildLinkPseudoPage(link), entity.governingBody);
               const linkClassification = explainLinkClassification(link, domainsToUse, linkScores, entity.governingBody);
-              const proposedLinkStatus = governingMainContentLinkedUrls.has(normalizedLinkUrl)
-                ? "related"
-                : linkClassification.status;
+              const proposedLinkStatus = (
+                governingMainContentLinkedUrls.has(normalizedLinkUrl) ||
+                (isProductRealm && task.depth === 0) ||
+                isPriorityBySignalCache
+              ) ? "related" : linkClassification.status;
               let reviewedLinkStatus = proposedLinkStatus;
               const folderSkipCachedLink = interactiveFolderPrefix !== null && normalizedLinkUrl.startsWith(interactiveFolderPrefix);
               if (args.interactive && !interactiveModeStopped && !folderSkipCachedLink && !entityRecordUrls.has(normalizedLinkUrl)) {
@@ -1669,8 +1839,7 @@ async function spiderEntity(
                 continue;
               }
 
-              queue.push({ url: normalizedLinkUrl, depth: task.depth + 1, source: task.source });
-              queuedNormalizedUrls.add(normalizedLinkUrl);
+              enqueueLink(normalizedLinkUrl, task.depth + 1, task.source);
             } catch (err) {
               if (err instanceof InteractiveFolderSignal) {
                 interactiveFolderPrefix = err.folderPrefix;
@@ -1693,6 +1862,7 @@ async function spiderEntity(
           if (secondaryNavLinks.length > 0) {
             console.log(`[SECONDARY-NAV] ${entity.id} found ${secondaryNavLinks.length} links on governing URL (cache)`);
             for (const link of secondaryNavLinks) {
+              if (shouldSkipLangPath(link.url)) continue;
               const evaluatedLink = evaluateLinkCandidate(link.url, {
                 visited,
                 queuedNormalizedUrls,
@@ -1704,8 +1874,7 @@ async function spiderEntity(
                 verbose: args.verbose,
               });
               if (!evaluatedLink) continue;
-              queue.push({ url: evaluatedLink.normalizedLinkUrl, depth: task.depth + 1, source: task.source });
-              queuedNormalizedUrls.add(evaluatedLink.normalizedLinkUrl);
+              enqueueLink(evaluatedLink.normalizedLinkUrl, task.depth + 1, task.source);
             }
           }
         }
@@ -1719,8 +1888,13 @@ async function spiderEntity(
     }
 
     if (!isBaseEntityUrl && existingHistory && canSkipStatus(existingHistory.status)) {
-      console.log(`[HISTORY] skip ${task.url} (${existingHistory.status})`);
-      continue;
+      // For product realms, allow previously-unrelated pages to be re-fetched so they
+      // can be re-scored against the lower product threshold. Hard failures (404, blocked,
+      // timeout, etc.) are still skipped regardless.
+      if (!isProductRealm || existingHistory.status !== "unrelated") {
+        console.log(`[HISTORY] skip ${task.url} (${existingHistory.status})`);
+        continue;
+      }
     }
     if (!isBaseEntityUrl && wasAttemptedRecently(existingHistory, args.recrawlDays)) {
       console.log(`[HISTORY] recent skip ${task.url} (last attempt ${existingHistory?.timestamp})`);
@@ -1871,7 +2045,14 @@ async function spiderEntity(
         );
       }
 
+      recordLangPrefixes(linkCandidatesToEvaluate, task.url);
       for (const link of linkCandidatesToEvaluate) {
+        if (shouldSkipLangPath(link.url)) { if (args.verbose) console.log(`[LINK][LANG] ${link.url}`); continue; }
+        const isPriorityBySignalLive = priorityPathKeywords.length > 0 &&
+          priorityPathKeywords.some(kw =>
+            link.url.toLowerCase().includes(kw) || link.text.toLowerCase().includes(kw)
+          );
+        const bypassLinkFiltersLive = isPriorityBySignalLive || isProductRealm;
         const evaluatedLink = evaluateLinkCandidate(link.url, {
           visited,
           queuedNormalizedUrls,
@@ -1881,6 +2062,7 @@ async function spiderEntity(
           entityRecordUrls,
           recrawlDays: args.recrawlDays,
           verbose: args.verbose,
+          bypassMenuAndUnrelatedFilter: bypassLinkFiltersLive,
         });
         if (!evaluatedLink) {
           continue;
@@ -1890,9 +2072,11 @@ async function spiderEntity(
           const { normalizedLinkUrl, existingLinkHistory } = evaluatedLink;
           const linkScores = scoreDomainDetailed(domainsToUse, buildLinkPseudoPage(link), entity.governingBody);
           const linkClassification = explainLinkClassification(link, domainsToUse, linkScores, entity.governingBody);
-          const proposedLinkStatus = governingMainContentLinkedUrls.has(normalizedLinkUrl)
-            ? "related"
-            : linkClassification.status;
+          const proposedLinkStatus = (
+            governingMainContentLinkedUrls.has(normalizedLinkUrl) ||
+            (isProductRealm && task.depth === 0) ||
+            isPriorityBySignalLive
+          ) ? "related" : linkClassification.status;
           let reviewedLinkStatus = proposedLinkStatus;
           const folderSkipLiveLink = interactiveFolderPrefix !== null && normalizedLinkUrl.startsWith(interactiveFolderPrefix);
           if (args.interactive && !interactiveModeStopped && !folderSkipLiveLink && !entityRecordUrls.has(normalizedLinkUrl)) {
@@ -1943,8 +2127,7 @@ async function spiderEntity(
             continue;
           }
 
-          queue.push({ url: normalizedLinkUrl, depth: task.depth + 1, source: task.source });
-          queuedNormalizedUrls.add(normalizedLinkUrl);
+          enqueueLink(normalizedLinkUrl, task.depth + 1, task.source);
         } catch (err) {
           if (err instanceof InteractiveFolderSignal) {
             interactiveFolderPrefix = err.folderPrefix;
@@ -1966,6 +2149,7 @@ async function spiderEntity(
         if (secondaryNavLinks.length > 0) {
           console.log(`[SECONDARY-NAV] ${entity.id} found ${secondaryNavLinks.length} links on governing URL`);
           for (const link of secondaryNavLinks) {
+            if (shouldSkipLangPath(link.url)) continue;
             const evaluatedLink = evaluateLinkCandidate(link.url, {
               visited,
               queuedNormalizedUrls,
@@ -1977,8 +2161,7 @@ async function spiderEntity(
               verbose: args.verbose,
             });
             if (!evaluatedLink) continue;
-            queue.push({ url: evaluatedLink.normalizedLinkUrl, depth: task.depth + 1, source: task.source });
-            queuedNormalizedUrls.add(evaluatedLink.normalizedLinkUrl);
+            enqueueLink(evaluatedLink.normalizedLinkUrl, task.depth + 1, task.source);
           }
         }
       }
@@ -1986,6 +2169,139 @@ async function spiderEntity(
   }
 
   await processCollectedPages();
+
+  // Coverage extension: for product realms, if any domain has < 2 related pages after the
+  // initial crawl, re-queue links from boundary pages (at maxDepth) and crawl one level deeper.
+  const MIN_DOMAIN_COVERAGE = 2;
+  if (isProductRealm && domainsToUse.length > 0) {
+    const domainHits = new Map<string, number>(domainsToUse.map(d => [d.id || d.name, 0]));
+    for (const entry of historyMap.values()) {
+      if (entry.status === 'related') {
+        for (const id of (entry.matchedDomainIds || [])) {
+          if (domainHits.has(id)) domainHits.set(id, domainHits.get(id)! + 1);
+        }
+      }
+    }
+
+    const undercovered = [...domainHits.entries()]
+      .filter(([, n]) => n < MIN_DOMAIN_COVERAGE)
+      .map(([id]) => id);
+
+    if (undercovered.length > 0) {
+      console.log(`[COVERAGE] ${entity.id} undercovered domains (< ${MIN_DOMAIN_COVERAGE} pages): ${undercovered.join(', ')}`);
+
+      const boundaryPages = pages.filter(p => p.depth >= args.maxDepth && p.htmlContent);
+      console.log(`[COVERAGE] ${entity.id} boundary pages with HTML: ${boundaryPages.length}`);
+
+      if (boundaryPages.length > 0 && !args.dryRun) {
+        const extDepth = args.maxDepth + 1;
+        let extQueued = 0;
+
+        for (const bp of boundaryPages) {
+          const bpHostRecord = websitesFile.hosts[getLikelyHostname(bp.url)];
+          const bpLinks = bpHostRecord?.contentSelector
+            ? extractContentBlockLinkCandidates(bp.htmlContent!, bp.url, bpHostRecord.contentSelector)
+            : extractLinksAndText(bp.url, bp.htmlContent!).linkCandidates;
+
+          recordLangPrefixes(bpLinks, bp.url);
+          for (const link of bpLinks) {
+            if (shouldSkipLangPath(link.url)) continue;
+            const evaluated = evaluateLinkCandidate(link.url, {
+              visited,
+              queuedNormalizedUrls,
+              historyMap,
+              allowedHosts,
+              localMenuUrls,
+              entityRecordUrls,
+              recrawlDays: args.recrawlDays,
+              verbose: args.verbose,
+            });
+            if (!evaluated) continue;
+            // Only extend toward links that appear domain-relevant.
+            const linkScores = scoreDomainDetailed(domainsToUse, buildLinkPseudoPage(link), entity.governingBody);
+            if (!linkScores.some(s => isDomainScoreMatch(s))) continue;
+            enqueueLink(evaluated.normalizedLinkUrl, extDepth, 'mainUrl');
+            extQueued++;
+          }
+        }
+
+        console.log(`[COVERAGE] ${entity.id} queued ${extQueued} extension URL(s) at depth ${extDepth}`);
+
+        if (extQueued > 0) {
+          const extPageCap = Math.min(args.maxPagesPerSource, 20);
+          let extFetched = 0;
+          const firstPassCount = pages.length;
+
+          while (queue.length > 0 && extFetched < extPageCap) {
+            const task = queue.shift()!;
+            if (task.depth !== extDepth) { queue.push(task); break; } // non-extension tasks shouldn't be here
+            const normalizedTaskUrl = normalizeUrlForMatch(task.url);
+            queuedNormalizedUrls.delete(normalizedTaskUrl);
+            if (visited.has(normalizedTaskUrl)) continue;
+            if (shouldSkipLangPath(task.url)) {
+              if (args.verbose) console.log(`[TASK][LANG] ${task.url}`);
+              continue;
+            }
+
+            const existingHistory = historyMap.get(normalizedTaskUrl);
+            if (existingHistory && wasAttemptedRecently(existingHistory, args.recrawlDays)) {
+              const cached = await loadCachedPageFromHistory(storage, existingHistory, task.depth);
+              if (cached) { pages.push(cached.page); extFetched++; }
+              continue;
+            }
+
+            visited.add(normalizedTaskUrl);
+            const extHost = getLikelyHostname(task.url);
+            if (!extHost || !isAllowedCrawlHost(extHost, allowedHosts)) continue;
+
+            let checker = robotsCheckers.get(extHost);
+            if (!checker) {
+              checker = await readRobotsAllows(`https://${extHost}`, args.notbot ? GENERIC_USER_AGENT : USER_AGENT);
+              robotsCheckers.set(extHost, checker);
+            }
+            if (!checker(task.url)) {
+              if (!entityRecordUrls.has(normalizedTaskUrl)) {
+                upsertHistoryEntry(historyMap, { url: normalizedTaskUrl, entityId: entity.id, matchedDomainIds: [], status: 'robots-disallow' });
+              }
+              continue;
+            }
+
+            console.log(`[COVERAGE][FETCH] ${entity.id} depth=${task.depth} ${task.url}`);
+            const fetchResult = await fetchPageWithBotFallback(task.url, 0, args.notbot);
+            const fetched = fetchResult.fetched;
+            if (!fetched.page || fetched.page.kind !== 'html') {
+              if (!fetched.page && !entityRecordUrls.has(normalizedTaskUrl)) {
+                upsertHistoryEntry(historyMap, { url: normalizedTaskUrl, entityId: entity.id, matchedDomainIds: [], status: fetched.status });
+              }
+              continue;
+            }
+
+            const extExtracted = extractLinksAndText(task.url, fetched.page.html || '');
+            pages.push({
+              url: task.url,
+              depth: task.depth,
+              title: extExtracted.title,
+              headers: extExtracted.headers,
+              htmlContent: fetched.page.html,
+              plainText: extExtracted.plainText,
+              textSample: extExtracted.sample,
+              isPdf: false,
+              links: extExtracted.links,
+            });
+            extFetched++;
+          }
+
+          if (extFetched > 0) {
+            console.log(`[COVERAGE] ${entity.id} fetched ${extFetched} extension page(s); processing...`);
+            await processCollectedPages(false, firstPassCount);
+          }
+        }
+      }
+    } else {
+      console.log(`[COVERAGE] ${entity.id} all domains covered (>= ${MIN_DOMAIN_COVERAGE} pages each)`);
+    }
+  }
+
   } catch (err) {
     if (err instanceof InteractiveExitSignal) {
       console.log(`\n[INTERACTIVE] Exit requested — saving history and stopping...`);
@@ -2058,6 +2374,24 @@ async function runRewriteTextMode(storage: any, targets: Entity[], args: Args): 
     const { historyMap } = await loadHistoryData(storage, entity.id);
     const websitesFile = await loadWebsitesFile(storage, entity.id);
 
+    // Always retire legacy text-based boilerplate fields — selector-based detection supersedes them.
+    // --force additionally resets selector data so it can be fully re-discovered from cached HTML.
+    for (const hostRecord of Object.values(websitesFile.hosts)) {
+      hostRecord.headerCandidates = {};
+      hostRecord.footerCandidates = {};
+      delete hostRecord.activeHeader;
+      delete hostRecord.activeFooter;
+      if (args.force) {
+        delete hostRecord.contentSelector;
+        delete hostRecord.activeHeaderSelector;
+        delete hostRecord.activeFooterSelector;
+        hostRecord.headerSelectorCandidates = {};
+        hostRecord.footerSelectorCandidates = {};
+      }
+    }
+
+    const now = new Date().toISOString();
+
     for (const [, entry] of historyMap.entries()) {
       if (!entry.localFile) continue;
 
@@ -2067,27 +2401,56 @@ async function runRewriteTextMode(storage: any, targets: Entity[], args: Args): 
       totalHtml += 1;
       const html = await fs.readFile(htmlAbsPath, "utf-8");
       const hostname = getLikelyHostname(entry.url);
-      let hostRecord = websitesFile.hosts[hostname];
-      if (!hostRecord && hostname) {
-        if (!hostname.startsWith("www.") && websitesFile.hosts["www." + hostname]) {
-          hostRecord = websitesFile.hosts["www." + hostname];
-        } else if (hostname.startsWith("www.") && websitesFile.hosts[hostname.replace(/^www\./, "")]) {
-          hostRecord = websitesFile.hosts[hostname.replace(/^www\./, "")];
+
+      // Resolve or create the host record for this hostname
+      if (!websitesFile.hosts[hostname] && hostname) {
+        const aliasWww = !hostname.startsWith("www.") ? websitesFile.hosts["www." + hostname] : undefined;
+        const aliasNoWww = hostname.startsWith("www.") ? websitesFile.hosts[hostname.replace(/^www\./, "")] : undefined;
+        if (aliasWww) {
+          websitesFile.hosts[hostname] = aliasWww;
+        } else if (aliasNoWww) {
+          websitesFile.hosts[hostname] = aliasNoWww;
+        } else {
+          websitesFile.hosts[hostname] = { hostname, observations: 0, headerCandidates: {}, footerCandidates: {}, createdAt: now, updatedAt: now };
         }
       }
-      console.log(`[REWRITE-TEXT] processing ${hostname} with content selector "${hostRecord?.contentSelector || "none"}"`);
+      const hostRecord = websitesFile.hosts[hostname];
+
+      // Quick-win content selector discovery for hosts that don't have one yet
+      if (hostRecord && !hostRecord.contentSelector) {
+        const quickSelector = discoverContentSelectorQuick(html, entry.url);
+        if (quickSelector) {
+          hostRecord.contentSelector = quickSelector;
+          hostRecord.updatedAt = now;
+          console.log(`[REWRITE-TEXT] ${hostname}: discovered content selector: ${quickSelector}`);
+        }
+      }
+
+      // Strip header/footer zone elements at HTML level using any already-promoted selectors
+      const htmlForExtraction = stripBoilerplateZonesFromHtml(html, entry.url, hostRecord);
+
       const contentSelector = hostRecord?.contentSelector;
+      console.log(`[REWRITE-TEXT] processing ${hostname} with content selector "${contentSelector || "none"}"`);
 
       let newText: string;
       if (contentSelector) {
-        newText = extractContentBlockText(html, entry.url, contentSelector) ?? convertHtmlToTextSimple(html).trim();
+        newText = extractContentBlockText(htmlForExtraction, entry.url, contentSelector) ?? convertHtmlToTextSimple(htmlForExtraction).trim();
         console.log(`[REWRITE-TEXT] ${entry.url} extracted text with selector "${contentSelector}" (${newText.length} chars)`);
       } else {
-        newText = convertHtmlToTextSimple(html).trim();
+        newText = convertHtmlToTextSimple(htmlForExtraction).trim();
       }
 
-      const timestamp = entry.timestamp || new Date().toISOString();
-      const newContent = formatTxtArtifact(entry.url, timestamp, newText);
+      // Apply text-based boilerplate stripping (active header/footer text, legacy fallback)
+      const preStrip = applyActiveBoilerplate(newText, hostRecord);
+
+      // Update host record: builds up header/footer selector candidates across pages
+      const timestamp = entry.timestamp || now;
+      const updatedHostRecord = updateWebsiteHostRecord(websitesFile, hostname, preStrip, timestamp, htmlForExtraction);
+
+      // Apply boilerplate stripping again with newly promoted candidates
+      const finalText = applyActiveBoilerplate(preStrip, updatedHostRecord);
+
+      const newContent = formatTxtArtifact(entry.url, timestamp, finalText);
 
       let oldBytes = 0;
       let newBytes = Buffer.byteLength(newContent, "utf-8");
@@ -2138,6 +2501,7 @@ async function runRewriteTextMode(storage: any, targets: Entity[], args: Args): 
 
     if (!args.dryRun) {
       await saveHistoryData(storage, entity.id, historyMap);
+      await saveWebsitesFile(storage, entity.id, websitesFile);
     }
   }
 
@@ -2187,7 +2551,7 @@ async function runRelatedWithoutDomainsReport(storage: any, targets: Entity[]): 
   }
 }
 
-async function runListLocalMode(storage: any, targets: Entity[], args: Args): Promise<void> {
+async function runListLocalMode(storage: any, targets: Entity[], args: Args, domains: Domain[], realm: Realm): Promise<void> {
   const reportPath = path.join(getEntityDownloadsRoot(storage), "FileReport.md");
   const reportLines: string[] = [
     "# Entity Local File Report",
@@ -2195,6 +2559,11 @@ async function runListLocalMode(storage: any, targets: Entity[], args: Args): Pr
     `Generated at: ${new Date().toISOString()}`,
     "",
   ];
+
+  const vectorService = process.env.PINECONE_API_KEY ? getVectorService(realm.id) : null;
+  if (!vectorService) {
+    console.warn("[LISTLOCAL] PINECONE_API_KEY not set; skipping vector chunk counts");
+  }
 
   let entitiesWithHistory = 0;
   let totalFiles = 0;
@@ -2259,6 +2628,23 @@ async function runListLocalMode(storage: any, targets: Entity[], args: Args): Pr
     }
     reportLines.push("");
 
+    reportLines.push("### Domain Summary");
+    reportLines.push("| domain | documents | vector chunks |");
+    reportLines.push("| --- | ---: | ---: |");
+    for (const domain of domains) {
+      const domainDocs = entriesWithFiles.filter((e) => e.matchedDomainIds.includes(domain.id)).length;
+      let chunkCount = "-";
+      if (vectorService) {
+        try {
+          chunkCount = String(await vectorService.countChunksByMetadata(entity.id, domain.id));
+        } catch {
+          chunkCount = "err";
+        }
+      }
+      reportLines.push(`| ${domain.displayName ?? domain.id} | ${domainDocs} | ${chunkCount} |`);
+    }
+    reportLines.push("");
+
     reportLines.push("### Local Downloaded Files");
     if (entriesWithFiles.length === 0) {
       reportLines.push("(none)");
@@ -2291,13 +2677,13 @@ async function runListLocalMode(storage: any, targets: Entity[], args: Args): Pr
   console.log(`[LISTLOCAL] report written: ${reportPath}`);
 }
 
-async function runRefetchMode(storage: any, targets: Entity[], domains: Domain[], args: Args): Promise<void> {
+async function runrescoreMode(storage: any, targets: Entity[], domains: Domain[], args: Args): Promise<void> {
   const domainsToUse = args.domain
     ? domains.filter((d) => (d.id || d.name) === args.domain)
     : domains;
 
   let totalChecked = 0;
-  let totalRefetched = 0;
+  let totalrescoreed = 0;
   let totalUpdated = 0;
 
   for (const entity of targets) {
@@ -2306,7 +2692,7 @@ async function runRefetchMode(storage: any, targets: Entity[], domains: Domain[]
     let consecutiveBotRejections = 0;
 
     const relatedEntries = Array.from(historyMap.entries()).filter(([, entry]) => entry.status === "related");
-    console.log(`[REFETCH] ${entity.id}: ${relatedEntries.length} related entries`);
+    console.log(`[rescore] ${entity.id}: ${relatedEntries.length} related entries`);
 
     for (const [normalizedUrl, entry] of relatedEntries) {
       totalChecked += 1;
@@ -2323,16 +2709,16 @@ async function runRefetchMode(storage: any, targets: Entity[], domains: Domain[]
 
       if (!hasLocal) {
         // Re-download the page
-        console.log(`[REFETCH] ${entry.url}: no local file, re-downloading`);
+        console.log(`[rescore] ${entry.url}: no local file, re-downloading`);
         const fetchResult = await fetchPageWithBotFallback(entry.url, consecutiveBotRejections, args.notbot);
         const fetched = fetchResult.fetched;
         consecutiveBotRejections = fetchResult.consecutiveBotRejections;
         if (!fetched.page) {
-          console.log(`[REFETCH] ${entry.url}: fetch failed (${fetched.status}), skipping`);
+          console.log(`[rescore] ${entry.url}: fetch failed (${fetched.status}), skipping`);
           continue;
         }
         if (fetched.page.kind === "pdf") {
-          console.log(`[REFETCH] ${entry.url}: PDF, skipping domain re-score`);
+          console.log(`[rescore] ${entry.url}: PDF, skipping domain re-score`);
           continue;
         }
         const extracted = extractLinksAndText(entry.url, fetched.page.html || "");
@@ -2362,7 +2748,7 @@ async function runRefetchMode(storage: any, targets: Entity[], domains: Domain[]
             sizeUpdated = typeof localFileTextSize === "number" && localFileTextSize !== entry.localFileTextSize;
           }
         }
-        totalRefetched += 1;
+        totalrescoreed += 1;
       } else {
         // Read from existing local artifacts
         if (localFileText) {
@@ -2380,7 +2766,7 @@ async function runRefetchMode(storage: any, targets: Entity[], domains: Domain[]
       }
 
       if (!plainText) {
-        console.log(`[REFETCH] ${entry.url}: no text available, skipping`);
+        console.log(`[rescore] ${entry.url}: no text available, skipping`);
         continue;
       }
 
@@ -2406,7 +2792,7 @@ async function runRefetchMode(storage: any, targets: Entity[], domains: Domain[]
       const newIds = matchedDomainIds.slice().sort().join(",");
 
       if (prevIds !== newIds) {
-        console.log(`[REFETCH] ${entry.url}: matchedDomainIds [${prevIds || "none"}] -> [${newIds || "none"}]`);
+        console.log(`[rescore] ${entry.url}: matchedDomainIds [${prevIds || "none"}] -> [${newIds || "none"}]`);
         upsertHistoryEntry(historyMap, {
           ...entry,
           url: normalizedUrl,
@@ -2424,12 +2810,12 @@ async function runRefetchMode(storage: any, targets: Entity[], domains: Domain[]
 
     if (entityUpdated && !args.dryRun) {
       await saveHistoryData(storage, entity.id, historyMap, menuLinks);
-      console.log(`[REFETCH] ${entity.id}: history saved`);
+      console.log(`[rescore] ${entity.id}: history saved`);
     }
   }
 
   console.log(
-    `[REFETCH] done. checked=${totalChecked} refetched=${totalRefetched} updated=${totalUpdated}${args.dryRun ? " (dry-run)" : ""}`,
+    `[rescore] done. checked=${totalChecked} rescoreed=${totalrescoreed} updated=${totalUpdated}${args.dryRun ? " (dry-run)" : ""}`,
   );
 }
 
@@ -2910,6 +3296,18 @@ interface ScanSummary {
   statusCounts: StatusCounts;
 }
 
+/**
+ * Discovers and caches site structure for a single entity.
+ *
+ * Fetches the HTML for each seed URL (main/hub/governing/authority), picks one secondary
+ * page linked from the main homepage, then runs menu-link discovery across those pages.
+ * If a content selector (CSS selector isolating the main content area) can be inferred by
+ * diffing the secondary page against the primary, it is written to the websites file keyed
+ * by hostname. Discovered menu links are merged into the persisted menuLinks list.
+ * History data and the websites file are saved before returning a summary of what was found.
+ *
+ * Does NOT re-score or re-evaluate existing history records against domains.
+ */
 async function runScanForEntity(storage: any, entity: Entity, domains: Domain[], args: Args): Promise<ScanSummary> {
   await ensureEntityHistoryLayout(storage, entity.id);
   const { historyMap, menuLinks } = await loadHistoryData(storage, entity.id);
@@ -3214,7 +3612,7 @@ Crawl control:
   --seed-url <type|url>       Restrict crawl to one seed — named type (mainUrl, hubUrl,
                               governingUrl, authorityUrl) or a direct URL
   --force                     Force re-crawl even if recently visited
-  --refetch                   Re-fetch and re-score all known pages
+  --rescore                   Re-fetch and re-score all known pages
   --nodownload                Score existing cached pages without fetching new ones
   --notbot                    Use a generic User-Agent (avoids bot detection)
 
@@ -3236,7 +3634,7 @@ Utility modes (no crawling):
 `);
 }
 
-async function main() {
+export async function main() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
     printHelp();
     process.exit(0);
@@ -3285,12 +3683,12 @@ async function main() {
   }
 
   if (args.listLocal) {
-    await runListLocalMode(storage, targets, args);
+    await runListLocalMode(storage, targets, args, domains, realm);
     return;
   }
 
-  if (args.refetch) {
-    await runRefetchMode(storage, targets, domains, args);
+  if (args.rescore) {
+    await runrescoreMode(storage, targets, domains, args);
     return;
   }
 
@@ -3339,7 +3737,7 @@ async function main() {
   try {
     for (let i = 0; i < targets.length; i += args.concurrency) {
       const batch = targets.slice(i, i + args.concurrency);
-      await Promise.all(batch.map((entity) => spiderEntity(entity, domains, args, storage, interactiveRl)));
+      await Promise.all(batch.map((entity) => spiderEntity(entity, domains, realm, args, storage, interactiveRl)));
     }
   } finally {
     await interactiveRl?.close();

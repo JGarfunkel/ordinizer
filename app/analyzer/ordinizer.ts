@@ -12,6 +12,11 @@ switch (subcommand) {
     await main();
     break;
   }
+  case "spider": {
+    const { main } = await import("./lib/spiderEntityWebsites.js");
+    await main();
+    break;
+  }
   case "index": {
     const { main } = await import("./lib/indexDocumentService.js");
     await main();
@@ -22,14 +27,21 @@ switch (subcommand) {
     await main();
     break;
   }
+  case "describe": {
+    const { main } = await import("./lib/describe.js");
+    await main();
+    break;
+  }
   case "--help":
   case "-h":
     console.log(`
 Usage: ordinizer <subcommand> [options]
 
 Subcommands:
-  analyze    Analyze municipal statutes and policies with AI & vector search
-  index      Index documents into the Pinecone vector database
+  describe   Show what exists in the data directory and suggest next steps
+  spider     Crawl entity websites and download domain-relevant documents
+  index      Index downloaded documents into the Pinecone vector database
+  analyze    Analyze entities with AI using indexed documents
   report     Generate a markdown domain report
 
 Common Options (all subcommands):
@@ -40,6 +52,35 @@ Common Options (all subcommands):
   --dry-run                 Plan without making AI calls or writing files
   --verbose, -v             Enable detailed logging
   --help, -h                Show this help message
+
+─────────────────────────────────────────────────────────────────────
+ordinizer describe
+─────────────────────────────────────────────────────────────────────
+  --realm <id>              Scope to a specific realm (default: all realms)
+  --domain <id>             Scope to a specific domain
+  --websites                Show website boilerplate/selector status per host
+  --missing                 (with --websites) Show only hosts missing contentSelector
+  --entity <id>             (with --websites) Scope to a single entity
+
+─────────────────────────────────────────────────────────────────────
+ordinizer spider
+─────────────────────────────────────────────────────────────────────
+  --entity <id>             Crawl a single entity by ID
+  --all                     Crawl all entities in the realm
+  --domain <id>             Restrict classification to one domain
+  --max-depth <n>           Maximum crawl depth, 1–3 (default: 2)
+  --max-pages <n>           Total page cap (default: 3× per-source limit)
+  --concurrency <n>         Parallel fetch concurrency, 1–20 (default: 3)
+  --recrawl-days <n>        Re-fetch pages older than N days
+  --force                   Force re-crawl even if recently visited
+  --nodownload              Score existing cached pages without fetching
+  --interactive             Prompt for domain confirmation per page
+  --review                  Show summary table and review interactively
+  --scan, --nospider        Re-score downloaded pages without fetching
+  --rewriteText             Re-generate .txt artifacts from cached HTML; discovers missing contentSelector/header/footer selectors
+  --rewriteText --force     Also reset and re-discover all selector data from scratch
+  --listlocal               List locally downloaded files for each entity
+  --generate-summary        Write a summary JSON across all entities
 
 ─────────────────────────────────────────────────────────────────────
 ordinizer analyze
@@ -78,6 +119,6 @@ Environment Variables Required:
     break;
   default:
     console.error(`Unknown subcommand: ${subcommand ?? "(none provided)"}`);
-    console.error("Run with --help to see available subcommands.");
+    console.error("Run \"ordinizer describe\" for a data overview, or --help for all subcommands.");
     process.exit(1);
 }

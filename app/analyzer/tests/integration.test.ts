@@ -50,7 +50,7 @@ describe('Download and Process Source', () => {
 
   xit('analysis', async () => {
     expect(process.env.OPENAI_API_KEY).toBeTruthy();
-    const { analyzeStatutes } = await import("../lib/analyzeStatutes");
+    const { doAnalysis: analyzeStatutes } = await import("../lib/analyzeStatutes");
     const analyzeOptions = {
       verbose: true,
       entity: "NY-Bedford-Town",

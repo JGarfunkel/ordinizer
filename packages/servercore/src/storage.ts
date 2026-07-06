@@ -235,6 +235,9 @@ export interface IStorageReadOnly {
   // Stat helpers
   getAnalysisStat(domainId: string, entityId: string, realmId?: string): Promise<FileStat>;
 
+  // Write-permission check
+  canWriteAnalysis(domainId: string, entityId: string): Promise<boolean>;
+
   // Existence helpers
   analysisExists(domainId: string, entityId: string, realmId?: string): Promise<boolean>;
   questionsExist(domainId: string, realmId?: string): Promise<boolean>;
@@ -970,6 +973,40 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   //   return { source: sourceConfig, data };
   // }
 
+  private async buildAndSaveSourceMap(): Promise<void> {
+    const summaryPath = path.join(this.realmDir, "downloadSummary.json");
+    const entities = await this.getEntities();
+    const summary: Array<{
+      id: string;
+      name: string;
+      displayName: string;
+      linkedResources: Array<{ url: string; title: string; matchedDomainIds: string[]; timestamp: string }>;
+    }> = [];
+
+    for (const entity of entities) {
+      const historyPath = path.join(this.realmDir, "EntityDownloads", entity.id, "history.json");
+      if (!await fs.pathExists(historyPath)) {
+        summary.push({ id: entity.id, name: entity.name || entity.id, displayName: entity.displayName || entity.name || entity.id, linkedResources: [] });
+        continue;
+      }
+      const loaded = await fs.readJson(historyPath).catch(() => ({ records: [] }));
+      const records: any[] = Array.isArray(loaded.records) ? loaded.records : [];
+      const linkedResources = records
+        .filter((r: any) => Boolean(r.localFile || r.localFileText))
+        .sort((a: any, b: any) => a.url.localeCompare(b.url))
+        .map((r: any) => ({
+          url: r.url,
+          title: (r.title && r.title !== r.url) ? r.title : r.url,
+          matchedDomainIds: Array.isArray(r.matchedDomainIds) ? r.matchedDomainIds : [],
+          timestamp: r.timestamp ?? "",
+        }));
+      summary.push({ id: entity.id, name: entity.name || entity.id, displayName: entity.displayName || entity.name || entity.id, linkedResources });
+    }
+
+    await fs.writeJson(summaryPath, summary, { spaces: 2 });
+    console.log(`[SOURCE MAP] generated ${summaryPath} with ${summary.length} entities`);
+  }
+
   /**
    * This builds a sourcemap for all of the sources referenced in the downloadSummary.json
    */
@@ -980,11 +1017,11 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
 
     const sourceMap = new Map<string, SourceMapEntity>();
     const summaryPath = path.join(this.realmDir, "downloadSummary.json");
-    console.log("Not found in cache, so loading from " + summaryPath);
     if (!await fs.pathExists(summaryPath)) {
-      console.error("Could not find " + summaryPath);
-      this.sourceMapCache = sourceMap;
-      return sourceMap;
+      console.log(`[SOURCE MAP] ${summaryPath} not found, generating from history files`);
+      await this.buildAndSaveSourceMap();
+    } else {
+      console.log("Not found in cache, so loading from " + summaryPath);
     }
 
     const data = await fs.readJson(summaryPath);
@@ -1190,6 +1227,23 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     return this.rulesetExists(domainId, entityId, realmId);
   }
 
+  async canWriteAnalysis(domainId: string, entityId: string): Promise<boolean> {
+    // Walk up from the target directory to find the deepest existing ancestor, then
+    // check whether the process has write access to it.
+    let dir = path.join(this.getRealmDir(), domainId, entityId);
+    while (!(await fs.pathExists(dir))) {
+      const parent = path.dirname(dir);
+      if (parent === dir) return false; // reached filesystem root without finding anything
+      dir = parent;
+    }
+    try {
+      await fs.access(dir, fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** True when analysis.json exists for the given entity/domain. */
   async analysisExists(domainId: string, entityId: string, realmId?: string): Promise<boolean> {
     return fs.pathExists(path.join(this.getRealmDir(), domainId, entityId, "analysis.json"));
@@ -1280,6 +1334,7 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
     await this.saveAnalysisBackup(analysis.domainId, entityId);
 
     const file = path.join(this.getRealmDir(), domainId, entityId, "analysis.json");
+    await fs.ensureDir(path.dirname(file));
     await fs.writeJson(file, newAnalysis, { spaces: 2 });
     return newAnalysis;
   }

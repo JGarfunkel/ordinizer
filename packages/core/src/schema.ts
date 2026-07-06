@@ -104,6 +104,7 @@ export interface Question {
   weight: number; // Added: used in scoring
   lastUpdated?: string; // String format
   scoreInstructions?: string; // Added: used in scoring
+  dependsOn?: number[]; // IDs of questions whose answers should inform this one
 }
 
 export interface Analysis {
@@ -218,6 +219,7 @@ export interface QuestionWithAnswer {
   text: string;
   order: string;
   answer: string;
+  shortAnswer: string;
   sourceReference: string | null;
   lastUpdated: string | null; // String format
   analyzedAt?: string; // Added: used in home.tsx
@@ -330,7 +332,7 @@ export interface Realm {
   ruleType: 'statute' | 'policy';
   geo?: RealmGeo;
   datapath: string;
-  entityType: 'municipalities' | 'school-districts';
+  entityType: 'municipalities' | 'school-districts' | 'product';
   entityFile: string;
   dataSource: {
     type: 'google-sheets' | 'json-file';
@@ -350,6 +352,13 @@ export interface Realm {
     documentPlural?: string;
     entitySingular?: string;
     entityPlural?: string;
+    scoreText?: string;
+  };
+  spiderHints?: {
+    /** URL path segment keywords that signal high-value pages; matched URLs are crawled first. */
+    priorityPathKeywords?: string[];
+    /** Page-body phrases that indicate a navigation/index page (replaces default municipal signals). */
+    indexNavSignals?: string[];
   };
   paths?: {
     entitiesFile?: string;
@@ -390,6 +399,7 @@ export interface Entity {
   name: string;
   displayName: string;
   type?: string;
+  description: string;
   singular?: string;
   county?: string;
   state?: string;
@@ -511,6 +521,7 @@ export interface AnalyzedQuestion {
   questionId?: number | string; // Library format
   question: string;
   answer: string;
+  shortAnswer: string;
   confidence: number;  // Can be 0-1 or 0-100
   score: number;       // Environmental protection score
   sourceRefs?: (string | SourceRef)[];
@@ -568,6 +579,7 @@ export interface QuestionScore {
       score: number;
       confidence: number;
       answer: string;
+      shortAnswer?: string;
       sourceRefs: string[];
       analyzedAt?: string;
 }

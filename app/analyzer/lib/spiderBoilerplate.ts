@@ -27,13 +27,6 @@ export function getLikelyHostname(url: string): string {
 // Boilerplate detection and stripping
 // ---------------------------------------------------------------------------
 
-function normalizeBoilerplateCandidate(value: string): string {
-  return value
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
 function selectActiveCandidate(candidates?: Record<string, number> | null): string | undefined {
   if (!candidates || typeof candidates !== "object") {
     return undefined;
@@ -49,20 +42,76 @@ function selectActiveCandidate(candidates?: Record<string, number> | null): stri
   return ranked.length > 0 ? ranked[0][0] : undefined;
 }
 
-export function detectBoilerplateCandidates(text: string): { header?: string; footer?: string } {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (lines.length < 4) {
-    return {};
+// ---------------------------------------------------------------------------
+// Selector-based zone detection (fast regex, no JSDOM required)
+// ---------------------------------------------------------------------------
+
+// Ranked by specificity preference: semantic elements first, then ARIA roles, then common id/class patterns.
+const HEADER_ZONE_SELECTORS = [
+  "header",
+  "[role='banner']",
+  "#header",
+  "#site-header",
+  "#masthead",
+  ".site-header",
+  ".header",
+  ".masthead",
+  "#page-header",
+  ".page-header",
+] as const;
+
+const FOOTER_ZONE_SELECTORS = [
+  "footer",
+  "[role='contentinfo']",
+  "#footer",
+  "#site-footer",
+  "#colophon",
+  ".site-footer",
+  ".footer",
+  ".colophon",
+  "#page-footer",
+  ".page-footer",
+] as const;
+
+function detectSelectorPresence(html: string, selector: string): boolean {
+  if (selector === "header") return /<header[\s>]/i.test(html);
+  if (selector === "footer") return /<footer[\s>]/i.test(html);
+
+  const roleMatch = selector.match(/^\[role='([^']+)'\]$/);
+  if (roleMatch) {
+    return new RegExp(`role=["']${roleMatch[1]}["']`, "i").test(html);
   }
 
-  const headerCandidate = normalizeBoilerplateCandidate(lines.slice(0, 2).join(" "));
-  const footerCandidate = normalizeBoilerplateCandidate(lines.slice(-2).join(" "));
+  if (selector.startsWith("#")) {
+    const id = selector.slice(1).replace(/\\/g, "");
+    return new RegExp(`\\bid=["']${id.replace(/[-]/g, "[-]")}["']`, "i").test(html);
+  }
+
+  if (selector.startsWith(".")) {
+    const cls = selector.slice(1).replace(/\\/g, "");
+    return new RegExp(`\\bclass=["'][^"']*(?:^|\\s)${cls.replace(/[-]/g, "[-]")}(?:\\s|["'])`, "i").test(html);
+  }
+
+  return false;
+}
+
+function detectZoneSelector(html: string, selectors: readonly string[]): string | undefined {
+  for (const sel of selectors) {
+    if (detectSelectorPresence(html, sel)) return sel;
+  }
+  return undefined;
+}
+
+export interface BoilerplateCandidates {
+  headerSelector?: string;
+  footerSelector?: string;
+}
+
+export function detectBoilerplateCandidates(_text: string, htmlContent?: string): BoilerplateCandidates {
+  if (!htmlContent) return {};
   return {
-    ...(headerCandidate.length >= 24 && headerCandidate.length <= 220 ? { header: headerCandidate } : {}),
-    ...(footerCandidate.length >= 24 && footerCandidate.length <= 220 ? { footer: footerCandidate } : {}),
+    headerSelector: detectZoneSelector(htmlContent, HEADER_ZONE_SELECTORS),
+    footerSelector: detectZoneSelector(htmlContent, FOOTER_ZONE_SELECTORS),
   };
 }
 
@@ -91,6 +140,7 @@ export function updateWebsiteHostRecord(
   hostname: string,
   text: string,
   timestamp: string,
+  htmlContent?: string,
 ): WebsiteHostRecord | undefined {
   if (!file.hosts || typeof file.hosts !== "object") {
     file.hosts = {};
@@ -114,22 +164,20 @@ export function updateWebsiteHostRecord(
   record.observations += 1;
   record.updatedAt = timestamp;
 
-  if (!record.headerCandidates || typeof record.headerCandidates !== "object") {
-    record.headerCandidates = {};
-  }
-  if (!record.footerCandidates || typeof record.footerCandidates !== "object") {
-    record.footerCandidates = {};
-  }
+  const candidates = detectBoilerplateCandidates(text, htmlContent);
 
-  const candidates = detectBoilerplateCandidates(text);
-  if (candidates.header) {
-    record.headerCandidates[candidates.header] = (record.headerCandidates[candidates.header] || 0) + 1;
+  if (candidates.headerSelector) {
+    if (!record.headerSelectorCandidates) record.headerSelectorCandidates = {};
+    record.headerSelectorCandidates[candidates.headerSelector] =
+      (record.headerSelectorCandidates[candidates.headerSelector] || 0) + 1;
   }
-  if (candidates.footer) {
-    record.footerCandidates[candidates.footer] = (record.footerCandidates[candidates.footer] || 0) + 1;
+  if (candidates.footerSelector) {
+    if (!record.footerSelectorCandidates) record.footerSelectorCandidates = {};
+    record.footerSelectorCandidates[candidates.footerSelector] =
+      (record.footerSelectorCandidates[candidates.footerSelector] || 0) + 1;
   }
+  record.activeHeaderSelector = selectActiveCandidate(record.headerSelectorCandidates);
+  record.activeFooterSelector = selectActiveCandidate(record.footerSelectorCandidates);
 
-  record.activeHeader = selectActiveCandidate(record.headerCandidates);
-  record.activeFooter = selectActiveCandidate(record.footerCandidates);
   return record;
 }

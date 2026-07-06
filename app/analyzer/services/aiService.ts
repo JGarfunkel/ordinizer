@@ -31,7 +31,7 @@ interface TokenUsage {
 }
 
 let tokenUsageHistory: TokenUsage[] = [];
-export let currentModel = process.env.DEFAULT_AI_MODEL || "claude-sonnet-4-6";
+export let currentModel = process.env.DEFAULT_AI_MODEL || "claude-opus-4-8";
 console.log("Using default model:", currentModel);
 export function setCurrentModel(model: string) { currentModel = model; }
 let modelConfig: any = null;

@@ -39,7 +39,7 @@ import {
   hasBinaryData,
 } from "./extractionUtils.js";
 import { indexEntity } from "./indexDocumentService.js";
-import { analyzeStatutes } from "./analyzeStatutes.js";
+import { doAnalysis } from "./analyzeStatutes.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -565,7 +565,7 @@ async function runRepl(args: Args): Promise<void> {
         const analysisBefore = await storage.getAnalysis(selectedDomainId, selectedEntity.id).catch(() => null);
         console.log("Running analyzeStatutes...");
         try {
-          await analyzeStatutes({
+          await doAnalysis({
             realm: args.realm,
             entity: selectedEntity.id,
             domain: selectedDomainId,

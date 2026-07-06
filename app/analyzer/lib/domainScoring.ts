@@ -41,6 +41,10 @@ export interface CrawledPage {
 // Raise to reduce false positives; lower to catch more (but noisier) pages.
 export const DOMAIN_MATCH_SCORE_THRESHOLD = 4;
 
+// Product realms (dedicated vendor/product sites) are expected to have broadly
+// relevant content, so a lower threshold is used to avoid under-collecting.
+export const PRODUCT_DOMAIN_MATCH_SCORE_THRESHOLD = 2;
+
 // Per-zone multipliers for keyword hits in the regular domain scorer.
 const SCORE_MULTIPLIER_TITLE = 2;
 const SCORE_MULTIPLIER_HEADER = 2.5;
