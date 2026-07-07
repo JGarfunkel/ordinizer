@@ -20,6 +20,7 @@ export interface IndexOptions {
   dryRun?: boolean;
   only?: string;
   prune?: boolean;
+  reclassify?: string;
   removeUrl?: string;
   sinceHours?: number;
   forcePdf?: boolean;
@@ -309,6 +310,86 @@ export async function removeUrlFromIndex(entityId: string, url: string, options:
 }
 
 /**
+ * Reclassify vectors and history records from one domain to another.
+ *
+ * For each entity, reads history.json first to identify which files have the
+ * fromDomain, then performs targeted vector operations rather than a full index scan:
+ *   - Shared vectors: metadata-only update via index.update() (no embedding fetch)
+ *   - Statute vectors: ID rename via fetch + re-upsert + delete
+ *
+ * For each affected history record:
+ *   - If toDomain not present: replace fromDomain with toDomain in matchedDomainIds
+ *   - If toDomain already present: remove fromDomain from matchedDomainIds
+ */
+export async function reclassifyDocuments(fromDomain: string, toDomain: string, options: IndexOptions = {}): Promise<void> {
+  VERBOSE = options.verbose ?? VERBOSE;
+  if (!options.realm) {
+    throw new Error("Realm is required to reclassify documents");
+  }
+  const storage = getDefaultStorage(options.realm);
+  const vectorService = getVectorService(options.realm);
+  await vectorService.initializeIndex();
+
+  console.log(`🔄 Reclassifying domain "${fromDomain}" → "${toDomain}" in realm: ${options.realm}`);
+  if (options.dryRun) console.log(`🔍 Dry run — no changes will be made`);
+
+  const entityIds = options.entity
+    ? [options.entity]
+    : await storage.getEntityIds(undefined);
+
+  let totalHistoryRecords = 0;
+  let totalVectors = 0;
+
+  for (const entityId of entityIds) {
+    const { historyMap, menuLinks } = await loadHistoryData(storage, entityId);
+    let historyChanged = false;
+
+    for (const [url, entry] of historyMap) {
+      if (!entry.matchedDomainIds?.includes(fromDomain)) continue;
+
+      const alreadyHasTarget = entry.matchedDomainIds.includes(toDomain);
+      const newDomainIds = alreadyHasTarget
+        ? entry.matchedDomainIds.filter(d => d !== fromDomain)
+        : entry.matchedDomainIds.map(d => d === fromDomain ? toDomain : d);
+
+      const action = alreadyHasTarget ? `removed "${fromDomain}"` : `${fromDomain} → ${toDomain}`;
+      console.log(`  ${entityId}: ${action} in history for ${url}`);
+
+      historyMap.set(url, { ...entry, matchedDomainIds: newDomainIds });
+      historyChanged = true;
+      totalHistoryRecords++;
+
+      const rawFile = entry.localFileText ?? entry.localFile;
+      const filename = rawFile?.split("/").pop();
+      if (filename) {
+        const prefix = getDocumentKey(entityId, ["shared"], "shared", filename);
+        const count = await vectorService.updateDomainForPrefix(prefix, newDomainIds, { dryRun: options.dryRun });
+        if (count > 0) console.log(`  ${entityId}: updated ${count} shared vector(s) for ${filename}`);
+        totalVectors += count;
+      }
+    }
+
+    // Handle statute vectors for this entity+domain (ID encodes the domain, must rename)
+    const oldStatutePrefix = getDocumentKey(entityId, [fromDomain], "statute");
+    const newStatutePrefix = getDocumentKey(entityId, [toDomain], "statute");
+    const statuteCount = await vectorService.renameVectorsUnderPrefix(
+      oldStatutePrefix, newStatutePrefix, [toDomain], { dryRun: options.dryRun }
+    );
+    if (statuteCount > 0) console.log(`  ${entityId}: renamed ${statuteCount} statute vector(s)`);
+    totalVectors += statuteCount;
+
+    if (historyChanged && !options.dryRun) {
+      await saveHistoryData(storage, entityId, historyMap, menuLinks);
+      log(`  ${entityId}: saved history.json`);
+    }
+  }
+
+  console.log(`\n✅ Reclassify complete:`);
+  console.log(`   ${totalHistoryRecords} history record(s) updated across ${entityIds.length} entities`);
+  console.log(`   ${totalVectors} vector(s) updated in index`);
+}
+
+/**
  * Index all entities in the realm, optionally scoped to one domain or entity.
  */
 export async function indexAll(options: IndexOptions = {}): Promise<void> {
@@ -398,6 +479,8 @@ Options:
   --prune                Delete vector chunks for history entries with status=unrelated or status=index
   --removeUrl <url>      Mark a URL as "unrelated" in the entity's history and delete its index chunks
                          Requires --entity <entityId>
+  --reclassify <x->y>   Scan all vectors, replace domain "x" with "y" (or remove "x" if "y" already present)
+                         Optionally scope with --entity; use --dry-run to preview
   --verbose, -v          Enable detailed logging
   --help, -h             Show this help message
 
@@ -467,6 +550,9 @@ async function parseArgs(): Promise<IndexOptions> {
       case "--force-pdf":
         options.forcePdf = true;
         break;
+      case "--reclassify":
+        options.reclassify = rest[++i];
+        break;
       default:
         if (rest[i].startsWith("-")) {
           console.error(`Unknown option: ${rest[i]}`);
@@ -513,6 +599,13 @@ export async function main(): Promise<void> {
       process.exit(1);
     }
     await removeUrlFromIndex(options.entity, options.removeUrl, options);
+  } else if (options.reclassify) {
+    const parts = options.reclassify.split("->").map(s => s.trim());
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      console.error("❌ --reclassify must be in the form 'x->y' (e.g., --reclassify trees->landscaping)");
+      process.exit(1);
+    }
+    await reclassifyDocuments(parts[0], parts[1], options);
   } else {
     await indexAll(options);
   }

@@ -621,6 +621,93 @@ export class VectorService {
 	}
 	}
 
+	/**
+	 * Update domainId/domainIds metadata for all vectors under a prefix.
+	 * Uses index.update() — does NOT fetch embedding values.
+	 * Returns the number of vectors updated.
+	 */
+	async updateDomainForPrefix(
+		prefix: string,
+		newDomainIds: string[],
+		options: { dryRun?: boolean } = {},
+	): Promise<number> {
+		const index = this.getIndex();
+		const newPrimaryDomain = newDomainIds[0] ?? "";
+		let count = 0;
+		let paginationToken: string | undefined;
+
+		while (true) {
+			const response = await index.listPaginated({ limit: 100, paginationToken, prefix });
+			const ids = (response.vectors ?? []).map(v => v.id!).filter(Boolean);
+
+			for (const id of ids) {
+				if (options.dryRun) {
+					console.log(`  [dry-run] would update domainIds for: ${id}`);
+				} else {
+					await index.update({ id, metadata: { domainId: newPrimaryDomain, domainIds: newDomainIds } });
+					console.log(`  ✅ Updated domainIds for: ${id}`);
+				}
+				count++;
+			}
+
+			paginationToken = response.pagination?.next;
+			if (!paginationToken) break;
+		}
+
+		return count;
+	}
+
+	/**
+	 * Rename all vectors under oldPrefix to newPrefix, updating domain metadata.
+	 * Needed for statute vectors whose IDs encode the domain.
+	 * Fetches embedding values, upserts under new IDs, then deletes old IDs.
+	 * Returns the number of vectors renamed.
+	 */
+	async renameVectorsUnderPrefix(
+		oldPrefix: string,
+		newPrefix: string,
+		newDomainIds: string[],
+		options: { dryRun?: boolean } = {},
+	): Promise<number> {
+		const index = this.getIndex();
+		const newPrimaryDomain = newDomainIds[0] ?? "";
+		let count = 0;
+		let paginationToken: string | undefined;
+
+		while (true) {
+			const response = await index.listPaginated({ limit: 100, paginationToken, prefix: oldPrefix });
+			const ids = (response.vectors ?? []).map(v => v.id!).filter(Boolean);
+
+			if (ids.length > 0) {
+				const fetched = await index.fetch(ids);
+
+				for (const [oldId, vector] of Object.entries(fetched.records ?? {})) {
+					const newId = newPrefix + oldId.slice(oldPrefix.length);
+					const values = (vector as any).values as number[] | undefined;
+					const oldMeta = (vector.metadata ?? {}) as Record<string, any>;
+					const newMetadata = { ...oldMeta, domainId: newPrimaryDomain, domainIds: newDomainIds };
+
+					if (options.dryRun) {
+						console.log(`  [dry-run] would rename: ${oldId} → ${newId}`);
+					} else if (!values || values.length === 0) {
+						console.warn(`  ⚠️  No embedding values for ${oldId} — skipping rename`);
+						continue;
+					} else {
+						await index.upsert([{ id: newId, values, metadata: newMetadata }]);
+						await index.deleteOne(oldId);
+						console.log(`  ✅ Renamed: ${oldId} → ${newId}`);
+					}
+					count++;
+				}
+			}
+
+			paginationToken = response.pagination?.next;
+			if (!paginationToken) break;
+		}
+
+		return count;
+	}
+
 	/** Answer a question via Pinecone vector search + GPT-4o */
 	/**
 	 * List indexed documents in the Pinecone index.
