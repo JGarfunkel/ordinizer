@@ -390,12 +390,20 @@ function extractFinalContentType(rawHeaders: string): string {
   return contentTypeLine ? contentTypeLine.split(":").slice(1).join(":").trim().toLowerCase() : "";
 }
 
+function extractFinalHttpStatus(rawHeaders: string): number {
+  const lines = rawHeaders.split(/\r?\n/).reverse();
+  const statusLine = lines.find((line) => /^HTTP\/\S+\s+\d+/i.test(line));
+  if (!statusLine) return 0;
+  const match = statusLine.match(/^HTTP\/\S+\s+(\d+)/i);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
 export async function downloadViaCurl(
   url: string,
   saveToPath?: string,
   filename?: string,
   options: DownloadRequestOptions = {},
-): Promise<{ data: Buffer, isPdf: boolean }> {
+): Promise<{ data: Buffer; isPdf: boolean; httpStatus: number }> {
   const userAgent = resolveUserAgent(options.userAgent);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ordinizer-curl-"));
   const safeFileBase = (filename || "download").replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -436,15 +444,17 @@ export async function downloadViaCurl(
     const headerText = await fs.readFile(headersPath, "utf-8").catch(() => "");
     const contentType = extractFinalContentType(headerText);
     const isPdf = isContentPdf(data, contentType, url);
+    const httpStatus = extractFinalHttpStatus(headerText);
 
     verboseLog("curl response metadata", {
       url,
       contentType,
       dataLength: data.length,
       isPdf,
+      httpStatus,
     });
 
-    return { data, isPdf };
+    return { data, isPdf, httpStatus };
   } catch (error: any) {
     verboseLog("curl download failed", {
       url,
@@ -471,7 +481,7 @@ export async function downloadFromUrlAnyType(
   saveToPath?: string,
   filename?: string,
   options: DownloadRequestOptions = {},
-): Promise<{ data: Buffer, isPdf: boolean }> {
+): Promise<{ data: Buffer; isPdf: boolean; httpStatus: number }> {
     const userAgent = resolveUserAgent(options.userAgent);
     const useCurlForUrl = await shouldUseCurlForUrl(url);
     if (useCurlForUrl) {
@@ -511,7 +521,7 @@ export async function downloadFromUrlAnyType(
       isPdf: isPdf
     });
 
-    return { data, isPdf: isPdf };
+    return { data, isPdf: isPdf, httpStatus: response.status };
 
   } catch (error: any) {
     verboseLog(`HTTP Request Failed:`, {

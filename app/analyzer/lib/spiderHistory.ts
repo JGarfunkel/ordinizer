@@ -791,22 +791,28 @@ export async function fetchPageContent(
 ): Promise<{ page: DownloadedPage | null; status: HistoryStatus }> {
   try {
     const downloaded = await downloadFromUrlAnyType(url, undefined, undefined, options);
+
     if (downloaded.isPdf) {
+      console.log(`[FETCH] ${url} | HTTP ${downloaded.httpStatus} | ${downloaded.data.byteLength}B | isPdf=true`);
       return { page: { kind: "pdf", pdfBuffer: downloaded.data }, status: "related" };
     }
 
     const html = downloaded.data.toString("utf-8").trim();
+    const looksLikeHtml = /<html|<body|<head|<!doctype\s+html/i.test(html);
+    console.log(`[FETCH] ${url} | HTTP ${downloaded.httpStatus} | ${html.length}B | isHtml=${looksLikeHtml}`);
+
     if (!html) {
       return { page: null, status: "no-content" };
     }
 
-    const looksLikeHtml = /<html|<body|<head|<!doctype\s+html/i.test(html);
     if (!looksLikeHtml) {
       return { page: null, status: "no-content" };
     }
 
     return { page: { kind: "html", html }, status: "related" };
   } catch (error) {
-    return { page: null, status: classifyDownloadError(error) };
+    const errStatus = classifyDownloadError(error);
+    console.log(`[FETCH] ${url} | error=${error}`);
+    return { page: null, status: errStatus };
   }
 }

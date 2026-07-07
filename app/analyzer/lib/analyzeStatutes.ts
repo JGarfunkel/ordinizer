@@ -56,6 +56,7 @@ export interface AnalyzeOptions {
   fixNoSources?: boolean; // Scan analyses and replace NO_SOURCES_AVAILABLE with NOT_SPECIFIED where appropriate
   recalcScoreOnly?: boolean; // Recalculate normalized scores from existing analyses without re-running AI
   forceBelow?: number; // Re-analyze questions whose score is below this normalised threshold (0–1)
+  ifMissing?: boolean; // Re-analyze questions whose existing shortAnswer is "Not specified"
   cleanOnly?: boolean; // Refresh metadata fields (municipality, domain) from storage without making AI calls
   all?: boolean; // Analyze all entities regardless of other filters
 }
@@ -878,7 +879,7 @@ async function processEntity(
         log(`Statute modified: ${docStat.mtime.toISOString()}`);
         log(`Analysis modified: ${analysisStat.mtime.toISOString()}`);
         // Continue with analysis - don't return here
-      } else if (!skipRecent && ageInDays < 30 && options.forceBelow === undefined) {
+      } else if (!skipRecent && ageInDays < 30 && options.forceBelow === undefined && !options.ifMissing) {
         console.log(`⏭️  ${entity}: Analysis is recent (${ageInDays.toFixed(1)} days old) and statute unchanged, skipping`);
         if (options.reindex) {
           await indexEntity(entity, { ...options, force: true });
@@ -1080,6 +1081,7 @@ interface AnalysisContent {
   includeFullStatuteText: boolean;
   statuteText: string;
   authoritativeDocumentType?: DocumentType;
+  ruleType?: 'statute' | 'policy' | 'product';
 }
 
 type GeneratedAnalysisResult = {
@@ -1270,6 +1272,7 @@ async function runConversationAnalysis(
   options: AnalyzeOptions,
   bestPracticesByQuestionId?: Record<number, import("@civillyengaged/ordinizer-core").BestPractice>,
   domainConfig?: { searchEnhancements?: Array<{ conditions: string[]; terms: string[] }> },
+  ruleType?: 'statute' | 'policy' | 'product',
 ): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
   console.log(
     `💬 ${entity}: Using conversation mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
@@ -1305,6 +1308,7 @@ async function runConversationAnalysis(
         : "",
     priorAnswersByQuestionId: Object.fromEntries(questionsToKeep.map((q: any) => [q.id, q.answer])),
     bestPracticesByQuestionId,
+    ruleType,
   });
 
   const conversationEndTokens = getCurrentTokenUsage();
@@ -1340,6 +1344,7 @@ async function runVectorAnalysis(
   options: AnalyzeOptions,
   bestPracticesByQuestionId?: Record<number, import("@civillyengaged/ordinizer-core").BestPractice>,
   domainConfig?: { searchEnhancements?: Array<{ conditions: string[]; terms: string[] }> },
+  ruleType?: 'statute' | 'policy' | 'product',
 ): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
   console.log(
     `🔍 ${entity}: Using vector mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars), authoritativeDocumentType=${authoritativeDocumentType || "undefined"}`,
@@ -1373,6 +1378,7 @@ async function runVectorAnalysis(
         : "",
     priorAnswersByQuestionId: Object.fromEntries(questionsToKeep.map((q: any) => [q.id, q.answer])),
     bestPracticesByQuestionId,
+    ruleType,
   });
 
   return buildAnswersFromResults(
@@ -1479,7 +1485,8 @@ async function prepareAnalysisContent(
   const domainConfig = await st.getDomain(domain);
   const realmConfig = options.realm ? await st.getRealm(options.realm) : undefined;
   const isGeneralDomain = domainConfig?.type === "general";
-  const authoritativeDocumentType: DocumentType = realmConfig?.ruleType === "policy" ? "policy" : "statute";
+  const ruleType = realmConfig?.ruleType ?? 'statute';
+  const authoritativeDocumentType: DocumentType = ruleType === "policy" ? "policy" : "statute";
 
   if (options.reindex) {
       await indexEntity(entity, { ...options, force: true });
@@ -1489,6 +1496,7 @@ async function prepareAnalysisContent(
     return {
       includeFullStatuteText: false,
       statuteText: "",
+      ruleType,
     };
   }
 
@@ -1499,6 +1507,7 @@ async function prepareAnalysisContent(
       includeFullStatuteText: false,
       statuteText: "",
       authoritativeDocumentType,
+      ruleType,
     };
   }
 
@@ -1528,6 +1537,7 @@ async function prepareAnalysisContent(
       includeFullStatuteText: true,
       statuteText: text,
       authoritativeDocumentType,
+      ruleType,
     };
   }
 
@@ -1537,6 +1547,7 @@ async function prepareAnalysisContent(
     includeFullStatuteText: false,
     statuteText: "",
     authoritativeDocumentType,
+    ruleType,
   };
 }
 
@@ -1620,6 +1631,28 @@ async function generateVectorAnalysis(
     }
   }
 
+  // Re-analyze questions whose existing shortAnswer is "Not specified"
+  if (options.ifMissing) {
+    const questionDefMap = new Map(questions.map((q) => [q.id, q]));
+    const toForce: any[] = [];
+    const toStillKeep: any[] = [];
+    for (const kept of questionsToKeep) {
+      const sa: string | undefined = (kept as any).shortAnswer;
+      if (!sa || sa === "Not specified" || sa === NOT_SPECIFIED) {
+        const baseDef = questionDefMap.get(kept.id);
+        if (baseDef) toForce.push(baseDef);
+        else toStillKeep.push(kept);
+      } else {
+        toStillKeep.push(kept);
+      }
+    }
+    if (toForce.length > 0) {
+      console.log(`🔍 ${entity}: Re-analyzing ${toForce.length} question(s) with missing short answers`);
+      questionsToAnalyze = [...questionsToAnalyze, ...toForce];
+      questionsToKeep = toStillKeep;
+    }
+  }
+
   // Prepare analysis parameters
   const statuteSize = statute.length;
   const useConversationMode = USE_CONVERSATION;
@@ -1665,6 +1698,7 @@ async function generateVectorAnalysis(
       options,
       Object.keys(bestPracticesByQuestionId).length ? bestPracticesByQuestionId : undefined,
       domainObj,
+      content.ruleType,
     );
     newAnswers = result.newAnswers;
     totalVectorTokens = result.totalVectorTokens;
@@ -1682,6 +1716,7 @@ async function generateVectorAnalysis(
       options,
       Object.keys(bestPracticesByQuestionId).length ? bestPracticesByQuestionId : undefined,
       domainObj,
+      content.ruleType,
     );
     newAnswers = result.newAnswers;
     totalVectorTokens = result.totalVectorTokens;
@@ -2039,6 +2074,7 @@ Options:
   --generate-questions      Generate questions.json using AI if it doesn't already exist
   --skip-recent <time>      Skip analysis if generated within specified time (e.g., "15m", "2h", "1d")
   --force-below-score <n>  Re-analyze questions whose current score is below threshold (e.g., "20%", "20", "0.2")
+  --if-missing              Re-analyze questions whose existing shortAnswer is "Not specified"
 
   --model <model>           AI model to use: gpt-5.4-mini, gpt-5.4, gpt-5.5
   --help, -h               Show this help message
@@ -2176,6 +2212,9 @@ async function parseArgs() {
         break;
       case "--force-below-score":
         options.forceBelow = parseScoreThreshold(rest[++i]);
+        break;
+      case "--if-missing":
+        options.ifMissing = true;
         break;
       case "--createFolders":
         options.createFolders = true;

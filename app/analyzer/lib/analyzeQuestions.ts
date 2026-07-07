@@ -31,6 +31,7 @@ export interface AnalysisPromptContext {
   scoreInstructions?: string;
   additionalSourceCount?: number;
   isGeneralDomain?: boolean;
+  ruleType?: 'statute' | 'policy' | 'product';
 }
 
 export interface AnalysisPrompt {
@@ -42,9 +43,18 @@ export interface AnalysisPrompt {
 export const NO_SOURCES_AVAILABLE = "No relevant sources available";
 export const NOT_SPECIFIED = "Not specified in the provided sources.";
 
+function getRuleTypeLabels(ruleType?: string): { singular: string; plural: string; material: string } {
+  switch (ruleType) {
+    case 'policy': return { singular: 'policy', plural: 'policy and guidance materials', material: 'the policy' };
+    case 'product': return { singular: 'product', plural: 'product documentation', material: 'the product' };
+    default:        return { singular: 'statute', plural: 'statutes', material: 'the statute' };
+  }
+}
+
 export function generateAnalysisPrompt(context: AnalysisPromptContext, doScoring?: boolean): AnalysisPrompt {
+  const labels = getRuleTypeLabels(context.ruleType);
   const scoreText = doScoring && context.scoreInstructions
-    ? `\n\nSCORING GUIDANCE: ${context.scoreInstructions}\nReturn a normalized score 0.0–1.0 in the "score" field reflecting how well the statute addresses this question.`
+    ? `\n\nSCORING GUIDANCE: ${context.scoreInstructions}\nReturn a normalized score 0.0-1.0 in the "score" field reflecting how well ${labels.material} addresses this question.`
     : "";
   const extraSourceText = context.additionalSourceCount && context.additionalSourceCount > 0
     ? "\n- Additional sources are provided. Check them for relevant requirements."
@@ -62,25 +72,28 @@ export function generateAnalysisPrompt(context: AnalysisPromptContext, doScoring
   Focus on unique information for this specific question.${extraSourceText}${scoreText}`;
 
   if (context.isGeneralDomain) {
+    const generalMaterial = context.ruleType === 'product'
+      ? `product documentation`
+      : `municipal policy and guidance materials`;
     return {
-      systemPrompt: `You are analyzing municipal policy and guidance materials for ${context.domainForEntityText}. ${promptGuidance}`,
+      systemPrompt: `You are analyzing ${generalMaterial} for ${context.domainForEntityText}. ${promptGuidance}`,
       userPromptPrefix: `Question: ${context.currentQuestion}\n\nRelevant discovered excerpts:\n`,
-      sourceHeader: `Here are the relevant policy/guidance sources for ${context.domainForEntityText}):`,
+      sourceHeader: `Here are the relevant ${labels.plural} sources for ${context.domainForEntityText}):`,
     };
   }
 
   if (context.mode === "chunks") {
     return {
-      systemPrompt: `You are analyzing municipal statutes for ${context.domainForEntityText}.  ${promptGuidance}`,
-      userPromptPrefix: `Question: ${context.currentQuestion}\n\nDiscovered relevant parts of the statute and sources:\n`,
-      sourceHeader: `Here are discovered relevant parts of the statute and related sources for ${context.domainForEntityText}:`,
+      systemPrompt: `You are analyzing ${labels.plural} for ${context.domainForEntityText}.  ${promptGuidance}`,
+      userPromptPrefix: `Question: ${context.currentQuestion}\n\nDiscovered relevant parts of ${labels.material} and sources:\n`,
+      sourceHeader: `Here are discovered relevant parts of ${labels.material} and related sources for ${context.domainForEntityText}:`,
     };
   }
 
   return {
-    systemPrompt: `You are analyzing municipal statutes for ${context.domainForEntityText}. ${promptGuidance}`,
-    userPromptPrefix: `Question: ${context.currentQuestion}\n\nFull statute and related sources:\n`,
-    sourceHeader: `Here is the full statute and related sources for ${context.domainForEntityText}:`,
+    systemPrompt: `You are analyzing ${labels.plural} for ${context.domainForEntityText}. ${promptGuidance}`,
+    userPromptPrefix: `Question: ${context.currentQuestion}\n\nFull ${labels.singular} and related sources:\n`,
+    sourceHeader: `Here is the full ${labels.singular} and related sources for ${context.domainForEntityText}:`,
   };
 }
 
@@ -95,11 +108,12 @@ export interface AnalyzeQuestionsInput {
   domain: string;
   entity: string;
   domainForEntityText: string;
-  questions: Array<{ id?: number; question: string; scoreInstructions?: string; additionalSource?: string; dependsOn?: number[] }>;
+  questions: Array<{ id?: number; question: string; searchVectors?: string[]; scoreInstructions?: string; additionalSource?: string; dependsOn?: number[] }>;
   model?: string;
   verbose?: boolean;
   dryRun?: boolean;
   isGeneralDomain?: boolean;
+  ruleType?: 'statute' | 'policy' | 'product';
   fullText?: string;
   additionalSources?: { data?: string[] };
   getDiscoveredChunks?: (question: string) => Promise<ChunkDiscoveryResult>;
@@ -165,6 +179,9 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
   const results: AnalyzedQuestionResult[] = [];
   const verbose = input.verbose === true;
   const dryRun = input.dryRun === true;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
   const seenChunkFingerprints = new Set<string>();
   const answeredById = new Map<number, string>(
     Object.entries(input.priorAnswersByQuestionId || {}).map(([k, v]) => [Number(k), v])
@@ -186,6 +203,7 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
       scoreInstructions: q.scoreInstructions,
       additionalSourceCount: input.additionalSources?.data?.length || 0,
       isGeneralDomain: input.isGeneralDomain,
+      ruleType: input.ruleType,
     }, !!q.scoreInstructions);
 
     let sourceBody = "";
@@ -198,7 +216,30 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
     }
 
     if (input.getDiscoveredChunks) {
-      const discovered = await input.getDiscoveredChunks(q.question);
+      const searchTerms = (q.searchVectors && q.searchVectors.length > 0)
+        ? q.searchVectors
+        : [q.question];
+
+      let allChunks: string[] = [];
+      let allSourceRefs: string[] = [];
+      let totalTokenUsage = 0;
+      for (const term of searchTerms) {
+        const result = await input.getDiscoveredChunks(term);
+        allChunks.push(...result.chunks);
+        allSourceRefs.push(...result.sourceRefs);
+        totalTokenUsage += result.tokenUsage;
+      }
+
+      const seenUrls = new Set<string>();
+      const uniqueSourceRefs: string[] = [];
+      for (const ref of allSourceRefs) {
+        if (!seenUrls.has(ref)) {
+          seenUrls.add(ref);
+          uniqueSourceRefs.push(ref);
+        }
+      }
+
+      const discovered = { chunks: allChunks, sourceRefs: uniqueSourceRefs, tokenUsage: totalTokenUsage };
       if (verbose) {
         console.log(
           `[VERBOSE] ${input.entity} Q${i + 1}: vectorService returned ${discovered.chunks.length} chunk(s)`
@@ -325,8 +366,13 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
       { model: input.model, temperature: 0.1, maxCompletionTokens },
     );
 
-    const completionTokens = aiResult.usage.totalTokens;
-    recordTokenUsage(completionTokens);
+    const { promptTokens, completionTokens, totalTokens, cacheReadTokens = 0 } = aiResult.usage;
+    recordTokenUsage(totalTokens);
+    totalInputTokens += promptTokens;
+    totalOutputTokens += completionTokens;
+    totalCacheReadTokens += cacheReadTokens;
+    const cacheNote = cacheReadTokens > 0 ? ` [${cacheReadTokens} cached]` : "";
+    console.log(`  [tokens] ${input.entity} Q${i + 1}/${input.questions.length}: ${promptTokens} in${cacheNote}, ${completionTokens} out`);
     await sleep(QUESTION_PAUSE_MS);
 
     const parsed = aiResult.object;
@@ -343,7 +389,7 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
       shortAnswer: parsed.shortAnswer || undefined,
       confidence,
       sourceRefs,
-      vectorTokensUsed: completionTokens + retrievalTokens,
+      vectorTokensUsed: totalTokens + retrievalTokens,
     };
 
     // Capture score whenever the AI returned one (happens when scoreInstructions or bestPractice prompted it)
@@ -365,5 +411,7 @@ export async function analyzeQuestions(input: AnalyzeQuestionsInput): Promise<An
     results.push(result);
   }
 
+  const cacheTotalNote = totalCacheReadTokens > 0 ? ` (${totalCacheReadTokens} cached)` : "";
+  console.log(`[tokens] ${input.entity}: ${totalInputTokens} total input${cacheTotalNote}, ${totalOutputTokens} total output`);
   return results;
 }

@@ -99,6 +99,7 @@ export interface Question {
   id: number; // Changed: used as number in storage.ts
   domainId: string;
   question: string; // TODO consider changing to something else to avoid question.question redundancy
+  searchVectors?: string[]; // used for retriving from vector database
   category?: string;
   order: string;
   weight: number; // Added: used in scoring
@@ -329,7 +330,7 @@ export interface Realm {
   name: string;
   displayName: string;
   description: string;
-  ruleType: 'statute' | 'policy';
+  ruleType: 'statute' | 'policy' | 'product';
   geo?: RealmGeo;
   datapath: string;
   entityType: 'municipalities' | 'school-districts' | 'product';

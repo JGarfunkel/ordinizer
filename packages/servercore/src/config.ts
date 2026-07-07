@@ -28,7 +28,7 @@ export class OrdinizerConfig {
     return this.realm.entityType;
   }
 
-  getRealmType(): 'statute' | 'policy' {
+  getRealmType(): 'statute' | 'policy' | 'product' {
     return this.realm.ruleType;
   }
 

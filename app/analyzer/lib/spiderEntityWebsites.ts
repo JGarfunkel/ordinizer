@@ -125,6 +125,7 @@ interface CrawlTask {
   url: string;
   depth: number;
   source: CrawlSource;
+  forceRedownload?: boolean;
 }
 
 interface Args {
@@ -152,6 +153,7 @@ interface Args {
   listLocal: boolean;
   reportRelatedWithoutDomains: boolean;
   rescore: boolean;
+  recover: boolean;
   generateSummary: boolean;
   force: boolean;
   forcePdf: boolean;
@@ -516,8 +518,9 @@ function parseArgs(args: string[]): Args {
     listLocal: false,
     reportRelatedWithoutDomains: false,
     rescore: false,
+    recover: false,
     generateSummary: false,
-    force: false,
+    force: common.force,
     forcePdf: false,
     seedUrl: undefined,
     review: false,
@@ -630,6 +633,10 @@ function parseArgs(args: string[]): Args {
       options.rescore = true;
       continue;
     }
+    if (arg === "--recover") {
+      options.recover = true;
+      continue;
+    }
     if (arg === "--generateSummary" || arg === "--generate-summary") {
       options.generateSummary = true;
       continue;
@@ -672,7 +679,7 @@ function parseArgs(args: string[]): Args {
     options.all = true;
   }
 
-  if (!options.cleanup && !options.rewriteText && !options.listLocal && !options.reportRelatedWithoutDomains && !options.rescore && !options.generateSummary && !options.review && !options.fix && !options.all && !options.entity && !options.specimenUrlsFile) {
+  if (!options.cleanup && !options.rewriteText && !options.listLocal && !options.reportRelatedWithoutDomains && !options.rescore && !options.recover && !options.generateSummary && !options.review && !options.fix && !options.all && !options.entity && !options.specimenUrlsFile) {
     throw new Error("Specify --entity <id>, --all, or --specimenUrlsFile <path>");
   }
 
@@ -932,13 +939,21 @@ function isKnownCloudHost(hostname: string): boolean {
   return /(^|\.)(google\.com|googleapis\.com|gstatic\.com|googleusercontent\.com|amazonaws\.com|cloudfront\.net|awsstatic\.com)$/i.test(hostname);
 }
 
-function isHostWithinAllowedDomains(hostname: string, allowedHosts: Set<string>): boolean {
-  return allowedHosts.has(hostname);
+// Returns the registrable domain (eTLD+1) for common single-label TLDs (.gov, .com, .org, etc.)
+function getRegistrableDomain(hostname: string): string {
+  const parts = hostname.split('.');
+  if (parts.length <= 2) return hostname;
+  return parts.slice(-2).join('.');
 }
 
 function isAllowedCrawlHost(hostname: string, allowedHosts: Set<string>): boolean {
-  // Strict host policy: only exact seed hostnames are allowed.
-  return isHostWithinAllowedDomains(hostname, allowedHosts);
+  if (allowedHosts.has(hostname)) return true;
+  // Allow subdomains of any seed domain (match on registrable domain / eTLD+1)
+  const candidateDomain = getRegistrableDomain(hostname);
+  for (const allowed of allowedHosts) {
+    if (getRegistrableDomain(allowed) === candidateDomain) return true;
+  }
+  return false;
 }
 
 function evaluateLinkCandidate(
@@ -1183,6 +1198,25 @@ async function readRobotsAllows(url: string, userAgent: string = USER_AGENT): Pr
   }
 }
 
+function findHistoryEntryByTitle(
+  historyMap: Map<string, SpiderDownloadRecord>,
+  title: string,
+): SpiderDownloadRecord | undefined {
+  if (!title || title.startsWith("http") || title.trim().length < 10) return undefined;
+  const needle = title.trim().toLowerCase();
+  for (const entry of historyMap.values()) {
+    if (
+      (entry.localFile || entry.localFileText) &&
+      entry.title &&
+      !entry.title.startsWith("http") &&
+      entry.title.trim().toLowerCase() === needle
+    ) {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
 async function spiderEntity(
   entity: Entity,
   domains: Domain[],
@@ -1272,6 +1306,20 @@ async function spiderEntity(
 
   const queue: CrawlTask[] = seeds.map((s) => ({ url: s.url, depth: 0, source: s.source }));
   const queuedNormalizedUrls = new Set<string>(queue.map((task) => normalizeUrlForMatch(task.url)));
+
+  console.log(`[FORCE-DEBUG] args.force=${args.force} historyMap.size=${historyMap.size} initialQueue=${queue.length}`);
+  if (args.force) {
+    let forceQueued = 0;
+    for (const entry of historyMap.values()) {
+      const normalizedEntryUrl = normalizeUrlForMatch(entry.url);
+      if (!queuedNormalizedUrls.has(normalizedEntryUrl)) {
+        queue.push({ url: entry.url, depth: 1, source: "governingUrl", forceRedownload: true });
+        queuedNormalizedUrls.add(normalizedEntryUrl);
+        forceQueued += 1;
+      }
+    }
+    console.log(`[FORCE] queued ${forceQueued} history entries; total queue=${queue.length}`);
+  }
 
   // Enqueue a link, pushing to front of queue when it matches a priority path keyword.
   function enqueueLink(url: string, depth: number, source: CrawlSource): void {
@@ -1406,7 +1454,8 @@ async function spiderEntity(
       const cacheLabel = page.fromCache ? "[CACHE]" : "[FETCH]";
       console.log(`${cacheLabel} processing ${page.url}`);
       const normalizedPageUrl = normalizeUrlForMatch(page.url);
-      const priorEntry = historyMap.get(normalizedPageUrl);
+      const priorEntryByUrl = historyMap.get(normalizedPageUrl);
+      const priorEntry = priorEntryByUrl ?? findHistoryEntryByTitle(historyMap, page.title);
       const statusTimestamp = page.fromCache && priorEntry?.timestamp
         ? priorEntry.timestamp
         : new Date().toISOString();
@@ -1605,10 +1654,10 @@ async function spiderEntity(
       // - entityUrl (depth=0) always
       // - related and index pages
       // Cache hits normally reuse artifacts, but if artifact files are missing, re-save them.
-      let localFile: string | undefined = priorEntry?.localFile;
-      let localFileText: string | undefined = priorEntry?.localFileText;
-      let localFileTextSize: number | undefined = priorEntry?.localFileTextSize;
-      let fileType: "HTML" | "PDF" | undefined = priorEntry?.fileType;
+      let localFile: string | undefined = priorEntryByUrl?.localFile;
+      let localFileText: string | undefined = priorEntryByUrl?.localFileText;
+      let localFileTextSize: number | undefined = priorEntryByUrl?.localFileTextSize;
+      let fileType: "HTML" | "PDF" | undefined = priorEntryByUrl?.fileType;
 
       const hasHtmlArtifact = localFile
         ? await fs.pathExists(fromRelativeDownloadsPath(storage, localFile))
@@ -1626,8 +1675,8 @@ async function spiderEntity(
       if (shouldPersistArtifacts) {
         const saved = await saveCrawledArtifacts(storage, entity.id, scoredPage, statusTimestamp, {
           contentSelector: hostRecordBefore?.contentSelector,
-          existingLocalFile: priorEntry?.localFile,
-          existingLocalFileText: priorEntry?.localFileText,
+          existingLocalFile: priorEntryByUrl?.localFile,
+          existingLocalFileText: priorEntryByUrl?.localFileText,
         });
         if (saved.localFile) localFile = saved.localFile;
         if (saved.fileType) fileType = saved.fileType;
@@ -1717,10 +1766,13 @@ async function spiderEntity(
 
   try {
     let consecutiveBotRejections = 0;
-    while (queue.length > 0 && pages.length < args.maxPages) {
+    while (queue.length > 0) {
     const task = queue.shift()!;
     const isBaseEntityUrl = task.depth === 0;
-    if (pagesBySource[task.source] >= args.maxPagesPerSource) {
+    if (!task.forceRedownload && pages.length >= args.maxPages) {
+      continue;
+    }
+    if (!task.forceRedownload && pagesBySource[task.source] >= args.maxPagesPerSource) {
       continue;
     }
 
@@ -1735,7 +1787,11 @@ async function spiderEntity(
     }
 
     const existingHistory = historyMap.get(normalizedTaskUrl);
-    if (existingHistory && wasAttemptedRecently(existingHistory, args.recrawlDays)) {
+    const isForceRedownload = task.forceRedownload ?? args.force;
+    if (task.forceRedownload) {
+      console.log(`[FORCE-DEBUG] dequeued forceRedownload task: ${task.url} existingHistory=${!!existingHistory} isForceRedownload=${isForceRedownload}`);
+    }
+    if (!isForceRedownload && existingHistory && wasAttemptedRecently(existingHistory, args.recrawlDays)) {
       const cached = await loadCachedPageFromHistory(storage, existingHistory, task.depth);
       if (cached) {
         const cacheFile = existingHistory.localFile || existingHistory.localFileText || "(no artifact)";
@@ -1887,7 +1943,7 @@ async function spiderEntity(
       }
     }
 
-    if (!isBaseEntityUrl && existingHistory && canSkipStatus(existingHistory.status)) {
+    if (!isForceRedownload && !isBaseEntityUrl && existingHistory && canSkipStatus(existingHistory.status)) {
       // For product realms, allow previously-unrelated pages to be re-fetched so they
       // can be re-scored against the lower product threshold. Hard failures (404, blocked,
       // timeout, etc.) are still skipped regardless.
@@ -1896,7 +1952,7 @@ async function spiderEntity(
         continue;
       }
     }
-    if (!isBaseEntityUrl && wasAttemptedRecently(existingHistory, args.recrawlDays)) {
+    if (!isForceRedownload && !isBaseEntityUrl && wasAttemptedRecently(existingHistory, args.recrawlDays)) {
       console.log(`[HISTORY] recent skip ${task.url} (last attempt ${existingHistory?.timestamp})`);
       continue;
     }
@@ -1919,7 +1975,7 @@ async function spiderEntity(
     }
 
     const allowedByHost = isAllowedCrawlHost(host, allowedHosts);
-    if (!allowedByHost) {
+    if (!allowedByHost && !isForceRedownload) {
       continue;
     }
 
@@ -2570,6 +2626,14 @@ async function runListLocalMode(storage: any, targets: Entity[], args: Args, dom
   let totalSize = 0;
   let totalUpdatedSizes = 0;
 
+  type EntityReport = {
+    entity: Entity;
+    statusCounts: Record<HistoryStatus, number>;
+    entriesWithFiles: SpiderDownloadRecord[];
+    domainChunks: Map<string, string>;
+  };
+  const entityReports: EntityReport[] = [];
+
   for (const entity of targets) {
     const historyPath = getHistoryFilePath(storage, entity.id);
     if (!(await fs.pathExists(historyPath))) {
@@ -2611,6 +2675,36 @@ async function runListLocalMode(storage: any, targets: Entity[], args: Args, dom
       .filter((entry) => Boolean(entry.localFileText) && entry.status === "related")
       .sort((a, b) => a.url.localeCompare(b.url));
 
+    const domainChunks = new Map<string, string>();
+    for (const domain of domains) {
+      let chunkCount = "-";
+      if (vectorService) {
+        try {
+          chunkCount = String(await vectorService.countChunksByMetadata(entity.id, domain.id));
+        } catch {
+          chunkCount = "err";
+        }
+      }
+      domainChunks.set(domain.id, chunkCount);
+    }
+
+    entityReports.push({ entity, statusCounts, entriesWithFiles, domainChunks });
+  }
+
+  // Summary table
+  const domainHeaders = domains.map((d) => d.displayName ?? d.id);
+  reportLines.push("## Summary");
+  reportLines.push("");
+  reportLines.push(`| entity | unrelated | index | related |${domainHeaders.map((h) => ` ${h} |`).join("")}`);
+  reportLines.push(`| --- | ---: | ---: | ---: |${domains.map(() => " ---: |").join("")}`);
+  for (const { entity, statusCounts, domainChunks } of entityReports) {
+    const chunkCols = domains.map((d) => ` ${domainChunks.get(d.id) ?? "-"} |`).join("");
+    reportLines.push(`| ${entity.id} (${entity.name}) | ${statusCounts["unrelated"]} | ${statusCounts["index"]} | ${statusCounts["related"]} |${chunkCols}`);
+  }
+  reportLines.push("");
+
+  // Per-entity detail sections
+  for (const { entity, statusCounts, entriesWithFiles, domainChunks } of entityReports) {
     reportLines.push(`## ${entity.id} (${entity.name})`);
     reportLines.push("");
     reportLines.push("### Entity URLs");
@@ -2633,15 +2727,7 @@ async function runListLocalMode(storage: any, targets: Entity[], args: Args, dom
     reportLines.push("| --- | ---: | ---: |");
     for (const domain of domains) {
       const domainDocs = entriesWithFiles.filter((e) => e.matchedDomainIds.includes(domain.id)).length;
-      let chunkCount = "-";
-      if (vectorService) {
-        try {
-          chunkCount = String(await vectorService.countChunksByMetadata(entity.id, domain.id));
-        } catch {
-          chunkCount = "err";
-        }
-      }
-      reportLines.push(`| ${domain.displayName ?? domain.id} | ${domainDocs} | ${chunkCount} |`);
+      reportLines.push(`| ${domain.displayName ?? domain.id} | ${domainDocs} | ${domainChunks.get(domain.id) ?? "-"} |`);
     }
     reportLines.push("");
 
@@ -2689,10 +2775,10 @@ async function runrescoreMode(storage: any, targets: Entity[], domains: Domain[]
   for (const entity of targets) {
     const { historyMap, menuLinks } = await loadHistoryData(storage, entity.id);
     let entityUpdated = false;
-    let consecutiveBotRejections = 0;
 
-    const relatedEntries = Array.from(historyMap.entries()).filter(([, entry]) => entry.status === "related");
-    console.log(`[rescore] ${entity.id}: ${relatedEntries.length} related entries`);
+    const relatedEntries = Array.from(historyMap.entries()).filter(([, entry]) =>
+      entry.status === "related" || entry.status === "index" || entry.status === "unrelated").sort((a, b) => a[0].localeCompare(b[0]) );
+    console.log(`[rescore] ${entity.id}: ${relatedEntries.length} related/index/unrelated entries`);
 
     for (const [normalizedUrl, entry] of relatedEntries) {
       totalChecked += 1;
@@ -2708,47 +2794,8 @@ async function runrescoreMode(storage: any, targets: Entity[], domains: Domain[]
         : false;
 
       if (!hasLocal) {
-        // Re-download the page
-        console.log(`[rescore] ${entry.url}: no local file, re-downloading`);
-        const fetchResult = await fetchPageWithBotFallback(entry.url, consecutiveBotRejections, args.notbot);
-        const fetched = fetchResult.fetched;
-        consecutiveBotRejections = fetchResult.consecutiveBotRejections;
-        if (!fetched.page) {
-          console.log(`[rescore] ${entry.url}: fetch failed (${fetched.status}), skipping`);
-          continue;
-        }
-        if (fetched.page.kind === "pdf") {
-          console.log(`[rescore] ${entry.url}: PDF, skipping domain re-score`);
-          continue;
-        }
-        const extracted = extractLinksAndText(entry.url, fetched.page.html || "");
-        plainText = extracted.plainText;
-        if (!args.dryRun) {
-          const statusTimestamp = new Date().toISOString();
-          const page: CrawledPage = {
-            url: entry.url,
-            depth: 0,
-            title: extracted.title,
-            headers: extracted.headers,
-            htmlContent: fetched.page.html,
-            plainText,
-            textSample: extracted.sample,
-            isPdf: false,
-            links: extracted.links,
-          };
-          const saved = await saveCrawledArtifacts(storage, entity.id, page, statusTimestamp, {});
-          if (saved.localFile) localFile = saved.localFile;
-          if (saved.localFileText) {
-            localFileText = saved.localFileText;
-            localFileTextSize = await recordFileSize(storage, historyMap, {
-              ...entry,
-              ...(localFile ? { localFile } : {}),
-              localFileText,
-            });
-            sizeUpdated = typeof localFileTextSize === "number" && localFileTextSize !== entry.localFileTextSize;
-          }
-        }
-        totalrescoreed += 1;
+        console.log(`[rescore] ${entry.url}: no local file, skipping`);
+        continue;
       } else {
         // Read from existing local artifacts
         if (localFileText) {
@@ -2816,6 +2863,132 @@ async function runrescoreMode(storage: any, targets: Entity[], domains: Domain[]
 
   console.log(
     `[rescore] done. checked=${totalChecked} rescoreed=${totalrescoreed} updated=${totalUpdated}${args.dryRun ? " (dry-run)" : ""}`,
+  );
+}
+
+async function runRecoverMode(storage: any, targets: Entity[], domains: Domain[], args: Args): Promise<void> {
+  const domainsToUse = args.domain
+    ? domains.filter((d) => (d.id || d.name) === args.domain)
+    : domains;
+
+  let totalScanned = 0;
+  let totalRecovered = 0;
+
+  for (const entity of targets) {
+    const entityDir = path.join(getEntityDownloadsRoot(storage), entity.id);
+    if (!(await fs.pathExists(entityDir))) {
+      continue;
+    }
+
+    const { historyMap, menuLinks } = await loadHistoryData(storage, entity.id);
+
+    // Track which local file paths are already claimed by an existing entry
+    const knownLocalFiles = new Set<string>();
+    for (const entry of historyMap.values()) {
+      if (entry.localFile) knownLocalFiles.add(entry.localFile);
+      if (entry.localFileText) knownLocalFiles.add(entry.localFileText);
+    }
+
+    const dirContents = await fs.readdir(entityDir);
+    const txtFiles = dirContents.filter((f) => f.endsWith(".txt"));
+
+    let entityRecovered = 0;
+
+    for (const txtFilename of txtFiles) {
+      totalScanned += 1;
+      const baseName = txtFilename.replace(/\.txt$/, "");
+      const txtPath = path.join(entityDir, txtFilename);
+      const htmlPath = path.join(entityDir, `${baseName}.html`);
+      const pdfPath = path.join(entityDir, `${baseName}.pdf`);
+      const hasHtml = await fs.pathExists(htmlPath);
+      const hasPdf = !hasHtml && await fs.pathExists(pdfPath);
+
+      if (!hasHtml && !hasPdf) {
+        continue;
+      }
+
+      // Parse URL from the txt artifact header
+      const rawText = await fs.readFile(txtPath, "utf-8");
+      const firstLine = rawText.split("\n")[0];
+      const headerMatch = firstLine.match(/^# (\S+) downloaded at /);
+      if (!headerMatch) {
+        console.log(`[RECOVER] ${entity.id}/${txtFilename}: cannot parse URL from header, skipping`);
+        continue;
+      }
+      const rawUrl = headerMatch[1];
+      const normalizedUrl = normalizeUrl(rawUrl);
+      if (!normalizedUrl) {
+        console.log(`[RECOVER] ${entity.id}/${txtFilename}: invalid URL ${rawUrl}, skipping`);
+        continue;
+      }
+
+      if (historyMap.has(normalizedUrl)) {
+        continue;
+      }
+
+      const relTxtPath = toRelativeDownloadsPath(storage, txtPath);
+      const relArtifactPath = toRelativeDownloadsPath(storage, hasHtml ? htmlPath : pdfPath);
+
+      if (knownLocalFiles.has(relTxtPath) || knownLocalFiles.has(relArtifactPath)) {
+        console.log(`[RECOVER] ${entity.id}/${txtFilename}: files already referenced under a different URL, skipping`);
+        continue;
+      }
+
+      // Score the page using cached text
+      const plainText = parseTxtArtifactBody(rawText);
+      const page: CrawledPage = {
+        url: normalizedUrl,
+        depth: 0,
+        title: normalizedUrl,
+        headers: [],
+        plainText,
+        textSample: plainText.slice(0, 3000),
+        isPdf: hasPdf,
+        links: [],
+      };
+
+      const scoredDomains = scoreDomainDetailed(domainsToUse, page, entity.governingBody);
+      const matchedDomainIds = scoredDomains
+        .filter((score) => isDomainScoreMatch(score))
+        .map((score) => score.domainId)
+        .slice(0, MAX_MATCHED_DOMAINS);
+
+      const status: HistoryStatus = matchedDomainIds.length > 0 ? "related" : "unrelated";
+
+      console.log(
+        `[RECOVER]${args.dryRun ? "[DRY-RUN]" : ""} ${entity.id}: ${normalizedUrl} -> status=${status} domains=[${matchedDomainIds.join(",")}]`,
+      );
+
+      if (!args.dryRun) {
+        upsertHistoryEntry(historyMap, {
+          url: normalizedUrl,
+          title: normalizedUrl,
+          status,
+          entityId: entity.id,
+          matchedDomainIds,
+          localFile: relArtifactPath,
+          localFileText: relTxtPath,
+          localFileTextSize: plainText.length,
+          fileType: hasPdf ? "PDF" : "HTML",
+        });
+        knownLocalFiles.add(relTxtPath);
+        knownLocalFiles.add(relArtifactPath);
+      }
+
+      entityRecovered += 1;
+      totalRecovered += 1;
+    }
+
+    if (entityRecovered > 0 && !args.dryRun) {
+      await saveHistoryData(storage, entity.id, historyMap, menuLinks);
+      console.log(`[RECOVER] ${entity.id}: saved ${entityRecovered} recovered record(s)`);
+    } else if (entityRecovered > 0) {
+      console.log(`[RECOVER] ${entity.id}: would recover ${entityRecovered} record(s)`);
+    }
+  }
+
+  console.log(
+    `[RECOVER] done. scanned=${totalScanned} recovered=${totalRecovered}${args.dryRun ? " (dry-run)" : ""}`,
   );
 }
 
@@ -3074,6 +3247,87 @@ async function runReviewMode(storage: any, targets: Entity[], domains: Domain[],
   }
 }
 
+async function consolidateDuplicateArtifacts(
+  storage: any,
+  entity: Entity,
+  historyMap: Map<string, SpiderDownloadRecord>,
+  dryRun: boolean,
+): Promise<{ filesConsolidated: number; filesDeleted: number; entriesUpdated: number }> {
+  const entityDir = path.join(getEntityDownloadsRoot(storage), entity.id);
+  if (!(await fs.pathExists(entityDir))) {
+    return { filesConsolidated: 0, filesDeleted: 0, entriesUpdated: 0 };
+  }
+
+  const allFiles = (await fs.readdir(entityDir)).filter((f) => /\.(html|txt|pdf)$/i.test(f));
+
+  // Match files like name-2.html, name-3.txt (N >= 1)
+  const NUMBERED_RE = /^(.+)-(\d+)\.(html|txt|pdf)$/i;
+
+  // Group numbered variants by their canonical name (base.ext)
+  const groups = new Map<string, Array<{ file: string; n: number }>>();
+  for (const file of allFiles) {
+    const m = file.match(NUMBERED_RE);
+    if (!m) continue;
+    const [, base, nStr, ext] = m;
+    const canonical = `${base}.${ext.toLowerCase()}`;
+    if (!groups.has(canonical)) groups.set(canonical, []);
+    groups.get(canonical)!.push({ file, n: parseInt(nStr, 10) });
+  }
+
+  let filesConsolidated = 0;
+  let filesDeleted = 0;
+  let entriesUpdated = 0;
+
+  for (const [canonicalName, variants] of groups) {
+    variants.sort((a, b) => b.n - a.n); // highest N first = most recently saved
+    const winner = variants[0];
+    const winnerAbsPath = path.join(entityDir, winner.file);
+    const canonicalAbsPath = path.join(entityDir, canonicalName);
+
+    console.log(
+      `[DEDUP]${dryRun ? "[DRY-RUN]" : ""} ${entity.id}: promoting ${winner.file} → ${canonicalName}` +
+      (variants.length > 1 ? ` (${variants.length} variants)` : ""),
+    );
+
+    if (!dryRun) {
+      await fs.copy(winnerAbsPath, canonicalAbsPath, { overwrite: true });
+    }
+    filesConsolidated++;
+
+    for (const v of variants) {
+      if (!dryRun) await fs.remove(path.join(entityDir, v.file));
+      console.log(`[DEDUP]${dryRun ? "[DRY-RUN]" : ""} ${entity.id}: deleted ${v.file}`);
+      filesDeleted++;
+    }
+
+    // Redirect any history entries that point to a numbered variant → canonical
+    const canonicalRelPath = toRelativeDownloadsPath(storage, canonicalAbsPath);
+    const variantRelPaths = new Set(
+      variants.map((v) => toRelativeDownloadsPath(storage, path.join(entityDir, v.file))),
+    );
+    const extLower = canonicalName.split(".").pop()!.toLowerCase();
+
+    for (const [url, entry] of historyMap) {
+      let changed = false;
+      const updated = { ...entry };
+      if ((extLower === "html" || extLower === "pdf") && entry.localFile && variantRelPaths.has(entry.localFile)) {
+        updated.localFile = canonicalRelPath;
+        changed = true;
+      }
+      if (extLower === "txt" && entry.localFileText && variantRelPaths.has(entry.localFileText)) {
+        updated.localFileText = canonicalRelPath;
+        changed = true;
+      }
+      if (changed) {
+        historyMap.set(url, updated);
+        entriesUpdated++;
+      }
+    }
+  }
+
+  return { filesConsolidated, filesDeleted, entriesUpdated };
+}
+
 async function runCleanupMode(storage: any, targets: Entity[], args: Args): Promise<void> {
   let totalScanned = 0;
   let totalFilesDeleted = 0;
@@ -3081,6 +3335,7 @@ async function runCleanupMode(storage: any, targets: Entity[], args: Args): Prom
   let totalMenuLinksAdded = 0;
   let totalMenuLinksReduced = 0;
   let totalMenuWildcardsCreated = 0;
+  let totalFilesConsolidated = 0;
   const relatedWithoutDomainsGlobal: Array<{ entityId: string; url: string }> = [];
 
   for (const entity of targets) {
@@ -3265,6 +3520,15 @@ async function runCleanupMode(storage: any, targets: Entity[], args: Args): Prom
       }
     }
 
+    // Consolidate duplicate artifact files (name-N.html → name.html)
+    const dedupResult = await consolidateDuplicateArtifacts(storage, entity, historyMap, args.dryRun);
+    if (dedupResult.filesConsolidated > 0) {
+      totalFilesConsolidated += dedupResult.filesConsolidated;
+      totalFilesDeleted += dedupResult.filesDeleted;
+      totalEntriesUpdated += dedupResult.entriesUpdated;
+      entityUpdated = true;
+    }
+
     if ((entityUpdated || menuLinksChanged) && !args.dryRun) {
       menuLinks.urls = Array.from(menuLinkUrls);
       menuLinks.timestamp = new Date().toISOString();
@@ -3281,7 +3545,7 @@ async function runCleanupMode(storage: any, targets: Entity[], args: Args): Prom
   }
 
   console.log(
-    `[CLEANUP] done. scanned=${totalScanned} filesDeleted=${totalFilesDeleted} entriesUpdated=${totalEntriesUpdated} menuLinksAdded=${totalMenuLinksAdded} menuLinksReduced=${totalMenuLinksReduced} menuWildcardsCreated=${totalMenuWildcardsCreated}${args.dryRun ? " (dry-run)" : ""}`,
+    `[CLEANUP] done. scanned=${totalScanned} filesConsolidated=${totalFilesConsolidated} filesDeleted=${totalFilesDeleted} entriesUpdated=${totalEntriesUpdated} menuLinksAdded=${totalMenuLinksAdded} menuLinksReduced=${totalMenuLinksReduced} menuWildcardsCreated=${totalMenuWildcardsCreated}${args.dryRun ? " (dry-run)" : ""}`,
   );
 }
 
@@ -3611,7 +3875,7 @@ Crawl control:
   --recrawl-days <n>          Re-fetch pages older than N days (default: varies)
   --seed-url <type|url>       Restrict crawl to one seed — named type (mainUrl, hubUrl,
                               governingUrl, authorityUrl) or a direct URL
-  --force                     Force re-crawl even if recently visited
+  --force                     Re-download all history entries that have local artifacts
   --rescore                   Re-fetch and re-score all known pages
   --nodownload                Score existing cached pages without fetching new ones
   --notbot                    Use a generic User-Agent (avoids bot detection)
@@ -3624,6 +3888,8 @@ Interactive / review:
 Utility modes (no crawling):
   --scan, --nospider          Re-score already-downloaded pages without fetching
   --cleanup                   Remove orphaned download artifacts
+  --recover                   Scan local files for artifact pairs (html+txt or pdf+txt) missing
+                              from history.json, recreate entries, and rescore for domains
   --rewriteText               Re-generate .txt artifacts from cached HTML
   --listlocal                 List locally downloaded files for each entity
   --report-related-without-domains  Report related pages that have no matched domains
@@ -3689,6 +3955,11 @@ export async function main() {
 
   if (args.rescore) {
     await runrescoreMode(storage, targets, domains, args);
+    return;
+  }
+
+  if (args.recover) {
+    await runRecoverMode(storage, targets, domains, args);
     return;
   }
 

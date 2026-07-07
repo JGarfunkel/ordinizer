@@ -10,7 +10,7 @@ import type { Ruleset, RulesetSource } from '@civillyengaged/ordinizer-core';
 import type { IStorageReadOnly } from './storage.js';
 
 
-export type RealmType = 'statute' | 'policy';
+export type RealmType = 'statute' | 'policy' | 'product';
 
 // ---------------------------------------------------------------------------
 // Deprecated aliases — kept for backward compatibility during migration.

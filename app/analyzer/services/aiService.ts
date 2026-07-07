@@ -282,7 +282,7 @@ export async function fetchChatResponseInJSON(
 
 export interface ObjectResult<T> {
   object: T;
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
 }
 
 export async function createResponseObjectWithAi<T>(
@@ -294,12 +294,16 @@ export async function createResponseObjectWithAi<T>(
   const model = options.model ?? currentModel;
   const temperature = options.temperature ?? 0.1;
   try {
+    const isAnthropic = detectProvider(model) === "anthropic";
+    const systemMessage = isAnthropic
+      ? { role: "system" as const, content: systemPrompt, providerOptions: { anthropic: { cacheControl: { type: "ephemeral" as const } } } }
+      : { role: "system" as const, content: systemPrompt };
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     const result = await generateObject({
       model: buildLanguageModel(model),
       schema,
       messages: [
-        { role: "system" as const, content: systemPrompt },
+        systemMessage,
         { role: "user" as const, content: userPrompt },
       ],
       temperature,
@@ -307,7 +311,9 @@ export async function createResponseObjectWithAi<T>(
     });
     const promptTokens = result.usage.inputTokens ?? 0;
     const completionTokens = result.usage.outputTokens ?? 0;
-    return { object: result.object, usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens } };
+    const cacheReadTokens = result.usage.cachedInputTokens ?? 0;
+    const cacheWriteTokens = result.usage.inputTokenDetails?.cacheWriteTokens ?? 0;
+    return { object: result.object, usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens, cacheReadTokens, cacheWriteTokens } };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`AI object generation failed (model: ${model}): ${message}`);
