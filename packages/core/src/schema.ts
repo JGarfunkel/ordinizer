@@ -152,6 +152,7 @@ export interface Analysis {
   lastUpdated?: string; // String format
   processingMethod?: string;
   gapAnalysis?: string; // Added: used in home.tsx for gap analysis summary
+  overallSummary?: string; // AI-generated ≤15-word summary of how well the functionality is met
   sources: SourceLink[]; // Added: used in home.tsx to display source links
 }
 
@@ -278,6 +279,9 @@ export interface UrlAndTitle {
 
 export type SourceMapLink = UrlAndTitle;
 
+/** Flat per-entity URL→title index saved to data/<realmid>/sources.json */
+export type SourcesMap = Record<string, UrlAndTitle[]>;
+
 export interface SourceMapEntity {
   entityId: string;
   displayName: string;
@@ -379,6 +383,12 @@ export interface Realm {
       medium: string;
       high: string;
     };
+  };
+  ui?: {
+    mapColors?: {
+      stateCode?: string;
+    };
+    matrixScoreDisplay?: 'number' | 'horizontal' | 'vertical' | 'none';
   };
 }
 
@@ -618,6 +628,7 @@ export interface CombinedMatrixRow {
   entity: {
     id: string;
     displayName: string;
+    mainUrl?: string;
   };
   domains: Record<string, {
     hasStatute: boolean;
@@ -627,6 +638,7 @@ export interface CombinedMatrixRow {
     sourceUrl?: string;
     score?: number;
     scoreColor?: string;
+    overallSummary?: string;
   }>;
 }
 

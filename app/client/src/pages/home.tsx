@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { X } from "lucide-react";
 import { useLocation, useSearch, useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiPath } from "../lib/apiConfig";
@@ -12,6 +13,7 @@ import { AppHeader } from "./home/AppHeader";
 import { EntityCombobox } from "./home/EntityCombobox";
 import { DomainSelector } from "./home/DomainSelector";
 import { MapPanel } from "./home/MapPanel";
+import { CombinedMatrixPanel } from "./home/CombinedMatrixPanel";
 import { DomainOverviewCard } from "./home/DomainOverviewCard";
 import { MetaAnalysisPanel } from "./home/MetaAnalysisPanel";
 import { SidebarAnalysis } from "./home/SidebarAnalysis";
@@ -438,6 +440,75 @@ export default function Home() {
   
   return (
     <div className="bg-civic-bg" style={{ minHeight: 'calc(100vh - 52px)' }}>
+
+      {/* Matrix Mode: Render CombinedMatrixPanel for non-geo realms when no results are shown */}
+      {currentRealm && !currentRealm.geo && !showResults && (
+        <div className="px-4 sm:px-6 lg:px-8 pt-8">
+          <CombinedMatrixPanel
+            realmId={selectedRealmId}
+            currentRealm={currentRealm}
+            buildPath={buildPath}
+          />
+
+          {/* Matrix mode has no side panel to host the analysis, so show it as a floating overlay instead */}
+          {showSidebarAnalysis && selectedEntityId && selectedDomainId && (() => {
+            const closeSidebarAnalysis = () => {
+              setShowSidebarAnalysis(false);
+              navigate(buildPath(`/realm/${selectedRealmId}`));
+            };
+            return (
+              <div
+                className="fixed inset-0 bg-black/50 z-50 flex justify-center px-4"
+                style={{ paddingTop: 100, paddingBottom: 100 }}
+                onClick={closeSidebarAnalysis}
+              >
+                <div
+                  className="relative bg-white rounded-lg shadow-xl w-full max-w-3xl flex flex-col"
+                  style={{ maxHeight: '100%' }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    onClick={closeSidebarAnalysis}
+                    className="absolute top-2 right-2 z-10 text-gray-400 hover:text-gray-600 bg-white rounded-full p-1 shadow"
+                    aria-label="Close"
+                  >
+                    <X size={20} />
+                  </button>
+                  <div className="overflow-y-auto">
+                    {currentDomainKind === 'data' ? (
+                      <SidebarData
+                        realmId={selectedRealmId}
+                        domainId={selectedDomainId}
+                        selectedEntityId={selectedEntityId}
+                        entities={municipalities}
+                        currentRealm={currentRealm}
+                      />
+                    ) : (
+                      <SidebarAnalysis
+                        analysisData={analysisData}
+                        analysisLoading={analysisLoading}
+                        versionsData={versionsData as VersionsData | undefined}
+                        scoreData={scoreData as ScoreData | undefined}
+                        selectedVersion={selectedVersion}
+                        onVersionChange={setSelectedVersion}
+                        usesStateCode={usesStateCode}
+                        municipalities={municipalities}
+                        selectedEntityId={selectedEntityId}
+                        currentRealm={currentRealm}
+                        onQuestionMarkClick={handleQuestionMarkClick}
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Map mode for geo realms: Render MapPanel and sidebar when no results are shown */}
+      {currentRealm && currentRealm.geo && !showResults && (
+        <div id="mapPanelContainer" className="px-4 sm:px-6 lg:px-8 pt-8">
       <div className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
           <AppHeader
@@ -478,7 +549,7 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div id="mainPanel" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {!showResults ? (
           <div className="space-y-6">
             <DomainSelector
@@ -495,72 +566,74 @@ export default function Home() {
               buildPath={buildPath}
             />
 
-            <div className="flex flex-col lg:flex-row gap-6">
-              {currentRealm?.geo && (
-                <MapPanel
-                  selectedDomainId={selectedDomainId}
-                  selectedEntityId={selectedEntityId}
-                  selectedRealmId={selectedRealmId}
-                  currentRealm={currentRealm}
-                  entitiesLoading={entitiesLoading}
-                  onEntityClick={handleMapEntityClick}
-                  buildPath={buildPath}
-                  domainLegend={currentDomainLegend}
-                  domainDataFile={currentDomainDataFile ?? undefined}
-                  onMapClick={realmsConfig?.layout?.onMapClick}
-                />
-              )}
-
-              <div className="flex-1 space-y-4 w-full min-h-0">
-                {selectedEntityId && !selectedDomainId && availableDomains && (
-                  <DomainOverviewCard
-                    selectedEntity={selectedEntity}
-                    allDomains={allDomains}
-                    availableDomains={availableDomains}
+            {!(currentRealm && !currentRealm.geo) && (
+              <div className="flex flex-col lg:flex-row gap-6">
+                {currentRealm?.geo && (
+                  <MapPanel
+                    selectedDomainId={selectedDomainId}
                     selectedEntityId={selectedEntityId}
-                    onSelectDomain={(domainId) => {
-                      setSelectedDomainId(domainId);
-                      navigate(buildPath(`/${domainId}/${selectedEntityId}`));
-                    }}
-                    navigate={navigate}
+                    selectedRealmId={selectedRealmId}
+                    currentRealm={currentRealm}
+                    entitiesLoading={entitiesLoading}
+                    onEntityClick={handleMapEntityClick}
                     buildPath={buildPath}
+                    domainLegend={currentDomainLegend}
+                    domainDataFile={currentDomainDataFile ?? undefined}
+                    onMapClick={realmsConfig?.layout?.onMapClick}
                   />
                 )}
 
-                {showSidebarAnalysis && selectedEntityId && selectedDomainId && (
-                  currentDomainKind === 'data' ? (
-                    <SidebarData
-                      realmId={selectedRealmId}
-                      domainId={selectedDomainId}
+                <div className="flex-1 space-y-4 w-full min-h-0">
+                  {selectedEntityId && !selectedDomainId && availableDomains && (
+                    <DomainOverviewCard
+                      selectedEntity={selectedEntity}
+                      allDomains={allDomains}
+                      availableDomains={availableDomains}
                       selectedEntityId={selectedEntityId}
-                      entities={municipalities}
-                      currentRealm={currentRealm}
+                      onSelectDomain={(domainId) => {
+                        setSelectedDomainId(domainId);
+                        navigate(buildPath(`/${domainId}/${selectedEntityId}`));
+                      }}
+                      navigate={navigate}
+                      buildPath={buildPath}
                     />
-                  ) : (
-                    <SidebarAnalysis
-                      analysisData={analysisData}
-                      analysisLoading={analysisLoading}
-                      versionsData={versionsData as VersionsData | undefined}
-                      scoreData={scoreData as ScoreData | undefined}
-                      selectedVersion={selectedVersion}
-                      onVersionChange={setSelectedVersion}
-                      usesStateCode={usesStateCode}
-                      municipalities={municipalities}
-                      selectedEntityId={selectedEntityId}
-                      currentRealm={currentRealm}
-                      onQuestionMarkClick={handleQuestionMarkClick}
-                    />
-                  )
-                )}
+                  )}
 
-                <MetaAnalysisPanel
-                  metaAnalysisData={metaAnalysisData}
-                  metaLoading={metaLoading}
-                  selectedDomainId={selectedDomainId}
-                  onMetaEntityClick={handleMetaEntityClick}
-                />
+                  {showSidebarAnalysis && selectedEntityId && selectedDomainId && (
+                    currentDomainKind === 'data' ? (
+                      <SidebarData
+                        realmId={selectedRealmId}
+                        domainId={selectedDomainId}
+                        selectedEntityId={selectedEntityId}
+                        entities={municipalities}
+                        currentRealm={currentRealm}
+                      />
+                    ) : (
+                      <SidebarAnalysis
+                        analysisData={analysisData}
+                        analysisLoading={analysisLoading}
+                        versionsData={versionsData as VersionsData | undefined}
+                        scoreData={scoreData as ScoreData | undefined}
+                        selectedVersion={selectedVersion}
+                        onVersionChange={setSelectedVersion}
+                        usesStateCode={usesStateCode}
+                        municipalities={municipalities}
+                        selectedEntityId={selectedEntityId}
+                        currentRealm={currentRealm}
+                        onQuestionMarkClick={handleQuestionMarkClick}
+                      />
+                    )
+                  )}
+
+                  <MetaAnalysisPanel
+                    metaAnalysisData={metaAnalysisData}
+                    metaLoading={metaLoading}
+                    selectedDomainId={selectedDomainId}
+                    onMetaEntityClick={handleMetaEntityClick}
+                  />
+                </div>
               </div>
-            </div>
+            )}
           </div>
         ) : (
           <FullAnalysisView
@@ -600,5 +673,8 @@ export default function Home() {
         }}
       />
     </div>
+      
+  )}
+  </div>
   );
 }

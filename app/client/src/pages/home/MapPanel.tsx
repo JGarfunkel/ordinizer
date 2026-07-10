@@ -6,6 +6,7 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "../../ui/co
 import EntityMap from "../../components/EntityMap";
 import type { Realm, DomainLegend, DomainDataFile, LayoutOptions } from "@civillyengaged/ordinizer-core";
 import { buildScoringLegend } from "../../lib/domainScoring";
+import { getStateCodeLegendItem } from "../../lib/scoreColors";
 
 interface MapPanelProps {
   selectedDomainId: string;
@@ -33,6 +34,7 @@ export function MapPanel({
   onMapClick,
 }: MapPanelProps) {
   const scoreText = currentRealm?.terminology?.scoreText ?? 'Score';
+  const stateCodeItem = getStateCodeLegendItem(currentRealm);
   return (
     <div className="flex-shrink-0 w-full lg:w-auto">
       <Card className="shadow-sm border border-gray-200">
@@ -132,10 +134,12 @@ export function MapPanel({
                     <div>
                       <h5 className="text-xs font-medium text-gray-600 mb-2">Other Indicators</h5>
                       <div className="grid grid-cols-1 gap-2 text-xs">
-                        <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 rounded" style={{ backgroundColor: "#3b82f6" }}></div>
-                          <span>Uses NY State Code</span>
-                        </div>
+                        {stateCodeItem && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-3 h-3 rounded" style={{ backgroundColor: stateCodeItem.color }}></div>
+                            <span>{stateCodeItem.label}</span>
+                          </div>
+                        )}
                         <div className="flex items-center gap-2">
                           <div className="w-3 h-3 rounded" style={{ backgroundColor: "#8b5cf6" }}></div>
                           <span>Available Data (No Score)</span>

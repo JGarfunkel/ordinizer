@@ -1,50 +1,17 @@
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from "../ui";
-import { getEnvironmentalScoreLegend, getEnvironmentalScoreColor } from '../lib/scoreColors';
+import { getEnvironmentalScoreLegend, getStateCodeLegendItem } from '../lib/scoreColors';
 import { Button } from "../ui";
-import { Badge } from "../ui";
-import { ArrowLeft, ExternalLink, Files } from 'lucide-react';
+import { ArrowLeft, Printer } from 'lucide-react';
 import { apiPath } from "../lib/apiConfig";
 import { Link } from 'wouter';
 import { useState } from 'react';
 import { useRealmId } from '../hooks/useRealmId';
 import { useBasePath } from '../contexts/BasePathContext';
 import { useRealms } from '../hooks/useRealms';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "../ui";
 import { SourceMapEntity, SourceMapLink } from '@civillyengaged/ordinizer-core';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui";
 import { SourcesPopup, SourcesIconButton } from "../components/SourcesPopup";
-
-
-interface CombinedMatrixData {
-  domains: Array<{
-    id: string;
-    displayName: string;
-    description?: string;
-  }>;
-  entities: Array<{
-    entity: {
-      id: string;
-      displayName: string;
-    };
-    domains: Record<string, {
-      statuteNumber?: string;
-      statuteTitle?: string;
-      sourceUrl?: string;
-      score?: number;
-      scoreColor?: string;
-      referencesStateCode?: boolean;
-      hasStatute: boolean;
-    }>;
-  }>;
-}
+import { CombinedMatrixTable, type CombinedMatrixData } from "../components/CombinedMatrixTable";
 
 
 
@@ -60,12 +27,16 @@ export default function CombinedMatrix() {
   const documentTypeCapitalized = documentType ? documentType.charAt(0).toUpperCase() + documentType.slice(1) : '';
   const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
   const scoreText = currentRealm?.terminology?.scoreText ?? 'Score';
+  const stateCodeItem = getStateCodeLegendItem(currentRealm);
+  const matrixScoreDisplay = currentRealm?.ui?.matrixScoreDisplay ?? 'horizontal';
 
   const { data: matrixData, isLoading, error } = useQuery<CombinedMatrixData>({
     queryKey: [apiPath('realms'), realmId, 'combined-matrix'],
     enabled: !!realmId, // Only query when realmId is available
     staleTime: 1000 * 60 * 5 // Cache for 5 minutes
   });
+
+  const [stickyEnabled, setStickyEnabled] = useState(true);
 
   const [selectedSources, setSelectedSources] = useState<{
     entity: string;
@@ -111,9 +82,9 @@ export default function CombinedMatrix() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-8">
+    <div className="container mx-auto px-4 pt-8 h-dvh flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="mb-6">
+      <div className="mb-4 flex-shrink-0">
         <div className="flex items-center gap-4 mb-4">
           <Link href={buildPath(`/realm/${realmId}`)}>
             <Button variant="outline" size="sm">
@@ -131,167 +102,38 @@ export default function CombinedMatrix() {
       </div>
 
       {/* Matrix Table */}
-      <Card className="shadow-sm border border-gray-200">
-        <CardHeader className="pb-4">
-          <CardTitle className="text-xl">{entityType} {documentTypeCapitalized} Analysis Matrix</CardTitle>
+      <Card className="shadow-sm border border-gray-200 flex-1 min-h-0 flex flex-col">
+        <CardHeader className="pb-4 flex-shrink-0">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-xl">{entityType} {documentTypeCapitalized} Analysis Matrix</CardTitle>
+            <button
+              onClick={() => setStickyEnabled(v => !v)}
+              className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded border transition-colors ${stickyEnabled ? 'border-gray-300 text-gray-500 hover:border-gray-400' : 'border-civic-blue text-civic-blue bg-blue-50'}`}
+              title={stickyEnabled ? 'Disable sticky headers for printing' : 'Re-enable sticky headers'}
+            >
+              <Printer className="w-3.5 h-3.5" />
+              {stickyEnabled ? 'Print mode' : 'Sticky mode'}
+            </button>
+          </div>
           <p className="text-sm text-gray-600">
             Each cell shows {documentType} number, title, and environmental protection score. Click cells for detailed analysis.
           </p>
         </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
+        <CardContent className="p-0 flex-1 min-h-0 flex flex-col">
+          <div className={stickyEnabled ? 'flex-1 min-h-0 overflow-auto' : 'overflow-x-auto'}>
             <div className="min-w-full">
-              <table className="w-full border-collapse">
-                {/* Header Row */}
-                <thead>
-                  <tr className="bg-gray-50 border-b sticky top-0 z-10">
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-r w-48 bg-gray-50">
-                      {entityType}
-                    </th>
-                    {matrixData.domains.map((domain) => (
-                      <th 
-                        key={domain.id}
-                        className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider border-r last:border-r-0 w-52 bg-gray-50"
-                        title={domain.description}
-                      >
-                        <Link href={buildPath(`/realm/${realmId}/${domain.id}/matrix`)}>
-                          <div className="space-y-1 cursor-pointer hover:text-civic-blue transition-colors">
-                            <div className="font-semibold flex items-center justify-center gap-1">
-                              {domain.displayName}
-                              <ExternalLink className="w-3 h-3" />
-                            </div>
-                            {domain.description && (
-                              <div className="text-[10px] text-gray-400 normal-case leading-tight line-clamp-2">
-                                {domain.description}
-                              </div>
-                            )}
-                          </div>
-                        </Link>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-
-                {/* Data Rows */}
-                <tbody>
-                  {matrixData.entities.map((entityRow, index) => (
-                    <tr 
-                      key={entityRow.entity.id}
-                      className={`border-b hover:bg-gray-50 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-25'}`}
-                    >
-                      {/* Entity Name */}
-                      <td className="px-3 py-2 border-r bg-gray-50 sticky left-0 z-10">
-                        <div className="font-medium text-sm text-gray-900">
-                          {entityRow.entity.displayName}
-                        </div>
-                      </td>
-
-                      {/* Domain Cells */}
-                      {matrixData.domains.map((domain) => {
-                        const domainData = entityRow.domains[domain.id];
-
-                        // State Code Reference
-                        if (domainData?.referencesStateCode) {
-                          return (
-                            <td 
-                              key={domain.id}
-                              className="px-2 py-2 text-center border-r last:border-r-0"
-                              style={{ backgroundColor: '#93c5fd' }} // Lighter blue for state code
-                              data-testid={`cell-${entityRow.entity.id}-${domain.id}-state`}
-                            >
-                              <Badge variant="secondary" className="bg-white/20 text-white text-xs">
-                                NY State Code
-                              </Badge>
-                            </td>
-                          );
-                        }
-
-                        // No {documentTypeCapitalized}
-                        if (!domainData?.hasStatute) {
-                          return (
-                            <td 
-                              key={domain.id}
-                              className="px-2 py-2 text-center border-r last:border-r-0"
-                              style={{ backgroundColor: '#e2e8f0' }} // Standard map color for no data
-                              data-testid={`cell-${entityRow.entity.id}-${domain.id}-empty`}
-                            >
-                              <span className="text-gray-500 text-lg">—</span>
-                            </td>
-                          );
-                        }
-
-                        // Has {documentTypeCapitalized}
-                        return (
-                          <td 
-                            key={domain.id}
-                            className="px-2 py-2 border-r last:border-r-0"
-                            style={{ 
-                              backgroundColor: domainData.score !== undefined ? getEnvironmentalScoreColor(domainData.score) : (domainData.scoreColor || '#e2e8f0')
-                            }}
-                            data-testid={`cell-${entityRow.entity.id}-${domain.id}`}
-                          >
-                            <div className="text-center">
-                              {/* Single line with ID, Title, and Link - Links to sourceUrl */}
-                              <a 
-                                href={domainData.sourceUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center justify-center gap-1 text-[10px] text-gray-700 mb-1 hover:opacity-80 transition-opacity"
-                                data-testid={`document-link-${entityRow.entity.id}-${domain.id}`}
-                              >
-                                {domainData.statuteNumber && (
-                                  <span className="truncate max-w-[60px]">{domainData.statuteNumber}</span>
-                                )}
-                                {domainData.statuteTitle && (
-                                  <span className="truncate max-w-[120px]">
-                                    {domainData.statuteTitle}
-                                  </span>
-                                )}
-                                <ExternalLink className="w-3 h-3 text-gray-500 flex-shrink-0" />
-                              </a>
-                              {/* Sources Button */}
-                              {datasources && datasources[entityRow.entity.id]?.domains[domain.id] && (
-                                <TooltipProvider>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <button
-                                        onClick={() => setSelectedSources({
-                                          entity: entityRow.entity.displayName,
-                                          domainName: domain.displayName,
-                                          sources: datasources[entityRow.entity.id].domains[domain.id] || []
-                                        })}
-                                        className="inline-flex items-center justify-center text-civic-blue hover:text-civic-blue-dark mt-0.5 cursor-pointer"
-                                        data-testid={`button-sources-${entityRow.entity.id}`}
-                                        aria-label="Show sources"
-                                      >
-                                        <Files className="w-4 h-4" />
-                                        <span className="sr-only">Show sources</span>
-                                      </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="top" align="center">
-                                      Show sources
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </TooltipProvider>
-                              )}
-                              {/* Environmental Score on separate line - Links to analysis page */}
-                              {domainData.score !== undefined && (
-                                <Link 
-                                  href={buildPath(`/realm/${realmId}/${domain.id}/${entityRow.entity.id}`)}
-                                  className="block text-sm font-bold text-gray-900 hover:opacity-80 transition-opacity"
-                                  data-testid={`score-link-${entityRow.entity.id}-${domain.id}`}
-                                >
-                                  {(domainData.score * 10).toFixed(1)}
-                                </Link>
-                              )}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <CombinedMatrixTable
+                matrixData={matrixData}
+                realmId={realmId}
+                buildPath={buildPath}
+                documentType={documentType}
+                entityType={entityType}
+                stateCodeItem={stateCodeItem}
+                stateProvince={currentRealm?.geo?.stateProvince}
+                matrixScoreDisplay={matrixScoreDisplay}
+                stickyEnabled={stickyEnabled}
+                variant="full"
+              />
             </div>
           </div>
         </CardContent>
@@ -329,11 +171,12 @@ export default function CombinedMatrix() {
             <div>
               <h5 className="text-sm font-medium text-gray-700 mb-2">Other Indicators</h5>
               <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded" style={{backgroundColor: '#93c5fd'}}></div>
-                  <span className="text-sm">Uses NY State Code</span>
-                </div>
-
+                {stateCodeItem && (
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 rounded" style={{backgroundColor: stateCodeItem.color}}></div>
+                    <span className="text-sm">{stateCodeItem.label}</span>
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   <div className="w-4 h-4 rounded" style={{backgroundColor: '#e2e8f0'}}></div>
                   <span className="text-sm">No Data Available</span>

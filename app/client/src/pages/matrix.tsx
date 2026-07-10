@@ -72,13 +72,17 @@ function CellPopup({ entity, question, score, confidence, answer, sourceRefs, an
           {sourceRefs && sourceRefs.length > 0 && (
             <div>
               <h4 className="font-medium mb-2">Source References</h4>
-              <div className="flex flex-wrap gap-1">
+              <ul className="list-disc list-inside space-y-1">
                 {sourceRefs.map((ref, index) => (
-                  <Badge key={index} variant="secondary" className="text-xs">
-                    {ref}
-                  </Badge>
+                  <li key={index} className="text-sm">
+                    {/^https?:\/\//.test(ref) ? (
+                      <a href={ref} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                        {ref}
+                      </a>
+                    ) : ref}
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
           )}
           
@@ -131,6 +135,7 @@ export default function MatrixPage() {
   // const isPolicy = currentRealm?.ruleType === 'policy';
   const documentType = currentRealm?.ruleType;
   const documentTypeCapitalized = documentType ? documentType.charAt(0).toUpperCase() + documentType.slice(1) : 'Document';
+  const matrixScoreDisplay = currentRealm?.ui?.matrixScoreDisplay ?? 'horizontal';
   //const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
 
   const { data: matrixData, isLoading, error, refetch } = useQuery<MatrixData>({
@@ -142,7 +147,7 @@ export default function MatrixPage() {
 
   if (isLoading) {
     return (
-      <div className="container mx-auto p-6">
+      <div className="w-full max-w-[1800px] mx-auto p-6">
         <div className="flex items-center gap-4 mb-6">
           <Link href={buildPath(`/realm/${realmid}`)}>
             <Button variant="ghost" size="sm" data-testid="button-back">
@@ -162,7 +167,7 @@ export default function MatrixPage() {
 
   if (error || !matrixData) {
     return (
-      <div className="container mx-auto p-6">
+      <div className="w-full max-w-[1800px] mx-auto p-6">
         <div className="flex items-center gap-4 mb-6">
           <Link href={buildPath(`/realm/${realmid}`)}>
             <Button variant="ghost" size="sm" data-testid="button-back">
@@ -185,7 +190,7 @@ export default function MatrixPage() {
 
   return (
     <TooltipProvider>
-      <div className="container mx-auto p-6">
+      <div className="w-full max-w-[1800px] mx-auto p-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-4">
@@ -215,21 +220,18 @@ export default function MatrixPage() {
 
         {/* Matrix Table */}
         <div className="border rounded-lg overflow-hidden">
-          <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+          <div className="overflow-auto max-h-[70vh]" style={{ WebkitOverflowScrolling: 'touch' }}>
             <table className="w-full min-w-max">
                 <thead className="bg-muted/50">
                   <tr>
-                    <th className="sticky left-0 z-10 bg-muted/50 px-4 py-3 text-left font-medium w-[200px] border-r">
-                      Entity
-                    </th>
-                    <th className="sticky left-[200px] z-10 bg-muted/50 px-3 py-3 text-center font-medium w-[150px] border-r">
+                    <th className="sticky left-0 top-0 z-30 bg-white dark:bg-gray-900 px-4 py-3 text-left font-medium w-[200px] border-r">
                       {documentTypeCapitalized}
                     </th>
-                    <th className="sticky left-[350px] z-10 bg-muted/50 px-3 py-3 text-center font-medium w-[100px] border-r">
+                    <th className="sticky left-[200px] top-0 z-30 bg-white dark:bg-gray-900 px-3 py-3 text-center font-medium w-[100px] border-r">
                       Total Score
                     </th>
                     {matrixData.questions.map((question) => (
-                      <th key={question.id} className="px-3 py-3 text-center font-medium w-[120px] border-r last:border-r-0">
+                      <th key={question.id} className="sticky top-0 z-20 bg-white dark:bg-gray-900 px-3 py-3 text-center font-medium w-[120px] border-r last:border-r-0">
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <div className="flex flex-col items-center justify-center gap-1 cursor-help">
@@ -266,9 +268,10 @@ export default function MatrixPage() {
                       <span data-testid={`text-entity-${entity.id}`}>
                         {entity.displayName}
                       </span>
-                    </td>
-                    {/* Statute cell */}
-                    <td className="sticky left-[200px] z-10 bg-background px-3 py-2 text-center border-r w-[150px]">
+                      {/* TODO: make this a component below - this provides the name/loc of the "statute"
+                      which only applies for realms that have a "statute" type document. 
+                      For other realms, this will be empty; the link will need to go to the mainUrl for the domain
+                      */}
                       {entity.statute ? (
                         entity.statute.number === 'State Code' ? (
                           <span className="text-xs font-medium text-blue-600 dark:text-blue-400" data-testid={`text-state-code-${entity.id}`}>
@@ -300,7 +303,7 @@ export default function MatrixPage() {
                     </td>
                     {/* Total Score cell */}
                     <td 
-                      className="sticky left-[350px] z-10 px-3 py-2 text-center border-r font-medium w-[100px]"
+                      className="sticky left-[200px] z-10 px-3 py-2 text-center border-r font-medium w-[100px]"
                       style={{
                         backgroundColor: entity.referencesStateCode ? '#f8f9fa' : getEnvironmentalScoreGradient(entity.totalScore || 0).backgroundColor,
                       }}
@@ -351,13 +354,35 @@ export default function MatrixPage() {
                           className={`px-3 py-2 text-center border-r last:border-r-0 cursor-pointer transition-colors hover:opacity-80 w-[120px] ${getMatrixScoreColor(score)}`}
                           data-testid={`cell-${entity.id}-${question.id}`}
                         >
-                          <div className="flex justify-center">
-                            <ScoreVisualization 
-                              score={score}
-                              maxScore={1}
-                              className="scale-75"
-                            />
-                          </div>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <div className={matrixScoreDisplay === 'vertical' ? 'flex flex-row items-start gap-1.5' : 'flex flex-col items-center gap-1'}>
+                                {matrixScoreDisplay === 'number' && (
+                                  <span className="text-sm font-semibold">
+                                    {(score * 10).toFixed(1)}
+                                  </span>
+                                )}
+                                {(matrixScoreDisplay === 'horizontal' || matrixScoreDisplay === 'vertical') && (
+                                  <ScoreVisualization
+                                    score={score}
+                                    maxScore={1}
+                                    direction={matrixScoreDisplay}
+                                    className={matrixScoreDisplay === 'vertical' ? 'scale-75 flex-shrink-0' : 'scale-75'}
+                                  />
+                                )}
+                                {scoreData?.shortAnswer && (
+                                  <span className={`text-[12px] leading-tight line-clamp-2 text-foreground/80 px-0.5 ${matrixScoreDisplay === 'vertical' ? 'text-left' : 'text-center'}`}>
+                                    {scoreData.shortAnswer}
+                                  </span>
+                                )}
+                              </div>
+                            </TooltipTrigger>
+                            {scoreData?.answer && (
+                              <TooltipContent className="max-w-xs">
+                                <p className="text-sm">{scoreData.answer}</p>
+                              </TooltipContent>
+                            )}
+                          </Tooltip>
                         </td>
                       );
                     })}

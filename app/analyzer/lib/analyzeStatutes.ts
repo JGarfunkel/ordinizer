@@ -58,6 +58,7 @@ export interface AnalyzeOptions {
   forceBelow?: number; // Re-analyze questions whose score is below this normalised threshold (0–1)
   ifMissing?: boolean; // Re-analyze questions whose existing shortAnswer is "Not specified"
   cleanOnly?: boolean; // Refresh metadata fields (municipality, domain) from storage without making AI calls
+  overallOnly?: boolean; // Generate overallSummary for existing analyses without re-running full analysis
   all?: boolean; // Analyze all entities regardless of other filters
 }
 
@@ -338,6 +339,63 @@ async function recalcScoreOnly(options: AnalyzeOptions) {
   }
 
   console.log(`\n📊 Score recalculation complete!`);
+  console.log(`   Updated: ${totalUpdated} entities`);
+  console.log(`   Skipped: ${totalSkipped} entities`);
+}
+
+async function generateOverallSummaryForAll(options: AnalyzeOptions) {
+  const st = await getStorage(options);
+  const domains = options.domain
+    ? await getVisibleDomainIds(st, options.domain)
+    : await getVisibleDomainIds(st);
+
+  let totalUpdated = 0;
+  let totalSkipped = 0;
+
+  for (const domain of domains) {
+    console.log(`\n📂 Processing domain: ${domain}`);
+    const domainObj = await st.getDomain(domain);
+    const entityIds = await getRequestedEntityIds(options, st, domain);
+
+    for (const entityId of entityIds) {
+      const analysis = await st.getAnalysis(domain, entityId, options.realm);
+      if (!analysis) {
+        log(`No analysis found for ${entityId}, skipping`);
+        totalSkipped++;
+        continue;
+      }
+      if (!analysis.questions || analysis.questions.length === 0) {
+        console.log(`⚠️  ${entityId}: No questions in analysis, skipping`);
+        totalSkipped++;
+        continue;
+      }
+      if (analysis.overallSummary && !options.force) {
+        log(`${entityId}: overallSummary already present, skipping`);
+        totalSkipped++;
+        continue;
+      }
+
+      const entityObj = await st.getEntity(entityId);
+      const domainForEntityText = domainObj?.displayName || `${domain} applying to ${entityObj?.displayName ?? entityId}`;
+      const overallSummary = await generateOverallSummary(domainForEntityText, analysis.questions);
+      if (!overallSummary) {
+        console.log(`⚠️  ${entityId}: Failed to generate overallSummary, skipping`);
+        totalSkipped++;
+        continue;
+      }
+
+      analysis.overallSummary = overallSummary;
+      if (options.dryRun) {
+        console.log(`🧪 ${entityId}: dry-run — overallSummary would be: "${overallSummary}"`);
+      } else {
+        await st.saveAnalysis(analysis as Parameters<IStorage["saveAnalysis"]>[0]);
+        console.log(`✅ ${entityId}: "${overallSummary}"`);
+      }
+      totalUpdated++;
+    }
+  }
+
+  console.log(`\n📊 Overall summary generation complete!`);
   console.log(`   Updated: ${totalUpdated} entities`);
   console.log(`   Skipped: ${totalSkipped} entities`);
 }
@@ -649,6 +707,12 @@ export async function doAnalysis(options: AnalyzeOptions = {}) {
     );
   }
 
+  if (options.overallOnly) {
+    console.log(`📝 Generating overallSummary for existing analyses`);
+    await generateOverallSummaryForAll(options);
+    return;
+  }
+
   if (options.cleanOnly) {
     console.log(`🧹 Refreshing metadata fields from storage (clean-only, no AI calls)`);
     await cleanOnlyAnalysis(options);
@@ -881,6 +945,17 @@ async function processEntity(
         // Continue with analysis - don't return here
       } else if (!skipRecent && ageInDays < 30 && options.forceBelow === undefined && !options.ifMissing) {
         console.log(`⏭️  ${entity}: Analysis is recent (${ageInDays.toFixed(1)} days old) and statute unchanged, skipping`);
+        if (existingAnalysis && !existingAnalysis.overallSummary) {
+          const domainObj = await st.getDomain(domain);
+          const entityObj = await st.getEntity(entity);
+          const domainForEntityText = domainObj?.displayName || `${domain} applying to ${entityObj?.displayName ?? entity}`;
+          const overallSummary = await generateOverallSummary(domainForEntityText, existingAnalysis.questions);
+          if (overallSummary) {
+            existingAnalysis.overallSummary = overallSummary;
+            await st.saveAnalysis(existingAnalysis as Parameters<IStorage["saveAnalysis"]>[0]);
+            console.log(`✅ ${entity}: Added overallSummary to existing analysis`);
+          }
+        }
         if (options.reindex) {
           await indexEntity(entity, { ...options, force: true });
         }
@@ -958,6 +1033,7 @@ async function processEntity(
     }
 
     await st.saveAnalysis(analysis as Parameters<IStorage["saveAnalysis"]>[0]);
+    await st.updateEntitySources(entity);
     console.log(`✅ ${entity}: Analysis complete`);
     return true; // OpenAI calls were made
   } catch (error) {
@@ -1101,6 +1177,7 @@ type GeneratedAnalysisResult = {
   usesStateCode?: boolean;
   grades?: { [key: string]: string | null };
   gapAnalysis?: string;
+  overallSummary?: string;
   sources?: import("@civillyengaged/ordinizer-core").SourceLink[];
 };
 
@@ -1390,6 +1467,30 @@ async function runVectorAnalysis(
     true,
     options.dryRun || false,
   );
+}
+
+async function generateOverallSummary(
+  domainForEntityText: string,
+  answers: any[],
+): Promise<string | undefined> {
+  if (!answers.length) {
+    console.error("❌ Cannot generate overall summary: No answers provided");
+    return undefined;
+  }
+  const qaLines = answers
+    .map((a: any) => `Q: ${a.question}\nA: ${a.shortAnswer ?? a.answer} (score: ${a.score ?? "?"})`)
+    .join("\n\n");
+  const prompt = `In 15 words or less, summarize how well the functionality is met overall. 
+    Here's the Q&A summary for context:\n\n${qaLines}`;
+  try {
+    console.log(`📝 Generating overall summary for ${domainForEntityText}...`);
+    const result = await createChatCompletion(prompt, { format: "text", system: "You are a concise regulatory analyst.", maxCompletionTokens: 60 });
+    console.log(`📝 Overall summary generated: "${result.text.trim()}"`);
+    return result.text.trim();
+  } catch (error) {
+    console.error(`❌ Failed to generate overall summary:`, errMsg(error, true));
+    return undefined;
+  }
 }
 
 /**
@@ -1768,6 +1869,8 @@ async function generateVectorAnalysis(
   const sourceMapEntity = await st.getSourcesForEntity(entity);
   const sources = (sourceMapEntity?.domains[domain] ?? []) as import("@civillyengaged/ordinizer-core").SourceLink[];
 
+  const overallSummary = await generateOverallSummary(domainForEntityText, allAnswers);
+
   return {
     entityId: entity,
     domainId: domain,
@@ -1789,6 +1892,7 @@ async function generateVectorAnalysis(
     processingMethod: "vector-search-rag",
     usesStateCode: false,
     sources,
+    overallSummary,
   };
 }
 
@@ -2075,6 +2179,7 @@ Options:
   --skip-recent <time>      Skip analysis if generated within specified time (e.g., "15m", "2h", "1d")
   --force-below-score <n>  Re-analyze questions whose current score is below threshold (e.g., "20%", "20", "0.2")
   --if-missing              Re-analyze questions whose existing shortAnswer is "Not specified"
+  --overall                 Generate overallSummary for existing analyses without re-running full analysis
 
   --model <model>           AI model to use: gpt-5.4-mini, gpt-5.4, gpt-5.5
   --help, -h               Show this help message
@@ -2215,6 +2320,9 @@ async function parseArgs() {
         break;
       case "--if-missing":
         options.ifMissing = true;
+        break;
+      case "--overall":
+        options.overallOnly = true;
         break;
       case "--createFolders":
         options.createFolders = true;

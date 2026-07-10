@@ -350,6 +350,7 @@ export class ScoringEngine {
         score: typeof question.score === 'number' ? question.score : 0,
         confidence: typeof question.confidence === 'number' ? question.confidence : 0,
         answer: question.answer ?? '',
+        shortAnswer: question.shortAnswer ?? undefined,
         sourceRefs: question.sourceRefs ?? question.relevantSections ?? [],
         analyzedAt: question.analyzedAt ?? undefined
       };

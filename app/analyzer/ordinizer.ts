@@ -32,17 +32,23 @@ switch (subcommand) {
     await main();
     break;
   }
+  case "build-sources": {
+    const { main } = await import("./lib/buildSources.js");
+    await main();
+    break;
+  }
   case "--help":
   case "-h":
     console.log(`
 Usage: ordinizer <subcommand> [options]
 
 Subcommands:
-  describe   Show what exists in the data directory and suggest next steps
-  spider     Crawl entity websites and download domain-relevant documents
-  index      Index downloaded documents into the Pinecone vector database
-  analyze    Analyze entities with AI using indexed documents
-  report     Generate a markdown domain report
+  describe       Show what exists in the data directory and suggest next steps
+  spider         Crawl entity websites and download domain-relevant documents
+  index          Index downloaded documents into the Pinecone vector database
+  analyze        Analyze entities with AI using indexed documents
+  report         Generate a markdown domain report
+  build-sources  Extract URL/title pairs from EntityDownloads into sources.json
 
 Common Options (all subcommands):
   --realm <id>              Target realm (or set CURRENT_REALM env var)

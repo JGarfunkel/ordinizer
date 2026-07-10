@@ -15,6 +15,7 @@ import type {
   Realm, RealmsConfig, Ruleset,
   EntityCollection, Entity,
   DomainSummaryRow, CombinedMatrixRow, SectionIndexEntry, DataSourcesConfig, SourceMapEntity,
+  UrlAndTitle, SourcesMap,
 } from "@civillyengaged/ordinizer-core";
 import { log } from "util";
 import { getEntityId } from "./utils";
@@ -219,6 +220,9 @@ export interface IStorageReadOnly {
   getSourceMap(): Promise<Map<string, SourceMapEntity>>;
   getSourcesForEntity(entityId: string): Promise<SourceMapEntity | undefined>;
 
+  /** Look up a page title by entity and URL from sources.json. Returns undefined when not found. */
+  getSourceTitle(entityId: string, url: string): Promise<string | undefined>;
+
   // Section Index
   getSectionIndex(): Promise<SectionIndexEntry[]>;
 
@@ -290,6 +294,11 @@ export interface IStorage extends IStorageReadOnly {
   pruneAnalysisBackups(domainId: string, entityId: string, ofdate?: string): Promise<number>;
   pruneMetadataBackups(domainId: string, entityId: string, ofdate?: string): Promise<number>;
 
+  /** Merge URL/title pairs from an entity's history.json into sources.json. */
+  updateEntitySources(entityId: string): Promise<void>;
+
+  /** Rebuild sources.json from scratch for all entities in the realm. */
+  buildAllSources(): Promise<void>;
 }
 
 export interface FileStat {
@@ -317,6 +326,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
   protected questionCache: Map<string, Question[]> = new Map();
   protected entityDomainCache: Map<string, EntityDomain[]> = new Map();
   protected sourceMapCache: Map<string, SourceMapEntity> | null = null;
+  protected sourcesMapCache: SourcesMap | null = null;
 
   constructor(realmId: string) {
     this.realmId = realmId;
@@ -1054,6 +1064,19 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     return sourceMap.get(entityId);
   }
 
+  protected async loadSourcesMap(): Promise<SourcesMap> {
+    if (this.sourcesMapCache) return this.sourcesMapCache;
+    const file = path.join(this.realmDir, "sources.json");
+    if (!await fs.pathExists(file)) return {};
+    this.sourcesMapCache = await fs.readJson(file) as SourcesMap;
+    return this.sourcesMapCache;
+  }
+
+  async getSourceTitle(entityId: string, url: string): Promise<string | undefined> {
+    const map = await this.loadSourcesMap();
+    return map[entityId]?.find(e => e.url === url)?.title;
+  }
+
   /**
    * Parse statuteSectionIndex.csv and return structured entries.
    */
@@ -1084,8 +1107,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
     const visibleDomains = domains.filter((d: any) => d.show !== false);
     const entities = await this.getEntities();
     const validEntities = entities
-      .filter((e: any) => !(e as any).test)
-      .sort((a: any, b: any) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
+      .filter((e: any) => !(e as any).test);
 
     const result: CombinedMatrixRow[] = [];
     for (const entity of validEntities) {
@@ -1093,6 +1115,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
         entity: {
           id: entity.id,
           displayName: entity.displayName || entity.name,
+          mainUrl: entity.mainUrl,
         },
         domains: {},
       };
@@ -1151,6 +1174,9 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
             if (analysisData.statute) {
               domainData.statuteNumber = analysisData.statute.id || analysisData.statute.number || domainData.statuteNumber || "";
               domainData.statuteTitle = analysisData.statute.title || analysisData.statute.name || domainData.statuteTitle || "";
+            }
+            if (analysisData.overallSummary) {
+              domainData.overallSummary = analysisData.overallSummary;
             }
           } catch { /* ignore */ }
         }
@@ -1495,11 +1521,58 @@ export class JsonFileStorage extends JsonFileStorageReadOnly implements IStorage
         const entityPath = path.join(await this.getRealmDir(), domainId, entity.id);
         if (!await fs.pathExists(entityPath)) {
           await fs.ensureDir(entityPath);
-          console.log(`📂 Created folder for entity: ${entity.id}`) 
+          console.log(`📂 Created folder for entity: ${entity.id}`)
         }else {
           console.log(`📂 Folder already exists for entity: ${entity.id}`)
         };
       });
     }
+
+  private async readEntityHistoryEntries(entityId: string): Promise<UrlAndTitle[]> {
+    const historyPath = path.join(this.realmDir, "EntityDownloads", entityId, "history.json");
+    if (!await fs.pathExists(historyPath)) return [];
+    const loaded = await fs.readJson(historyPath).catch(() => ({ records: [] }));
+    const records: any[] = Array.isArray(loaded.records) ? loaded.records : [];
+    const seen = new Set<string>();
+    const entries: UrlAndTitle[] = [];
+    for (const r of records) {
+      if (!r.url || seen.has(r.url)) continue;
+      seen.add(r.url);
+      const title = (r.title && r.title !== r.url) ? r.title : undefined;
+      if (!title) continue;
+      entries.push({ url: r.url, title });
+    }
+    return entries;
+  }
+
+  private async saveSourcesMap(data: SourcesMap): Promise<void> {
+    const file = path.join(this.realmDir, "sources.json");
+    await fs.writeJson(file, data, { spaces: 2 });
+    this.sourcesMapCache = data;
+  }
+
+  async updateEntitySources(entityId: string): Promise<void> {
+    const incoming = await this.readEntityHistoryEntries(entityId);
+    if (incoming.length === 0) return;
+    const map = await this.loadSourcesMap();
+    const existing = map[entityId] ?? [];
+    const byUrl = new Map(existing.map(e => [e.url, e.title]));
+    for (const e of incoming) byUrl.set(e.url, e.title);
+    map[entityId] = Array.from(byUrl.entries()).map(([url, title]) => ({ url, title }));
+    await this.saveSourcesMap(map);
+    console.log(`[SOURCES] updated ${byUrl.size} entries for ${entityId}`);
+  }
+
+  async buildAllSources(): Promise<void> {
+    const entities = await this.getEntities();
+    const map: SourcesMap = {};
+    for (const entity of entities) {
+      const entries = await this.readEntityHistoryEntries(entity.id);
+      if (entries.length > 0) map[entity.id] = entries;
+    }
+    await this.saveSourcesMap(map);
+    const total = Object.values(map).reduce((n, arr) => n + arr.length, 0);
+    console.log(`[SOURCES] wrote sources.json — ${entities.length} entities, ${total} URLs`);
+  }
 
 }

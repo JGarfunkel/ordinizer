@@ -5,7 +5,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { ChevronUp, ChevronDown, X, Map, MapPin } from "lucide-react";
 import { Entity, EntityDomain, Realm, DomainDataFile, DomainLegend, LayoutOptions } from "@civillyengaged/ordinizer-core";
-import { getEnvironmentalScoreLegend } from '../lib/scoreColors';
+import { getEnvironmentalScoreLegend, getStateCodeLegendItem, MAP_STATE_COLORS } from '../lib/scoreColors';
 import { getEntityScoreColor, buildScoringLegend } from '../lib/domainScoring';
 import { apiPath } from '../lib/apiConfig';
 import { useRealmEntities } from '../hooks/useRealmEntities';
@@ -55,6 +55,7 @@ export default function EntityMap({
   domainLegend,
   onMapClick,
 }: EntityMapProps) {
+  const stateCodeItem = getStateCodeLegendItem(realm);
   const [selectedFeature, setSelectedFeature] = useState<GeoFeature | null>(null);
   const [mapStyle, setMapStyle] = useState<MapStyle>(() => {
     const stored = sessionStorage.getItem('map-style');
@@ -460,10 +461,10 @@ export default function EntityMap({
       return municipalitySummary.scoreColor;
     }
 
-    // Priority 2: Check if municipality uses state code (blue)
+    // Priority 2: Check if municipality uses state code
     const summary = domainSummary?.find(s => s.entityId === municipality.id);
     if (summary?.stateCodeApplies) {
-      return '#3b82f6'; // Blue for state code entities
+      return stateCodeItem?.color ?? MAP_STATE_COLORS.STATE_CODE;
     }
 
     // Priority 3: Default colors based on data availability (removed WEN grade coloring)
@@ -746,14 +747,12 @@ export default function EntityMap({
                 </div>
               )}
               <div className="space-y-1 text-xs">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded" style={{backgroundColor: '#3b82f6'}}></div>
-                  <span>Uses NY State Code</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded" style={{backgroundColor: '#8b5cf6'}}></div>
-                  <span>WEN Graded (No Score)</span>
-                </div>
+                {stateCodeItem && (
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded" style={{backgroundColor: stateCodeItem.color}}></div>
+                    <span>{stateCodeItem.label}</span>
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 rounded" style={{backgroundColor: '#e2e8f0'}}></div>
                   <span>No Data Available</span>
@@ -825,15 +824,15 @@ export default function EntityMap({
                 }
                 
                 // Priority 2: State code
-                if (summary?.stateCodeApplies) {
+                if (summary?.stateCodeApplies && stateCodeItem) {
                   return (
                     <div className="mb-3 text-center">
                       <p className="text-sm text-gray-600 mb-2">{domainName} Regulations</p>
-                      <span 
+                      <span
                         className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium text-white"
-                        style={{backgroundColor: '#3b82f6'}}
+                        style={{backgroundColor: stateCodeItem.color}}
                       >
-                        Uses NY State Code
+                        {stateCodeItem.label}
                       </span>
                     </div>
                   );

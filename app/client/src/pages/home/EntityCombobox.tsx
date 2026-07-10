@@ -33,8 +33,7 @@ export function EntityCombobox({
   onResetAll,
   className,
 }: EntityComboboxProps) {
-  const entityLabel =
-    currentRealm?.entityType === "school-districts" ? "school district" : "municipality";
+  const entityLabel = currentRealm?.terminology?.entitySingular ?? "municipality";
 
   const handleRefreshCache = () => {
     queryClient.invalidateQueries({ queryKey: [apiPath("municipalities")] });

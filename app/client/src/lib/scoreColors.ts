@@ -2,6 +2,7 @@
  * Centralized score-to-color mapping utilities
  * Single source of truth for all score-based color calculations
  */
+import type { Realm } from '@civillyengaged/ordinizer-core';
 
 // Environmental Protection Score Colors (0-10 scale display, 0.0-1.0 internal)
 export const ENVIRONMENTAL_SCORE_COLORS = {
@@ -87,6 +88,19 @@ export function getMatrixScoreColor(score: number): string {
   if (score >= 0.4) return MATRIX_SCORE_COLORS.FAIR;
   if (score > 0) return MATRIX_SCORE_COLORS.POOR;
   return MATRIX_SCORE_COLORS.NO_DATA;
+}
+
+/**
+ * Get the state code legend item for a realm, or null if not applicable.
+ * Color comes from realm.ui.mapColors.stateCode; label uses realm.geo.stateProvince.
+ */
+export function getStateCodeLegendItem(realm?: Realm): { label: string; color: string } | null {
+  const stateProvince = realm?.geo?.stateProvince;
+  if (!stateProvince) return null;
+  return {
+    label: `Uses ${stateProvince} State Code`,
+    color: realm?.ui?.mapColors?.stateCode ?? MAP_STATE_COLORS.STATE_CODE,
+  };
 }
 
 /**
