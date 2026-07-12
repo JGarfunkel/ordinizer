@@ -1,6 +1,6 @@
 {
   "name": "@civillyengaged/ordinizer-server",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "type": "module",
   "description": "Express API layer for the Ordinizer application",
   "main": "./dist/index.js",
@@ -16,8 +16,8 @@
     "test:watch": "jest --watch --config jest.config.cjs"
   },
   "dependencies": {
-    "@civillyengaged/ordinizer-core": "1.0.4",
-    "@civillyengaged/ordinizer-servercore": "1.0.7",
+    "@civillyengaged/ordinizer-core": "1.0.5",
+    "@civillyengaged/ordinizer-servercore": "1.0.8",
     "express": "^4.21.2",
     "fs-extra": "^11.3.4"
   },
