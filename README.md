@@ -2,6 +2,10 @@
 
 Ordinizer is a comprehensive TypeScript-based municipal statute analysis platform that extracts, analyzes, and presents legal differences across jurisdictions using advanced geospatial and text processing technologies. It supports multiple realms (geographic scopes), each with configurable entity types, domains, and data sources.
 
+Learn more at [civillyengaged.org/ordinizer](https://civillyengaged.org/ordinizer). Sample implementations:
+- [nyseeds.org](https://nyseeds.org/) — municipal statute analysis of environmental conservation laws across Westchester County
+- [civillyengaged.org/pgf/scorecard](https://civillyengaged.org/pgf/scorecard) — a non-mapped (plain data) realm
+
 ## Features
 
 - **Multi-Realm Architecture**: Configure multiple jurisdictions (counties, regions, districts) with independent data sources and entity types
@@ -19,12 +23,14 @@ Ordinizer is a comprehensive TypeScript-based municipal statute analysis platfor
 
 ### Realms
 
-A **realm** is a geographic scope of analysis, defined in `data/realms.json`. Each realm specifies:
-- **State and county** for geographic context
-- **Entity type** (`municipalities` or `school-districts`)
+A **realm** is a scope of analysis, defined in `data/realms.json`. Each realm specifies:
+- **State and county** for geographic context (optional — see below)
+- **Entity type** (`municipalities`, `school-districts`, or `product`)
 - **Data source** (Google Sheets, JSON file, etc.)
 - **Domains** to analyze (Trees, Zoning, etc.)
-- **Map boundaries** for visualization
+- **Map boundaries** for visualization (optional)
+
+Most realms are geographic — municipalities or school districts compared across a map. But a realm doesn't have to be map-based: `ruleType`/`entityType` can be set to `product` for **plain, non-mapped data**, where "entities" are things like products or services rather than jurisdictions. In that case `geo`/`mapBoundaries` can be omitted entirely and the realm is presented as a plain scorecard instead of a map. The [PGF Scorecard](https://civillyengaged.org/pgf/scorecard) is a live example of a non-mapped, product-type realm (analyzing product reviews rather than municipal statutes).
 
 Example realm configuration:
 ```json
@@ -80,27 +86,29 @@ If using a Google Sheets data source, configure `app/analyzer/data/spreadsheetEx
 
 ### 3. Extract Entity Data
 
-Extract entity and statute data from your configured data source using the new script locations:
+With entities and domains defined (from your configured data source), crawl entity websites and download domain-relevant documents using the `ordinizer` CLI's `spider` subcommand:
 
 ```bash
-# Extract all domains with smart incremental processing
-tsx app/analyzer/lib/extractEntityData.ts
+# Crawl all entities in the realm, all domains, with smart incremental processing
+tsx app/analyzer/ordinizer.ts spider --all
 
-# Extract specific domain
-tsx app/analyzer/lib/extractEntityData.ts --domain="Property Maintenance"
+# Crawl a specific domain only
+tsx app/analyzer/ordinizer.ts spider --all --domain="Property Maintenance"
 
-# Extract with verbose logging
-tsx app/analyzer/lib/extractEntityData.ts --domain=Trees --verbose
+# Crawl with verbose logging
+tsx app/analyzer/ordinizer.ts spider --all --domain=Trees --verbose
 
-# Extract with entity filter
-tsx app/analyzer/lib/extractEntityData.ts --domain=Trees --municipality-filter="Ardsley,Bedford,Bronxville"
+# Crawl a single entity
+tsx app/analyzer/ordinizer.ts spider --entity="NY-Ardsley-Village" --domain=Trees
 ```
 
 This will:
-- Create entity and domain definition files in the realm's data directory
+- Crawl each entity's website (up to `--max-depth`, default 2) looking for domain-relevant pages
 - Download statute/policy files to `data/{realm-datapath}/{domain}/{StateCode}-{Entity}-{Type}/statute.txt`
 - Create metadata files with download information and grades
-- Handle both hyperlinked URLs and direct text URLs from spreadsheet cells
+- Skip pages that were recently crawled unless `--force` or `--recrawl-days` is passed
+
+See [Command-Line Tool (`ordinizer`)](#command-line-tool-ordinizer) below for the full set of `spider` options (crawl depth, concurrency, dashboard discovery, etc.).
 
 ### 4. Generate AI Analysis
 
@@ -137,11 +145,56 @@ The application will be available at the provided URL with:
 - URL routing like `/realm/{realmId}/{domain}/{entityId}` for direct access
 - Mobile-optimized interface with collapsible map functionality
 
-## Script Architecture
+## Command-Line Tool (`ordinizer`)
 
-The project uses a streamlined script architecture with two main production scripts.
+`app/analyzer/ordinizer.ts` is a single CLI entry point that wraps the individual analyzer scripts as subcommands. Run it with `tsx`:
 
-**Library-Style Usage**: All scripts are referenced from `app/analyzer/lib/`. Run scripts using `tsx app/analyzer/lib/<script-name>.ts` from the project root.
+```bash
+tsx app/analyzer/ordinizer.ts <subcommand> [options]
+```
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `describe` | Show what exists in the data directory and suggest next steps |
+| `spider` | Crawl entity websites and download domain-relevant documents |
+| `index` | Index downloaded documents into the Pinecone vector database |
+| `analyze` | Analyze entities with AI using indexed documents |
+| `report` | Generate a markdown domain report |
+| `build-sources` | Extract URL/title pairs from EntityDownloads into `sources.json` |
+
+Common options (all subcommands):
+- `--realm <id>` — Target realm (or set `CURRENT_REALM` env var)
+- `--domain <id>` — Scope to a specific domain (e.g., `"property-maintenance"`)
+- `--entity <id>` — Scope to a specific entity (e.g., `"NY-Bedford-Town"`)
+- `--force` — Force operation even if output already exists
+- `--dry-run` — Plan without making AI calls or writing files
+- `--verbose`, `-v` — Enable detailed logging
+- `--help`, `-h` — Show full help, including per-subcommand options
+
+Run `tsx app/analyzer/ordinizer.ts --help` for the complete list of per-subcommand options (crawl depth/concurrency flags for `spider`, reindexing/scoring flags for `analyze`, listing flags for `index`, etc.).
+
+Example workflow:
+
+```bash
+# See what's already in the data directory for a realm
+tsx app/analyzer/ordinizer.ts describe --realm my-county-environmental
+
+# Crawl entity websites for a domain
+tsx app/analyzer/ordinizer.ts spider --all --domain Trees
+
+# Index the crawled documents into Pinecone
+tsx app/analyzer/ordinizer.ts index
+
+# Run AI analysis
+tsx app/analyzer/ordinizer.ts analyze --domain Trees
+
+# Generate a markdown report
+tsx app/analyzer/ordinizer.ts report --domain Trees
+```
+
+**Library-Style Usage**: The underlying scripts also live in `app/analyzer/lib/` and can be run directly with `tsx app/analyzer/lib/<script-name>.ts` from the project root (as shown in Quick Start above), which is useful for scripting or when a subcommand needs flags not yet exposed through `ordinizer.ts`.
 
 ## Object Types and Storage
 
@@ -253,3 +306,8 @@ app/
 2. **Quality Control**: Analysis includes confidence scoring and version comparison for continuous improvement
 3. **Extensibility**: New realms/domains can be added by updating `realms.json` and running the extraction pipeline
 4. **Transparency**: All processing logic documented in TypeScript with comprehensive error handling
+
+## TODO
+
+- **LOCUS dataset integration** (underway) — Sourcing and cross-referencing statute text from the [LOCUS-v1](https://huggingface.co/datasets/LocalLaws/LOCUS-v1) local-ordinance dataset. See `app/analyzer/lib/locusClient.ts`, `queryLocus.ts`, and `populateStatutesFromLocus.ts`.
+- **[TypedStandards](https://typedstandards.org/) integration** — Explore aligning domain/question schemas with TypedStandards.
