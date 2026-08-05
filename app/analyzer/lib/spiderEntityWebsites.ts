@@ -62,6 +62,11 @@ import {
   fetchPageContent,
 } from "./spiderHistory.js";
 import {
+  type DashboardRecord,
+  detectDashboards,
+  mergeDashboardCandidate,
+} from "./spiderDashboardDetector.js";
+import {
   detectBoilerplateCandidates,
   applyActiveBoilerplate,
   updateWebsiteHostRecord,
@@ -160,6 +165,7 @@ interface Args {
   seedUrl?: string;
   review: boolean;
   fix?: string;
+  discoveryDashboards: boolean;
 }
 
 type ReviewStatus = "related" | "index" | "unrelated";
@@ -524,6 +530,7 @@ function parseArgs(args: string[]): Args {
     forcePdf: false,
     seedUrl: undefined,
     review: false,
+    discoveryDashboards: false,
   };
 
   for (let i = 0; i < rest.length; i += 1) {
@@ -599,6 +606,10 @@ function parseArgs(args: string[]): Args {
     }
     if (arg === "--interactive") {
       options.interactive = true;
+      continue;
+    }
+    if (arg === "--discovery-dashboards") {
+      options.discoveryDashboards = true;
       continue;
     }
     if (arg === "--verbose" || arg === "-v") {
@@ -1286,7 +1297,7 @@ async function spiderEntity(
   }
 
   await ensureEntityHistoryLayout(storage, entity.id);
-  const { historyMap, menuLinks } = await loadHistoryData(storage, entity.id);
+  const { historyMap, menuLinks, dashboardMap } = await loadHistoryData(storage, entity.id);
   const websitesFile = await loadWebsitesFile(storage, entity.id);
 
   const domainsToUse = args.domain
@@ -1513,6 +1524,13 @@ async function spiderEntity(
         plainText: trimmedText,
         textSample: effectiveTextSample,
       };
+
+      if (args.discoveryDashboards && scoredPage.htmlContent && !scoredPage.isPdf) {
+        const dashboardCandidates = detectDashboards(scoredPage.htmlContent, scoredPage.url);
+        for (const candidate of dashboardCandidates) {
+          mergeDashboardCandidate(dashboardMap, candidate, scoredPage.url, statusTimestamp);
+        }
+      }
 
       const scoredDomains = scoreDomainDetailed(domainsToUse, scoredPage, entity.governingBody);
       let matchedScores = isProductRealm
@@ -2362,7 +2380,7 @@ async function spiderEntity(
     if (err instanceof InteractiveExitSignal) {
       console.log(`\n[INTERACTIVE] Exit requested — saving history and stopping...`);
       await processCollectedPages(true);
-      await saveHistoryData(storage, entity.id, historyMap, menuLinks);
+      await saveHistoryData(storage, entity.id, historyMap, menuLinks, dashboardMap);
       await saveWebsitesFile(storage, entity.id, websitesFile);
       throw err;
     } else {
@@ -2409,8 +2427,11 @@ async function spiderEntity(
     unrelated: statusCounts.unrelated,
     otherFailure: statusCounts.otherFailure,
   });
+  if (args.discoveryDashboards) {
+    console.log(`[SUMMARY] ${entity.id} dashboards detected: ${dashboardMap.size}`);
+  }
 
-  await saveHistoryData(storage, entity.id, historyMap, menuLinks);
+  await saveHistoryData(storage, entity.id, historyMap, menuLinks, dashboardMap);
   await saveWebsitesFile(storage, entity.id, websitesFile);
 }
 
@@ -3879,6 +3900,8 @@ Crawl control:
   --rescore                   Re-fetch and re-score all known pages
   --nodownload                Score existing cached pages without fetching new ones
   --notbot                    Use a generic User-Agent (avoids bot detection)
+  --discovery-dashboards      Detect dashboard/BI-tool links (Power BI, Tableau, ArcGIS,
+                              Socrata, etc.) into history.json's dashboards[]
 
 Interactive / review:
   --interactive               Prompt for domain confirmation per page

@@ -14,6 +14,7 @@ import { downloadFromUrlAnyType, extractTitleFromPDF } from "./extractionUtils.j
 import type { DownloadRequestOptions } from "./extractionUtils.js";
 import type { CrawledPage, ExtractedLink } from "./domainScoring.js";
 import { LinkedResource } from "@ordinizer/core/schema.js";
+import type { DashboardRecord } from "./spiderDashboardDetector.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +37,7 @@ export type SpiderHistoryEntry = SpiderDownloadRecord;
 export interface SpiderHistoryFile {
   menuLinks: SpiderMenuLinkInfo;
   records: SpiderDownloadRecord[];
+  dashboards?: DashboardRecord[];
 }
 
 export interface SpiderMenuLinkInfo {
@@ -241,7 +243,7 @@ export async function ensureEntityHistoryLayout(storage: any, entityId: string):
   await fs.ensureDir(entityDir);
   const historyPath = getHistoryFilePath(storage, entityId);
   if (!(await fs.pathExists(historyPath))) {
-    await fs.writeJson(historyPath, { menuLinks: { timestamp: "", urls: [] }, records: [] }, { spaces: 2 });
+    await fs.writeJson(historyPath, { menuLinks: { timestamp: "", urls: [] }, records: [], dashboards: [] }, { spaces: 2 });
   }
 }
 
@@ -252,12 +254,14 @@ export async function ensureEntityHistoryLayout(storage: any, entityId: string):
 export async function loadHistoryData(storage: any, entityId: string): Promise<{
   historyMap: Map<string, SpiderDownloadRecord>;
   menuLinks: SpiderMenuLinkInfo;
+  dashboardMap: Map<string, DashboardRecord>;
 }> {
   const historyPath = getHistoryFilePath(storage, entityId);
   if (!(await fs.pathExists(historyPath))) {
     return {
       historyMap: new Map<string, SpiderDownloadRecord>(),
       menuLinks: { timestamp: "", urls: [] },
+      dashboardMap: new Map<string, DashboardRecord>(),
     };
   }
   const loaded = (await fs.readJson(historyPath).catch(() => ({ records: [] }))) as SpiderHistoryFile;
@@ -270,9 +274,18 @@ export async function loadHistoryData(storage: any, entityId: string): Promise<{
     }
   }
 
+  const dashboardMap = new Map<string, DashboardRecord>();
+  const dashboardEntries = Array.isArray(loaded.dashboards) ? loaded.dashboards : [];
+  for (const entry of dashboardEntries) {
+    if (entry && typeof entry.key === "string" && entry.key) {
+      dashboardMap.set(entry.key, entry);
+    }
+  }
+
   return {
     historyMap,
     menuLinks: normalizeMenuLinks((loaded as { menuLinks?: unknown }).menuLinks),
+    dashboardMap,
   };
 }
 
@@ -281,12 +294,23 @@ export async function saveHistoryData(
   entityId: string,
   historyMap: Map<string, SpiderDownloadRecord>,
   menuLinks: SpiderMenuLinkInfo = { timestamp: "", urls: [] },
+  dashboardMap?: Map<string, DashboardRecord>,
 ): Promise<void> {
   const historyPath = getHistoryFilePath(storage, entityId);
   await fs.ensureDir(path.dirname(historyPath));
+
+  let dashboards: DashboardRecord[];
+  if (dashboardMap) {
+    dashboards = Array.from(dashboardMap.values()).sort((a, b) => a.canonicalUrl.localeCompare(b.canonicalUrl));
+  } else {
+    const existing = (await fs.readJson(historyPath).catch(() => null)) as SpiderHistoryFile | null;
+    dashboards = Array.isArray(existing?.dashboards) ? existing!.dashboards : [];
+  }
+
   const payload: SpiderHistoryFile = {
     menuLinks: normalizeMenuLinks(menuLinks),
     records: Array.from(historyMap.values()).sort((a, b) => a.url.localeCompare(b.url)),
+    dashboards,
   };
   await fs.writeJson(historyPath, payload, { spaces: 2 });
 }

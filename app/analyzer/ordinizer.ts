@@ -81,6 +81,7 @@ ordinizer spider
   --force                   Force re-crawl even if recently visited
   --nodownload              Score existing cached pages without fetching
   --interactive             Prompt for domain confirmation per page
+  --discovery-dashboards    Detect dashboard/BI-tool links (Power BI, Tableau, ArcGIS, Socrata, etc.) into history.json's dashboards[]
   --review                  Show summary table and review interactively
   --scan, --nospider        Re-score downloaded pages without fetching
   --rewriteText             Re-generate .txt artifacts from cached HTML; discovers missing contentSelector/header/footer selectors
@@ -97,6 +98,8 @@ ordinizer analyze
   --setgrades               Copy grades from metadata.json to analysis.json
   --usemeta                 Compare analysis against meta-analysis best practices
   --questionId <id>         Analyze only the specified question ID (e.g., "9")
+  --force-below-score <n>   Re-analyze questions whose current score is below threshold (e.g., "20%", "20", "0.2")
+  --if-missing              Re-analyze questions whose existing shortAnswer is "Not specified"
   --generate-meta           Generate meta-analysis after completing analysis
   --generate-meta-only      Only generate meta-analysis (skip all entity analysis)
   --generate-questions      Generate questions.json using AI if it doesn't exist
