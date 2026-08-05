@@ -6,6 +6,12 @@ Learn more at [civillyengaged.org/ordinizer](https://civillyengaged.org/ordinize
 - [nyseeds.org](https://nyseeds.org/) — municipal statute analysis of environmental conservation laws across Westchester County
 - [civillyengaged.org/pgf/scorecard](https://civillyengaged.org/pgf/scorecard) — a non-mapped (plain data) realm
 
+## Getting started
+
+once you've cloned the repo run [new-site.js](new-site.js) like so to set up a new project -- this will setup an express website you can customize beyond running ordinizer
+
+`node new-site.js <project-name> [--local]`
+
 ## Features
 
 - **Multi-Realm Architecture**: Configure multiple jurisdictions (counties, regions, districts) with independent data sources and entity types

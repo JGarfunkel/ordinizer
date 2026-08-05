@@ -74,6 +74,8 @@ export interface RulesetSource {
   type?: 'statute' | 'policy' | 'form' | 'guidance' | 'information' | 'homepage' | 'general'; // Type of the governance source
   contentLength?: number; // Optional length of the source content (e.g., word count)
   downloadedFilename?: string; // Relative path to the downloaded artifact (HTML or TXT file)
+  statuteNumber?: string; // Optional statute number for this specific source (e.g., "Section 5.2"); distinct from Ruleset.statuteNumber since one ruleset can have multiple sources with different statute numbers
+  provenance?: 'spider' | 'locus' | 'manual'; // Where this source came from; absent means legacy/spider-crawled
 }
 
 /** 
@@ -470,6 +472,8 @@ export interface Domain {
   source?: string;
   /** Custom map legend for this domain */
   legend?: DomainLegend;
+  /** Which of the entity's links (main/governing/hub/authority) is authoritative for this domain's analysis */
+  primaryLinkSource?: EntityLinkType;
 }
 
 /**
