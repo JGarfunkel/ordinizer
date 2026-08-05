@@ -64,6 +64,10 @@ export function getVectorService(realm: string) {
 import { chunkText } from "../lib/chunkText.js";
 export { chunkText };
 
+import { normalizeUrlForMatch } from "../lib/spiderHistory.js";
+
+const EMBEDDING_DIMENSION = 1536;
+
 export class VectorService {
 	private pinecone: Pinecone;
 	private indexName = '';
@@ -93,7 +97,7 @@ export class VectorService {
 				console.log(`Creating new Pinecone index: ${this.indexName}`);
 				await this.pinecone.createIndex({
 					name: this.indexName,
-					dimension: 1536, // OpenAI text-embedding-ada-002 dimension
+					dimension: EMBEDDING_DIMENSION, // OpenAI text-embedding-ada-002 dimension
 					metric: 'cosine',
 					spec: {
 						serverless: {
@@ -810,6 +814,56 @@ export class VectorService {
 
 		const sourceRefs = extractSectionReferences(chunks.join("\n\n"));
 		return { chunks, sourceRefs, tokenUsage: embeddingTokens };
+	}
+
+	/**
+	 * Fetch every indexed chunk for an entity+domain whose provenance URL matches the
+	 * given URL (compared via normalizeUrlForMatch), regardless of relevance to any
+	 * particular question. Used to guarantee a domain's designated primary source
+	 * document is always represented in the analysis context. No embedding call is made,
+	 * since results are filtered by URL rather than by similarity.
+	 */
+	async getChunksForUrl(
+		entityId: string,
+		domain: string,
+		url: string,
+	): Promise<{ chunks: string[]; sourceRefs: string[]; tokenUsage: number }> {
+		const normalizedTarget = normalizeUrlForMatch(url);
+		if (!normalizedTarget) {
+			return { chunks: [], sourceRefs: [], tokenUsage: 0 };
+		}
+
+		await this.initializeIndex();
+
+		const filter: Record<string, any> = {
+			entityId,
+			domainIds: { $in: [domain] },
+		};
+
+		const searchResults = await this.getIndex().query({
+			vector: new Array(EMBEDDING_DIMENSION).fill(0),
+			filter,
+			topK: 1000,
+			includeMetadata: true,
+		});
+
+		const matches = (searchResults.matches || [])
+			.filter((m: any) => m.metadata?.url && normalizeUrlForMatch(m.metadata.url) === normalizedTarget)
+			.sort((a: any, b: any) => (a.metadata?.chunkIndex ?? 0) - (b.metadata?.chunkIndex ?? 0));
+
+		if (matches.length === 0) {
+			return { chunks: [], sourceRefs: [], tokenUsage: 0 };
+		}
+
+		console.log(`[VECTOR CHUNK] getChunksForUrl: entity=${entityId}, domain=${domain}, url=${url} -> ${matches.length} chunk(s)`);
+
+		const chunks = matches.map((m: any) => {
+			const text = m.metadata?.content || "";
+			return m.metadata?.url ? `Source: ${m.metadata.url}\n\n${text}` : text;
+		});
+
+		const sourceRefs = extractSectionReferences(chunks.join("\n\n"));
+		return { chunks, sourceRefs, tokenUsage: 0 };
 	}
 
 }

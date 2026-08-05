@@ -92,7 +92,7 @@ function toKeywordTokens(value: string): string[] {
     .filter((v) => v.length >= 4);
 }
 
-function getDomainKeywords(domain: Domain): string[] {
+export function getDomainKeywords(domain: Domain): string[] {
   const manual = Array.isArray(domain.keywords) ? domain.keywords : [];
   const base = [domain.id, domain.name, domain.displayName || "", domain.description || "", ...manual]
     .filter(Boolean)

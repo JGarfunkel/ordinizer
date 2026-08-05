@@ -19,6 +19,7 @@ import { indexEntity } from "./indexDocumentService.js";
 import { loadMetaAnalysis } from "./analysisHelpers.js";
 import { analyzeQuestions, NO_SOURCES_AVAILABLE, NOT_SPECIFIED } from "./analyzeQuestions.js";
 import { parseCommonCliArgs } from "./scriptArgs.js";
+import { getEntityLink } from "./spiderPageAnalysis.js";
 
 // TODO - put this into a config file or environment variable
 const GRADING_ID = process.env.GRADING_ID || "${GRADING_ID}";
@@ -897,6 +898,11 @@ async function processEntity(
 ): Promise<boolean> {
   const st = await getStorage(options);
 
+  if (!st) {
+    console.error(`❌ Storage not initialized for realm: ${options.realm}`);
+    process.exit(1);
+  }
+
   if (!await st.canWriteAnalysis(domain, entity)) {
     const dir = `${st.getRealmDir()}/${domain}/${entity}`;
     console.error(`❌ ${entity}: Cannot write to analysis directory: ${dir}`);
@@ -1246,6 +1252,7 @@ async function getPrioritizedDiscoveredChunks(
   isGeneralDomain: boolean,
   authoritativeDocumentType: DocumentType | undefined,
   domainConfig?: { searchEnhancements?: Array<{ conditions: string[]; terms: string[] }> },
+  primary?: { chunks: string[]; sourceRefs: string[] },
 ): Promise<{ chunks: string[]; sourceRefs: string[]; tokenUsage: number }> {
   const uniqueRefs = new Set<string>();
   let tokenUsage = 0;
@@ -1254,6 +1261,17 @@ async function getPrioritizedDiscoveredChunks(
     for (const ref of refs || []) {
       if (ref) uniqueRefs.add(ref);
     }
+  };
+
+  const primaryChunks = primary?.chunks || [];
+  mergeRefs(primary?.sourceRefs);
+
+  // The primaryLinkSource document is always represented, in front of whatever
+  // question-relevant chunks were separately discovered below.
+  const withPrimary = (chunks: string[]): string[] => {
+    if (primaryChunks.length === 0) return chunks;
+    const seen = new Set(primaryChunks);
+    return [...primaryChunks, ...chunks.filter((c) => !seen.has(c))];
   };
 
   if (isGeneralDomain) {
@@ -1268,7 +1286,7 @@ async function getPrioritizedDiscoveredChunks(
     tokenUsage += sharedOnly.tokenUsage;
     mergeRefs(sharedOnly.sourceRefs);
     return {
-      chunks: sharedOnly.chunks,
+      chunks: withPrimary(sharedOnly.chunks),
       sourceRefs: [...uniqueRefs],
       tokenUsage,
     };
@@ -1302,7 +1320,7 @@ async function getPrioritizedDiscoveredChunks(
 
   if (authoritative.chunks.length > 0 && shared.chunks.length > 0) {
     return {
-      chunks: [...authoritative.chunks, ...shared.chunks],
+      chunks: withPrimary([...authoritative.chunks, ...shared.chunks]),
       sourceRefs: [...uniqueRefs],
       tokenUsage,
     };
@@ -1310,7 +1328,7 @@ async function getPrioritizedDiscoveredChunks(
 
   if (authoritative.chunks.length > 0) {
     return {
-      chunks: authoritative.chunks,
+      chunks: withPrimary(authoritative.chunks),
       sourceRefs: [...uniqueRefs],
       tokenUsage,
     };
@@ -1319,15 +1337,15 @@ async function getPrioritizedDiscoveredChunks(
   if (shared.chunks.length > 0) {
     // Optionally prepend a notice chunk
     return {
-      chunks: [`There are no known statutes for ${domainForEntityText}.`, ...shared.chunks],
+      chunks: withPrimary([`There are no known statutes for ${domainForEntityText}.`, ...shared.chunks]),
       sourceRefs: [...uniqueRefs],
       tokenUsage,
     };
   }
 
   return {
-    chunks: [],
-    sourceRefs: [],
+    chunks: withPrimary([]),
+    sourceRefs: [...uniqueRefs],
     tokenUsage,
   };
 }
@@ -1350,6 +1368,7 @@ async function runConversationAnalysis(
   bestPracticesByQuestionId?: Record<number, import("@civillyengaged/ordinizer-core").BestPractice>,
   domainConfig?: { searchEnhancements?: Array<{ conditions: string[]; terms: string[] }> },
   ruleType?: 'statute' | 'policy' | 'product',
+  primaryChunks?: { chunks: string[]; sourceRefs: string[] },
 ): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
   console.log(
     `💬 ${entity}: Using conversation mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars)`,
@@ -1377,6 +1396,7 @@ async function runConversationAnalysis(
         isGeneralDomain,
         authoritativeDocumentType,
         domainConfig,
+        primaryChunks,
       );
     },
     existingAnswersContextBuilder: () =>
@@ -1422,6 +1442,7 @@ async function runVectorAnalysis(
   bestPracticesByQuestionId?: Record<number, import("@civillyengaged/ordinizer-core").BestPractice>,
   domainConfig?: { searchEnhancements?: Array<{ conditions: string[]; terms: string[] }> },
   ruleType?: 'statute' | 'policy' | 'product',
+  primaryChunks?: { chunks: string[]; sourceRefs: string[] },
 ): Promise<{ newAnswers: any[]; totalVectorTokens: number }> {
   console.log(
     `🔍 ${entity}: Using vector mode for ${questionsToAnalyze.length} questions (statute: ${statuteSize.toLocaleString()} chars), authoritativeDocumentType=${authoritativeDocumentType || "undefined"}`,
@@ -1447,6 +1468,7 @@ async function runVectorAnalysis(
         isGeneralDomain,
         authoritativeDocumentType,
         domainConfig,
+        primaryChunks,
       );
     },
     existingAnswersContextBuilder: () =>
@@ -1784,6 +1806,18 @@ async function generateVectorAnalysis(
   }
   const domainForEntityText = domainObj.displayName || domain + " applying to " + entityObj.displayName;
 
+  // Always pull in chunks from the entity's designated primary source document for this
+  // domain (e.g. its governingUrl), regardless of question-by-question vector similarity.
+  const primaryLinkUrl = domainObj.primaryLinkSource
+    ? getEntityLink(entityObj, domainObj.primaryLinkSource)
+    : undefined;
+  const primaryChunks = primaryLinkUrl
+    ? await vectorService.getChunksForUrl(entity, domain, primaryLinkUrl)
+    : undefined;
+  if (primaryLinkUrl) {
+    log(`Primary link source (${domainObj.primaryLinkSource}) for ${entity}/${domain}: ${primaryLinkUrl} -> ${primaryChunks?.chunks.length || 0} chunk(s)`);
+  }
+
   if (useConversationMode) {
     const result = await runConversationAnalysis(
       domain,
@@ -1800,6 +1834,7 @@ async function generateVectorAnalysis(
       Object.keys(bestPracticesByQuestionId).length ? bestPracticesByQuestionId : undefined,
       domainObj,
       content.ruleType,
+      primaryChunks,
     );
     newAnswers = result.newAnswers;
     totalVectorTokens = result.totalVectorTokens;
@@ -1818,6 +1853,7 @@ async function generateVectorAnalysis(
       Object.keys(bestPracticesByQuestionId).length ? bestPracticesByQuestionId : undefined,
       domainObj,
       content.ruleType,
+      primaryChunks,
     );
     newAnswers = result.newAnswers;
     totalVectorTokens = result.totalVectorTokens;
