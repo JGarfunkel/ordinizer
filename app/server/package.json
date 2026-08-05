@@ -3,8 +3,8 @@
   "version": "1.0.9",
   "type": "module",
   "description": "Express API layer for the Ordinizer application",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/app/server/index.js",
+  "types": "./dist/app/server/index.d.ts",
   "publishConfig": {
     "access": "public"
   },
