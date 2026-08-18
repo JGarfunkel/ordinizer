@@ -5,7 +5,6 @@
     "moduleResolution": "bundler",
     "lib": ["ES2022"],
     "outDir": "./dist",
-    "baseUrl": ".",
     "paths": {
       "@civillyengaged/ordinizer-core": ["../../packages/core/src"],
       "@ordinizer/core/*": ["../../packages/core/src/*"],
