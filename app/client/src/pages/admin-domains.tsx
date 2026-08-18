@@ -9,6 +9,9 @@ import { ArrowLeft, ExternalLink, Database } from 'lucide-react';
 import { useBasePath } from '../contexts/BasePathContext';
 import type { Question, QuestionWithScore, DomainWithQuestions, DataSource } from '@civillyengaged/ordinizer-core';
 import { useRealms } from '../hooks/useRealms';
+import { useEntities } from '../hooks/useEntities';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import StatuteLink from '../components/StatuteLink';
 
 type DomainQuestion = Question | QuestionWithScore;
 
@@ -41,6 +44,11 @@ export default function AdminDomains() {
 
   const currentRealm = realms?.find((r: any) => r.id === realmid);
 
+  const { data: entities } = useEntities(realmid);
+  const entityName = entities?.find((e) => e.id === entityId)?.displayName ?? entityId;
+
+  useDocumentTitle(entityName ? `${entityName} – Questions & Scoring` : "Questions & Scoring");
+
   if (isLoading) {
     return (
       <div className="container mx-auto p-6">
@@ -67,18 +75,16 @@ export default function AdminDomains() {
         {/* Header with navigation */}
         <div className="flex items-center gap-4 mb-4">
           <Link href={buildPath(`/realm/${realmid}`)}>
-            <Button variant="outline" size="sm" className="flex items-center gap-2">
+            <Button variant="outline" size="sm" className="flex items-center gap-2"
+            title="Back to Realm Overview" data-testid="back-to-realm-button">
               <ArrowLeft className="w-4 h-4" />
-              Back to Map
             </Button>
           </Link>
           <div>
-            <h1 className="text-3xl font-bold">Questions & Scoring - {currentRealm?.name || realmid}</h1>
-            <p className="text-muted-foreground">
-              {entityId
-                ? `Answers and scores for: ${entityId}`
-                : `Configure questions and scoring weights for ${currentRealm?.entityType || 'entities'} in this realm`}
-            </p>
+            <h1 className="text-3xl font-bold">
+              {entityName}
+            </h1>
+            <h2 className="font-bold">Questions & Scoring - {currentRealm?.name || realmid}</h2>
           </div>
         </div>
         
@@ -128,17 +134,16 @@ export default function AdminDomains() {
                   <CardTitle className="text-xl" data-testid={`domain-name-${domain.id}`}>
                     {domain.displayName}
                   </CardTitle>
-                  <CardDescription className="text-sm text-muted-foreground">
-                    ID: {domain.id}
-                  </CardDescription>
                 </div>
                 <div className="flex gap-2">
                   <Badge variant="secondary" data-testid={`question-count-${domain.id}`}>
                     {domain.questionCount} questions
                   </Badge>
-                  <Badge variant="outline" data-testid={`total-weight-${domain.id}`}>
-                    Total weight: {domain.totalWeight}
-                  </Badge>
+                  {domain.overallScore !== undefined && (
+                    <Badge variant="outline" data-testid={`total-score-${domain.id}`}>
+                      Total score: {domain.overallScore.toFixed(1)}/10
+                    </Badge>
+                  )}
                 </div>
               </div>
             </CardHeader>
@@ -163,13 +168,48 @@ export default function AdminDomains() {
                         </div>
                       )}
                       {isQuestionWithScore(question) && question.answer && (
-                        <div className="mt-1 flex items-center gap-2">
+                        <div className="mt-1 flex items-center justify-between gap-2">
                           <span className="text-muted-foreground italic">{question.answer}</span>
                           <Badge variant="outline" className="text-xs">
-                            {Math.round(question.score * 100)}%
+                            {(question.score * 10).toFixed(1)}
                           </Badge>
                         </div>
                       )}
+                      {isQuestionWithScore(question) &&
+                        ((question.sourceRefs && question.sourceRefs.length > 0) ||
+                          (question.sourceReference && question.sourceReference.trim())) && (
+                          <div className="text-xs text-blue-600 italic mt-1" data-testid={`sources-${domain.id}-${question.id}`}>
+                            <span className="font-medium">Sources:</span>{" "}
+                            {question.sourceRefs && question.sourceRefs.length > 0
+                              ? question.sourceRefs.map((ref, i) => {
+                                  const isLast = i === question.sourceRefs!.length - 1;
+                                  if (typeof ref === "string") {
+                                    return (
+                                      <span key={i}>
+                                        <StatuteLink municipalityId={entityId} domainId={domain.id}>
+                                          {ref}
+                                        </StatuteLink>
+                                        {!isLast && ", "}
+                                      </span>
+                                    );
+                                  }
+                                  const label = ref.name || ref.document || ref.section || "Source";
+                                  return (
+                                    <span key={i}>
+                                      <StatuteLink href={ref.url} municipalityId={entityId} domainId={domain.id}>
+                                        {label}
+                                      </StatuteLink>
+                                      {!isLast && ", "}
+                                    </span>
+                                  );
+                                })
+                              : (
+                                <StatuteLink municipalityId={entityId} domainId={domain.id}>
+                                  {question.sourceReference}
+                                </StatuteLink>
+                              )}
+                          </div>
+                        )}
                     </li>
                   ))}
                 </ol>

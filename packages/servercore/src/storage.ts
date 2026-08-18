@@ -19,6 +19,7 @@ import type {
 } from "@civillyengaged/ordinizer-core";
 import { log } from "util";
 import { getEntityId } from "./utils";
+import { getEntityLink } from "./entityLinks";
 
 const DEFAULT_DATA_ROOT = process.env.DATA_ROOT || "data";
 
@@ -1115,7 +1116,7 @@ export class JsonFileStorageReadOnly implements IStorageReadOnly {
         entity: {
           id: entity.id,
           displayName: entity.displayName || entity.name,
-          mainUrl: entity.mainUrl,
+          mainUrl: getEntityLink(entity, "main"),
         },
         domains: {},
       };

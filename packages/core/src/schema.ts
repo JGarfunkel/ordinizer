@@ -95,6 +95,10 @@ export interface DomainWithQuestions {
   questions: Question[];
   questionCount: number;
   totalWeight: number;
+  /** 0.0 - 10.0 scale; only present when scored against a specific entity */
+  overallScore?: number;
+  /** 0.0 - 1.0 scale; only present when scored against a specific entity */
+  normalizedScore?: number;
 }
 
 export interface Question {
@@ -294,6 +298,9 @@ export interface QuestionWithScore {
   id: string | number;
   question?: string;
   answer?: string;
+  sourceRefs?: (string | SourceRef)[];
+  /** Flat string reference — present in older analysis JSON files */
+  sourceReference?: string | null;
   /** Individual question score, 0–1 scale */
   score: number;
   /** Question weight (default 1) */

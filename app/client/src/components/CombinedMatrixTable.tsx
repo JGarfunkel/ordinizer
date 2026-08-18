@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { ExternalLink } from 'lucide-react';
+import { ExternalLink, ListChecks } from 'lucide-react';
 import { Badge, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui';
 import { getEnvironmentalScoreColor, getStateCodeLegendItem } from '../lib/scoreColors';
 import { ScoreVisualization } from './ScoreVisualization';
@@ -119,22 +119,30 @@ export function CombinedMatrixTable({
             {/* Entity Name */}
             <td className={`px-3 py-2 border-r bg-gray-50 ${sticky ? 'sticky left-0 z-10' : ''}`}>
               {compact ? (
-                <div className="font-medium text-xs text-gray-900 truncate max-w-[130px]">
+                <div className="font-medium text-md text-gray-900 truncate max-w-[130px]">
                   {entityRow.entity.displayName}
                 </div>
               ) : (
-                <div className="font-medium text-sm text-gray-900">
-                  {entityRow.entity.displayName}
+                <div className="font-medium text-sm text-gray-900 flex items-center gap-1">
+                  <span className="truncate">{entityRow.entity.displayName}</span>
                   {entityRow.entity.mainUrl && (
                     <a
                       href={entityRow.entity.mainUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-civic-blue hover:text-civic-blue-dark text-xs"
+                      className="text-civic-blue hover:text-civic-blue-dark text-xs shrink-0"
+                      title="Visit official website"
                     >
                       <ExternalLink className="w-3 h-3" />
                     </a>
                   )}
+                  <Link
+                    href={buildPath(`/questions/${realmId}/domains?entity=${encodeURIComponent(entityRow.entity.id)}`)}
+                    className="text-civic-blue hover:text-civic-blue-dark text-xs shrink-0"
+                    title="View all Q&A"
+                  >
+                    <ListChecks className="w-3 h-3" />
+                  </Link>
                 </div>
               )}
             </td>

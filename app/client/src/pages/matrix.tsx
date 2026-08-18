@@ -6,6 +6,7 @@ import { apiPath } from "../lib/apiConfig";
 import { useState } from 'react';
 import { useBasePath } from '../contexts/BasePathContext';
 import { useRealms } from '../hooks/useRealms';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import {
   Dialog,
   DialogContent,
@@ -144,6 +145,8 @@ export default function MatrixPage() {
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes - refreshes automatically
     refetchOnWindowFocus: true, // Refresh when user returns to tab
   });
+
+  useDocumentTitle(matrixData ? `${matrixData.domain.displayName} Matrix` : currentRealm?.displayName);
 
   if (isLoading) {
     return (

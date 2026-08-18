@@ -113,6 +113,8 @@ export class ScoringEngine {
           id: question.id,
           question: question.question || '',
           answer: analyzedQuestion?.answer || "Not analyzed",
+          sourceRefs: analyzedQuestion?.sourceRefs,
+          sourceReference: analyzedQuestion?.sourceReference,
           score,
           weight,
           weightedScore,

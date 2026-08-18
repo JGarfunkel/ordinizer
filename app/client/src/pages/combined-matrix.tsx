@@ -9,6 +9,8 @@ import { useState } from 'react';
 import { useRealmId } from '../hooks/useRealmId';
 import { useBasePath } from '../contexts/BasePathContext';
 import { useRealms } from '../hooks/useRealms';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { getEntityTypeLabels } from '../lib/realmUtils';
 import { SourceMapEntity, SourceMapLink } from '@civillyengaged/ordinizer-core';
 import { SourcesPopup, SourcesIconButton } from "../components/SourcesPopup";
 import { CombinedMatrixTable, type CombinedMatrixData } from "../components/CombinedMatrixTable";
@@ -25,7 +27,8 @@ export default function CombinedMatrix() {
   const currentRealm = realms?.find((r: any) => r.id === realmId);
   const documentType = currentRealm?.ruleType;
   const documentTypeCapitalized = documentType ? documentType.charAt(0).toUpperCase() + documentType.slice(1) : '';
-  const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
+  const entityLabels = getEntityTypeLabels(currentRealm);
+  const entityType = entityLabels.singular;
   const scoreText = currentRealm?.terminology?.scoreText ?? 'Score';
   const stateCodeItem = getStateCodeLegendItem(currentRealm);
   const matrixScoreDisplay = currentRealm?.ui?.matrixScoreDisplay ?? 'horizontal';
@@ -50,6 +53,8 @@ export default function CombinedMatrix() {
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes
     refetchOnWindowFocus: true,
   });
+
+  useDocumentTitle(currentRealm ? `Combined Analysis Matrix – ${currentRealm.displayName}` : "Combined Analysis Matrix");
 
   if (isLoading) {
     return (
@@ -95,7 +100,7 @@ export default function CombinedMatrix() {
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Combined Analysis Matrix</h1>
             <p className="text-gray-600 mt-1">
-              Complete overview of all {entityType.toLowerCase()}s and domains with {documentType} information and scores
+              Complete overview of all {entityLabels.plural.toLowerCase()} and domains with {documentType} information and scores
             </p>
           </div>
         </div>

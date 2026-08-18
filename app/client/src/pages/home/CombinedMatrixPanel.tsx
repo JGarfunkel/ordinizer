@@ -5,6 +5,7 @@ import { ExternalLink } from 'lucide-react';
 import { Link } from 'wouter';
 import { apiPath } from '../../lib/apiConfig';
 import { getStateCodeLegendItem } from '../../lib/scoreColors';
+import { getEntityTypeLabels } from '../../lib/realmUtils';
 import type { Realm } from '@civillyengaged/ordinizer-core';
 import { CombinedMatrixTable, type CombinedMatrixData } from '../../components/CombinedMatrixTable';
 
@@ -20,7 +21,7 @@ interface CombinedMatrixPanelProps {
 
 export function CombinedMatrixPanel({ realmId, currentRealm, buildPath }: CombinedMatrixPanelProps) {
   const documentType = currentRealm?.ruleType;
-  const entityType = currentRealm?.entityType === 'school-districts' ? 'School District' : 'Entity';
+  const entityType = getEntityTypeLabels(currentRealm).singular;
   const stateCodeItem = getStateCodeLegendItem(currentRealm);
   const matrixScoreDisplay = currentRealm?.ui?.matrixScoreDisplay ?? 'horizontal';
 
@@ -90,7 +91,7 @@ export function CombinedMatrixPanel({ realmId, currentRealm, buildPath }: Combin
             stateCodeItem={stateCodeItem}
             stateProvince={currentRealm?.geo?.stateProvince}
             matrixScoreDisplay={matrixScoreDisplay}
-            variant="compact"
+            variant="full"
           />
         </div>
       </CardContent>

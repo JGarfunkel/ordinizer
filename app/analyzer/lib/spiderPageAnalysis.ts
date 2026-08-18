@@ -7,7 +7,8 @@
 import { styleText } from "node:util";
 import fs from "fs-extra";
 import { JSDOM } from "jsdom";
-import { Entity, Domain, EntityLink, EntityLinkType } from "@civillyengaged/ordinizer-core";
+import { Entity, Domain } from "@civillyengaged/ordinizer-core";
+import { getEntityLink } from "@civillyengaged/ordinizer-servercore";
 import { isDomainScoreMatch, scoreDomainDetailed } from "./domainScoring.js";
 import type { SpiderDownloadRecord } from "./spiderHistory.js";
 import type { HistoryStatus } from "./spiderHistory.js";
@@ -102,25 +103,7 @@ const CONTENT_SELECTOR_CANDIDATES = [
 ] as const;
 
 
-const ENTITY_LINK_FALLBACK: Record<EntityLinkType, keyof Entity> = {
-  main: "mainUrl",
-  governing: "governingUrl",
-  hub: "hubUrl",
-  authority: "authorityUrl",
-};
-
-export function getEntityLink(entity: Entity, type: EntityLinkType): string | undefined {
-  const links = entity.links as EntityLink[] | Record<string, string> | undefined;
-  if (Array.isArray(links)) {
-    const fromLinks = links.find((l) => l.type === type)?.url;
-    if (fromLinks) return fromLinks;
-  } else if (links && typeof links === "object") {
-    // Future format: links is a plain object keyed by link type, e.g. { governing: "https://..." }
-    const fromLinks = links[type];
-    if (fromLinks) return fromLinks;
-  }
-  return entity[ENTITY_LINK_FALLBACK[type]] as string | undefined;
-}
+export { getEntityLink };
 
 
 const COMMENT_CONTENT_AREA_SELECTOR = "__comment_content_area__";

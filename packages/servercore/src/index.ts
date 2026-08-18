@@ -19,6 +19,7 @@ export type { StatuteMetadata, MetadataSource, Metadata, RealmType } from './met
 export { JsonFileStorage, getDefaultStorage, getReadOnlyStorage, getRealmsFromStorage, getRealmsConfigFromStorage } from './storage';
 export type { IStorage, IStorageReadOnly, FileStat } from './storage';
 export { getSourceForRealm } from './metadata';
+export { getEntityLink } from './entityLinks';
 
 // Re-export commonly used types from @ordinizer/core for convenience
 export type { Analysis, MetaAnalysis, Ruleset, RulesetSource, Realm } from '@civillyengaged/ordinizer-core';

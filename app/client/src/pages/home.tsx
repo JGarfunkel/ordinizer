@@ -8,6 +8,7 @@ import { useRealmId } from '../hooks/useRealmId';
 import { useBasePath } from "../contexts/BasePathContext";
 import { useRealms, useRealmsConfig } from "../hooks/useRealms";
 import { useEntities } from "../hooks/useEntities";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import type { Entity, EntityDomain, Realm, MetaAnalysis, Analysis, DomainDataFile } from "@civillyengaged/ordinizer-core";
 import { AppHeader } from "./home/AppHeader";
 import { EntityCombobox } from "./home/EntityCombobox";
@@ -311,6 +312,15 @@ export default function Home() {
 
   const selectedEntity = municipalities?.find(m => m.id === selectedEntityId);
   const selectedDomain = availableDomains?.find(d => d.id === selectedDomainId);
+
+  const domainDisplayName = allDomains?.find(d => d.id === selectedDomainId)?.displayName;
+  const selectionTitle = selectedEntity && domainDisplayName
+    ? `${selectedEntity.displayName} – ${domainDisplayName}`
+    : domainDisplayName ?? selectedEntity?.displayName;
+  const pageTitle = selectionTitle && currentRealm?.displayName
+    ? `${selectionTitle} – ${currentRealm.displayName}`
+    : selectionTitle ?? currentRealm?.displayName;
+  useDocumentTitle(pageTitle);
 
   const handleEntityChange = (value: string) => {
     // console.log('Dropdown municipality selection:', value);
