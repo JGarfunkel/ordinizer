@@ -8,21 +8,45 @@
  * help text, and text/JSON output formatting.
  */
 
+import fs from "fs";
+
 import {
   type LocusQueryArgs,
   countLocus,
+  countLocusMany,
   ensureLocalShards,
   highlightMatches,
+  normalizeLocusToken,
   queryLocus,
   snippet,
 } from "./locusClient.js";
 
 interface Args extends LocusQueryArgs {
-  format: "text" | "json";
+  format: "text" | "json" | "csv" | "md";
   full: boolean;
   showScores: boolean;
   forceDownload: boolean;
   count: boolean;
+  entitiesFile?: string;
+  outFile?: string;
+}
+
+interface GovEntity {
+  id: string;
+  name: string;
+  type: "County" | "City" | "Town" | "Village";
+  county?: string;
+  town?: string;
+  parentIds: string[];
+  swis: string;
+  gnisId: string;
+}
+
+interface GovEntities {
+  entities: GovEntity[];
+  lastUpdated: string;
+  totalEntities: number;
+  source: string;
 }
 
 function printHelp() {
@@ -36,8 +60,9 @@ Options:
   --state <state>          Filter by US state, e.g. "NY" or "New York"
   --county <name>          Filter by county (substring, case-insensitive)
   --city <name>            Filter by city (substring, case-insensitive)
+  --jtype <type>            Filter by source_jurisdiction_type (substring, case-insensitive)
   --keywords <k1,k2,...>   Comma-separated terms to search in header/content (required
-                              unless --count is given)
+                              unless --count or --entities is given)
                               Matching is left-word-boundary, not exact: "tree" also matches
                               "trees"/"treehouse". Use --nostem for an exact whole-word match.
   --nostem                 Match keywords as exact whole words (no suffix matching), e.g.
@@ -46,11 +71,19 @@ Options:
   --count                  Print only the count of matching rows (no rows fetched/printed).
                               Can be combined with --keywords, or used alone with just
                               --state/--county/--city to count all matches for those filters.
-  --limit <n>              Max rows to return (default: 50, ignored with --count)
+  --entities <path>        Path to a GovEntities JSON file ({ entities: [{ id, name, type,
+                              county?, ... }] }). For each entity, counts matching LOCUS chunks
+                              in that entity's jurisdiction (optionally filtered by --keywords)
+                              instead of running a single query. State is inferred from each
+                              entity's id prefix (e.g. "NY-Albany-County" -> state "NY").
+                              Ignores --state/--county/--city; overrides --count/--limit.
+  --out <path>              Write output to this file instead of stdout (used with --entities,
+                              or any --format)
+  --limit <n>              Max rows to return (default: 50, ignored with --count/--entities)
   --all-functions          Include non-substantive chunks (Context/Process); default is substantive-only
   --full                   Print full ordinance text instead of a snippet
   --scores                 Print the enforcement_discretion/opacity/paternalism/problem_salience scores
-  --format <text|json>     Output format (default: text)
+  --format <text|json|csv|md>  Output format (default: text). csv/md require --entities.
   --force-download         Re-download parquet shards even if already cached
   --help, -h               Show this help
 `);
@@ -84,6 +117,12 @@ function parseArgs(argv: string[]): Args {
     }
     if (arg === "--city") {
       args.city = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    // TODO add support for source_jurisdiction_type
+    if (arg === "--source-type") {
+      args.jtype = argv[i + 1];
       i += 1;
       continue;
     }
@@ -130,10 +169,20 @@ function parseArgs(argv: string[]): Args {
     }
     if (arg === "--format") {
       const value = argv[i + 1];
-      if (value !== "text" && value !== "json") {
-        throw new Error("--format must be 'text' or 'json'");
+      if (value !== "text" && value !== "json" && value !== "csv" && value !== "md") {
+        throw new Error("--format must be one of 'text', 'json', 'csv', 'md'");
       }
       args.format = value;
+      i += 1;
+      continue;
+    }
+    if (arg === "--entities") {
+      args.entitiesFile = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--out") {
+      args.outFile = argv[i + 1];
       i += 1;
       continue;
     }
@@ -143,8 +192,12 @@ function parseArgs(argv: string[]): Args {
     }
   }
 
-  if (args.keywords.length === 0 && !args.count) {
-    throw new Error("Missing required argument: --keywords <term1,term2,...> (or use --count)");
+  if (args.keywords.length === 0 && !args.count && !args.entitiesFile) {
+    throw new Error("Missing required argument: --keywords <term1,term2,...> (or use --count/--entities)");
+  }
+
+  if ((args.format === "csv" || args.format === "md") && !args.entitiesFile) {
+    throw new Error("--format csv/md is only supported together with --entities");
   }
 
   return args;
@@ -175,6 +228,122 @@ function printText(rows: Record<string, unknown>[], args: Args): void {
   console.log(`${rows.length} result(s).`);
 }
 
+interface EntityLawCount {
+  id: string;
+  name: string;
+  type: GovEntity["type"];
+  county?: string;
+  lawCount: number;
+}
+
+// Entity ids are "<STATE>-<...>", e.g. "NY-Albany-County" -> "NY".
+function stateFromEntityId(id: string): string | undefined {
+  const match = /^([A-Za-z]{2})-/.exec(id);
+  return match ? match[1] : undefined;
+}
+
+// LOCUS never populates county and city on the same row: county is only
+// set on source_jurisdiction_type="counties" rows (city is null there),
+// city only on "cities" rows (county is null there). So a County entity is
+// looked up by --county alone, and City/Town/Village entities by --city
+// alone — filtering by both would always yield zero rows. LOCUS has no
+// "town" column, so a Village's own `town` field (its parent town) isn't
+// used here either.
+function buildEntityLocusArgs(entity: GovEntity, args: Args): LocusQueryArgs {
+  const isCounty = entity.type === "County";
+  return {
+    state: stateFromEntityId(entity.id),
+    county: isCounty ? normalizeLocusToken(entity.name) : undefined,
+    city: isCounty ? undefined : normalizeLocusToken(entity.name),
+    jtype: args.jtype,
+    keywords: args.keywords,
+    matchAll: args.matchAll,
+    nostem: args.nostem,
+    limit: args.limit,
+    substantiveOnly: args.substantiveOnly,
+  };
+}
+
+function csvEscape(value: string): string {
+  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+function formatEntityResults(results: EntityLawCount[], format: Args["format"]): string {
+  if (format === "json") {
+    return JSON.stringify(results, null, 2);
+  }
+
+  if (format === "csv") {
+    const header = "id,name,type,county,lawCount";
+    const rows = results.map((r) =>
+      [r.id, r.name, r.type, r.county ?? "", String(r.lawCount)].map(csvEscape).join(",")
+    );
+    return [header, ...rows].join("\n");
+  }
+
+  if (format === "md") {
+    const header = "| ID | Name | Type | County | Law Count |";
+    const sep = "| --- | --- | --- | --- | --- |";
+    const rows = results.map((r) => `| ${r.id} | ${r.name} | ${r.type} | ${r.county ?? ""} | ${r.lawCount} |`);
+    return [header, sep, ...rows].join("\n");
+  }
+
+  const lines = results.map(
+    (r) => `${String(r.lawCount).padStart(6)}  ${r.id}  (${r.name}, ${r.type}${r.county ? `, ${r.county} County` : ""})`
+  );
+  const total = results.reduce((sum, r) => sum + r.lawCount, 0);
+  lines.push("─".repeat(50));
+  lines.push(`${results.length} entities, ${total} total law(s).`);
+  return lines.join("\n");
+}
+
+const ENTITY_TYPES: GovEntity["type"][] = ["County", "City", "Town", "Village"];
+
+function printEntitySummary(results: EntityLawCount[]): void {
+  console.log("\nSummary — entities with LOCUS law(s) found:");
+  for (const type of ENTITY_TYPES) {
+    const ofType = results.filter((r) => r.type === type);
+    if (ofType.length === 0) continue;
+    const withLaws = ofType.filter((r) => r.lawCount > 0).length;
+    console.log(`  ${type}: ${withLaws}/${ofType.length}`);
+  }
+  const withLaws = results.filter((r) => r.lawCount > 0).length;
+  console.log(`  Total: ${withLaws}/${results.length}`);
+}
+
+async function runEntities(args: Args): Promise<void> {
+  const raw = fs.readFileSync(args.entitiesFile!, "utf-8");
+  const data = JSON.parse(raw) as GovEntities;
+
+  const queryArgsList = data.entities.map((entity) => buildEntityLocusArgs(entity, args));
+  const onProgress = args.outFile
+    ? (completed: number, count: number) => {
+        if (completed % 100 === 0 || completed === count) {
+          console.log(`Progress: ${completed}/${count} entities analyzed...`);
+        }
+      }
+    : undefined;
+  const counts = await countLocusMany(queryArgsList, onProgress);
+
+  const results: EntityLawCount[] = data.entities.map((entity, i) => ({
+    id: entity.id,
+    name: entity.name,
+    type: entity.type,
+    county: entity.county,
+    lawCount: counts[i],
+  }));
+
+  const output = formatEntityResults(results, args.format);
+  if (args.outFile) {
+    fs.writeFileSync(args.outFile, output, "utf-8");
+    console.log(`Wrote ${results.length} entit${results.length === 1 ? "y" : "ies"} to ${args.outFile}`);
+  } else {
+    console.log(output);
+  }
+
+  printEntitySummary(results);
+}
+
 export async function main() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
     printHelp();
@@ -184,6 +353,11 @@ export async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   await ensureLocalShards(args.forceDownload);
+
+  if (args.entitiesFile) {
+    await runEntities(args);
+    return;
+  }
 
   if (args.count) {
     const count = await countLocus(args);

@@ -46,6 +46,7 @@ export interface LocusQueryArgs {
   state?: string;
   county?: string;
   city?: string;
+  jtype?: string;
   keywords: string[];
   matchAll: boolean;
   nostem: boolean;
@@ -172,6 +173,10 @@ function buildWhereClause(args: LocusQueryArgs): string {
     conditions.push(`city ILIKE '%${escapeSqlLiteral(args.city)}%'`);
   }
 
+  if (args.jtype) {
+    conditions.push(`source_jurisdiction_type ILIKE '%${escapeSqlLiteral(args.jtype)}%'`);
+  }
+
   // Left word-boundary match (\bterm) rather than plain substring: a bare
   // ILIKE '%tree%' also matches "street", '%rat%' also matches "narrate", etc.
   // --nostem anchors the right side too (\bterm\b) for an exact whole-word
@@ -228,6 +233,27 @@ export async function countLocus(args: LocusQueryArgs): Promise<number> {
   const reader = await connection.runAndReadAll(sql);
   const [row] = reader.getRowObjects() as unknown as { count: bigint | number }[];
   return Number(row?.count ?? 0);
+}
+
+// Batched form of countLocus for many queries (e.g. one per entity in a
+// jurisdiction list) — shares a single DuckDB connection instead of paying
+// instance-creation overhead per query. onProgress, if given, fires after
+// each query with (completed, total).
+export async function countLocusMany(
+  argsList: LocusQueryArgs[],
+  onProgress?: (completed: number, total: number) => void
+): Promise<number[]> {
+  const instance = await DuckDBInstance.create(":memory:");
+  const connection = await instance.connect();
+  const counts: number[] = [];
+  for (const args of argsList) {
+    const sql = buildCountQuery(args);
+    const reader = await connection.runAndReadAll(sql);
+    const [row] = reader.getRowObjects() as unknown as { count: bigint | number }[];
+    counts.push(Number(row?.count ?? 0));
+    onProgress?.(counts.length, argsList.length);
+  }
+  return counts;
 }
 
 // Centers the excerpt on the first keyword match (rather than always chars
