@@ -24,7 +24,7 @@ import {
 import { Button } from "../ui";
 import { Badge } from "../ui";
 import { ScoreVisualization } from '../components/ScoreVisualization';
-import { getMatrixScoreColor, getEnvironmentalScoreGradient } from '../lib/scoreColors';
+import { getRealmScoreColor, getMatrixCellColor } from '../lib/scoreColors';
 import { MatrixData } from '@civillyengaged/ordinizer-core';
 
 interface CellPopupProps {
@@ -305,22 +305,27 @@ export default function MatrixPage() {
                       )}
                     </td>
                     {/* Total Score cell */}
-                    <td 
-                      className="sticky left-[200px] z-10 px-3 py-2 text-center border-r font-medium w-[100px]"
-                      style={{
-                        backgroundColor: entity.referencesStateCode ? '#f8f9fa' : getEnvironmentalScoreGradient(entity.totalScore || 0).backgroundColor,
-                      }}
-                    >
-                      {entity.referencesStateCode ? (
-                        <span className="text-xs text-gray-400">—</span>
-                      ) : (
-                        <Link href={buildPath(`/${domain}/${entity.id}`)}>
-                          <span className={`text-sm font-medium cursor-pointer hover:underline ${getEnvironmentalScoreGradient(entity.totalScore || 0).textColor}`} data-testid={`link-total-score-${entity.id}`}>
-                            {entity.totalScore !== undefined ? entity.totalScore.toFixed(2) : '—'}
-                          </span>
-                        </Link>
-                      )}
-                    </td>
+                    {(() => {
+                      const totalColor = getRealmScoreColor(entity.totalScore || 0, currentRealm);
+                      return (
+                        <td
+                          className="sticky left-[200px] z-10 px-3 py-2 text-center border-r font-medium w-[100px]"
+                          style={{
+                            backgroundColor: entity.referencesStateCode ? '#f8f9fa' : totalColor.backgroundColor,
+                          }}
+                        >
+                          {entity.referencesStateCode ? (
+                            <span className="text-xs text-gray-400">—</span>
+                          ) : (
+                            <Link href={buildPath(`/${domain}/${entity.id}`)}>
+                              <span className={`text-sm font-medium cursor-pointer hover:underline ${totalColor.textColor}`} data-testid={`link-total-score-${entity.id}`}>
+                                {entity.totalScore !== undefined ? entity.totalScore.toFixed(2) : '—'}
+                              </span>
+                            </Link>
+                          )}
+                        </td>
+                      );
+                    })()}
                     {/* Question cells */}
                     {matrixData.questions.map((question) => {
                       if (entity.referencesStateCode || !entity.statute) {
@@ -340,10 +345,11 @@ export default function MatrixPage() {
                       // console.log(`Rendering cell for entity ${entity.displayName} and question ${question.question} with score data:`, scoreData);
                       const score = scoreData?.score || 0;
                       const confidence = scoreData?.confidence || 0;
-                      
+                      const cellColor = getMatrixCellColor(score, currentRealm);
+
                       return (
-                        <td 
-                          key={question.id} 
+                        <td
+                          key={question.id}
                           onClick={() => setSelectedCell({
                             entity: entity.displayName,
                             question: question.question,
@@ -354,7 +360,8 @@ export default function MatrixPage() {
                             analyzedAt: scoreData?.analyzedAt,
                             lastUpdated: entity.lastUpdated
                           })}
-                          className={`px-3 py-2 text-center border-r last:border-r-0 cursor-pointer transition-colors hover:opacity-80 w-[120px] ${getMatrixScoreColor(score)}`}
+                          className={`px-3 py-2 text-center border-r last:border-r-0 cursor-pointer transition-colors hover:opacity-80 w-[120px] ${cellColor.className}`}
+                          style={cellColor.backgroundColor ? { backgroundColor: cellColor.backgroundColor } : undefined}
                           data-testid={`cell-${entity.id}-${question.id}`}
                         >
                           <Tooltip>

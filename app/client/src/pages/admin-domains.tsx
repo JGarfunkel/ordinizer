@@ -11,9 +11,13 @@ import type { Question, QuestionWithScore, DomainWithQuestions, DataSource } fro
 import { useRealms } from '../hooks/useRealms';
 import { useEntities } from '../hooks/useEntities';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import StatuteLink from '../components/StatuteLink';
+import SourceLink from '../components/SourceLink';
 
 type DomainQuestion = Question | QuestionWithScore;
+
+function isUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
 
 function isQuestionWithScore(q: DomainQuestion): q is QuestionWithScore {
   return 'answer' in q && 'score' in q;
@@ -186,9 +190,9 @@ export default function AdminDomains() {
                                   if (typeof ref === "string") {
                                     return (
                                       <span key={i}>
-                                        <StatuteLink municipalityId={entityId} domainId={domain.id}>
+                                        <SourceLink href={isUrl(ref) ? ref : undefined} realmId={realmid} entityId={entityId} domainId={domain.id}>
                                           {ref}
-                                        </StatuteLink>
+                                        </SourceLink>
                                         {!isLast && ", "}
                                       </span>
                                     );
@@ -196,17 +200,22 @@ export default function AdminDomains() {
                                   const label = ref.name || ref.document || ref.section || "Source";
                                   return (
                                     <span key={i}>
-                                      <StatuteLink href={ref.url} municipalityId={entityId} domainId={domain.id}>
+                                      <SourceLink href={ref.url} realmId={realmid} entityId={entityId} domainId={domain.id}>
                                         {label}
-                                      </StatuteLink>
+                                      </SourceLink>
                                       {!isLast && ", "}
                                     </span>
                                   );
                                 })
                               : (
-                                <StatuteLink municipalityId={entityId} domainId={domain.id}>
+                                <SourceLink
+                                  href={question.sourceReference && isUrl(question.sourceReference) ? question.sourceReference : undefined}
+                                  realmId={realmid}
+                                  entityId={entityId}
+                                  domainId={domain.id}
+                                >
                                   {question.sourceReference}
-                                </StatuteLink>
+                                </SourceLink>
                               )}
                           </div>
                         )}

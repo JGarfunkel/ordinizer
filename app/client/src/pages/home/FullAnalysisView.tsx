@@ -1,7 +1,7 @@
 import { AlertCircle, ArrowLeft, HelpCircle, FileText, ExternalLink } from "lucide-react";
 import { Card, CardContent } from "../../ui";
 import { Button } from "../../ui";
-import StatuteLink from "../../components/StatuteLink";
+import SourceLink from "../../components/SourceLink";
 import type { Analysis, Entity, EntityDomain } from "@civillyengaged/ordinizer-core";
 import type { ScoreData } from "./types";
 
@@ -20,6 +20,7 @@ interface FullAnalysisViewProps {
   scoreData: ScoreData | undefined;
   usesStateCode: boolean;
   municipalities: Entity[] | undefined;
+  realmId: string | undefined;
   selectedEntityId: string;
   selectedEntity: Entity | undefined;
   selectedDomain: EntityDomain | undefined;
@@ -35,6 +36,7 @@ export function FullAnalysisView({
   scoreData,
   usesStateCode,
   municipalities,
+  realmId,
   selectedEntityId,
   selectedEntity,
   selectedDomain,
@@ -207,8 +209,9 @@ export function FullAnalysisView({
                             (qa.relevantSections && qa.relevantSections.length > 0)) && (
                             <p className="text-xs text-blue-600 mt-2">
                               Reference:{" "}
-                              <StatuteLink
-                                municipalityId={analysisData?.municipality?.id}
+                              <SourceLink
+                                realmId={realmId}
+                                entityId={analysisData?.municipality?.id}
                                 domainId={analysisData?.domain?.id}
                               >
                                 <span className="ml-1">
@@ -216,7 +219,7 @@ export function FullAnalysisView({
                                     ? qa.relevantSections.join(", ")
                                     : qa.sourceReference}
                                 </span>
-                              </StatuteLink>
+                              </SourceLink>
                             </p>
                           )}
                         </div>
@@ -240,15 +243,16 @@ export function FullAnalysisView({
                         Analysis & Recommendations
                       </h2>
                     </div>
-                    <StatuteLink
-                      municipalityId={analysisData?.municipality?.id}
+                    <SourceLink
+                      realmId={realmId}
+                      entityId={analysisData?.municipality?.id}
                       domainId={analysisData?.domain?.id}
                     >
                       <Button variant="outline" size="sm" className="text-xs">
                         View Source File
                         <ExternalLink className="w-3 h-3 ml-1" />
                       </Button>
-                    </StatuteLink>
+                    </SourceLink>
                   </div>
                   <div className="space-y-6">
                     {analysisData?.alignmentSuggestions?.strengths &&

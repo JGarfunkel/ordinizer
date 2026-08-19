@@ -1,8 +1,9 @@
 import { Link, useLocation } from 'wouter';
 import { ExternalLink, ListChecks } from 'lucide-react';
 import { Badge, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui';
-import { getEnvironmentalScoreColor, getStateCodeLegendItem } from '../lib/scoreColors';
+import { getRealmScoreColor, getStateCodeLegendItem } from '../lib/scoreColors';
 import { ScoreVisualization } from './ScoreVisualization';
+import type { Realm } from '@civillyengaged/ordinizer-core';
 
 export interface CombinedMatrixData {
   domains: Array<{
@@ -34,6 +35,7 @@ export type MatrixScoreDisplay = 'number' | 'horizontal' | 'vertical' | 'none';
 interface CombinedMatrixTableProps {
   matrixData: CombinedMatrixData;
   realmId: string;
+  realm?: Realm;
   buildPath: (path: string) => string;
   documentType?: string;
   entityType: string;
@@ -49,6 +51,7 @@ interface CombinedMatrixTableProps {
 export function CombinedMatrixTable({
   matrixData,
   realmId,
+  realm,
   buildPath,
   documentType,
   entityType,
@@ -187,7 +190,9 @@ export function CombinedMatrixTable({
                   key={domain.id}
                   className="px-2 py-2 border-r last:border-r-0 align-top cursor-pointer"
                   style={{
-                    backgroundColor: domainData.score !== undefined ? getEnvironmentalScoreColor(domainData.score) : (domainData.scoreColor || '#e2e8f0')
+                    backgroundColor: domainData.score !== undefined
+                      ? getRealmScoreColor(domainData.score, realm).backgroundColor
+                      : (domainData.scoreColor || '#e2e8f0')
                   }}
                   role="link"
                   tabIndex={0}
@@ -243,7 +248,7 @@ export function CombinedMatrixTable({
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={(e) => e.stopPropagation()}
-                            className={`inline-flex items-center gap-0.5 ${compact ? 'text-[10px]' : 'text-[11px]'} text-gray-600 hover:opacity-80 transition-opacity`}
+                            className={`inline-flex items-center gap-0.5 ${compact ? 'text-[10px]' : 'text-[11px]'} text-black hover:opacity-80 transition-opacity`}
                             data-testid={`document-link-${entityRow.entity.id}-${domain.id}`}
                           >
                             {domainData.statuteNumber && (
@@ -259,7 +264,7 @@ export function CombinedMatrixTable({
 
                       {/* Overall Summary */}
                       {domainData.overallSummary && (
-                        <p className={`${compact ? 'text-[10px]' : 'text-[12px]'} text-gray-600 leading-tight mt-0.5`}>
+                        <p className={`${compact ? 'text-[10px]' : 'text-[12px]'} text-black leading-tight mt-0.5`}>
                           {domainData.overallSummary}
                         </p>
                       )}

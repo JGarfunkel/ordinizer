@@ -3,6 +3,7 @@
  * Single source of truth for all score-based color calculations
  */
 import type { Realm } from '@civillyengaged/ordinizer-core';
+import { getColorFromScoring, buildScoringLegend } from '@civillyengaged/ordinizer-core';
 
 // Environmental Protection Score Colors (0-10 scale display, 0.0-1.0 internal)
 export const ENVIRONMENTAL_SCORE_COLORS = {
@@ -88,6 +89,58 @@ export function getMatrixScoreColor(score: number): string {
   if (score >= 0.4) return MATRIX_SCORE_COLORS.FAIR;
   if (score > 0) return MATRIX_SCORE_COLORS.POOR;
   return MATRIX_SCORE_COLORS.NO_DATA;
+}
+
+/** Pick white or near-black text for readable contrast against a hex background */
+function getContrastTextClass(hex: string): string {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return 'text-gray-900';
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.55 ? 'text-gray-900' : 'text-white';
+}
+
+/**
+ * Resolve background/text color for a 0-1 score, honoring realm.ui.scoreMapping
+ * (evaluated on the 0-10 display scale) before falling back to the default green gradient.
+ */
+export function getRealmScoreColor(score: number, realm?: Realm | null): { backgroundColor: string, textColor: string } {
+  const scoreMapping = realm?.ui?.scoreMapping;
+  if (scoreMapping) {
+    const mapped = getColorFromScoring(score * 10, scoreMapping);
+    if (mapped) {
+      return { backgroundColor: mapped, textColor: getContrastTextClass(mapped) };
+    }
+  }
+  return getEnvironmentalScoreGradient(score);
+}
+
+/**
+ * Same as getRealmScoreColor but for discrete cells that otherwise use the bucketed
+ * MATRIX_SCORE_COLORS Tailwind classes (which don't support arbitrary hex overrides).
+ * Returns a className to apply in the default case, or a backgroundColor + text
+ * className to apply inline when a realm scoreMapping match is found.
+ */
+export function getMatrixCellColor(score: number, realm?: Realm | null): { className: string, backgroundColor?: string } {
+  const scoreMapping = realm?.ui?.scoreMapping;
+  if (scoreMapping) {
+    const mapped = getColorFromScoring(score * 10, scoreMapping);
+    if (mapped) {
+      return { className: getContrastTextClass(mapped), backgroundColor: mapped };
+    }
+  }
+  return { className: getMatrixScoreColor(score) };
+}
+
+/** Score legend entries, honoring realm.ui.scoreMapping before falling back to the default green gradient legend. */
+export function getRealmScoreLegend(realm?: Realm | null): Array<{ color: string, label: string }> {
+  const scoreMapping = realm?.ui?.scoreMapping;
+  if (scoreMapping) {
+    return buildScoringLegend(scoreMapping, 'number');
+  }
+  return getEnvironmentalScoreLegend();
 }
 
 /**

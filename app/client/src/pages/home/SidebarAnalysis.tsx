@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useQuery } from '@tanstack/react-query';
 import { apiPath } from "../../lib/apiConfig";
 import { Card, CardContent } from "../../ui";
-import StatuteLink from "../../components/StatuteLink";
+import SourceLink from "../../components/SourceLink";
 import { ScoreVisualization } from "../../components/ScoreVisualization";
 import type { Analysis, Entity, Realm, Ruleset } from "@civillyengaged/ordinizer-core";
 import type { ScoreData, VersionsData } from "./types";
@@ -308,25 +308,27 @@ export function SidebarAnalysis({
                                     if (typeof ref === "string") {
                                       return (
                                         <span key={i}>
-                                          <StatuteLink
-                                            municipalityId={stateEntityId}
+                                          <SourceLink
+                                            realmId={realmId}
+                                            entityId={stateEntityId}
                                             domainId={analysisData?.domain?.id}
                                           >
                                             {ref}
-                                          </StatuteLink>
+                                          </SourceLink>
                                           {i < refs.length - 1 && ", "}
                                         </span>
                                       );
                                     } else if (ref && typeof ref === "object" && "name" in ref) {
                                       return (
                                         <span key={i}>
-                                          <StatuteLink
+                                          <SourceLink
                                             href={ref.url}
-                                            municipalityId={stateEntityId}
+                                            realmId={realmId}
+                                            entityId={stateEntityId}
                                             domainId={analysisData?.domain?.id}
                                           >
                                             {ref.name}
-                                          </StatuteLink>
+                                          </SourceLink>
                                           {i < refs.length - 1 && ", "}
                                         </span>
                                       );
@@ -337,8 +339,9 @@ export function SidebarAnalysis({
                                 })()}
                               </span>
                             ) : (
-                              <StatuteLink
-                                municipalityId={
+                              <SourceLink
+                                realmId={realmId}
+                                entityId={
                                   usesStateCode
                                     ? `${currentRealm?.geo?.stateProvince}-State`
                                     : analysisData?.municipality?.id
@@ -346,7 +349,7 @@ export function SidebarAnalysis({
                                 domainId={analysisData?.domain?.id}
                               >
                                 <span className="ml-1">{qa.sourceReference}</span>
-                              </StatuteLink>
+                              </SourceLink>
                             )}
                           </p>
                         )}
@@ -361,12 +364,13 @@ export function SidebarAnalysis({
                               if (typeof ref === "string") {
                                 return (
                                   <span key={i}>
-                                    <StatuteLink
-                                      municipalityId={stateEntityId}
+                                    <SourceLink
+                                      realmId={realmId}
+                                      entityId={stateEntityId}
                                       domainId={analysisData?.domain?.id}
                                     >
                                       {ref}
-                                    </StatuteLink>
+                                    </SourceLink>
                                     {!isLast && ", "}
                                   </span>
                                 );
@@ -374,13 +378,14 @@ export function SidebarAnalysis({
                               const label = ref.name || ref.document || ref.section || "Source";
                               return (
                                 <span key={i}>
-                                  <StatuteLink
+                                  <SourceLink
                                     href={ref.url}
-                                    municipalityId={stateEntityId}
+                                    realmId={realmId}
+                                    entityId={stateEntityId}
                                     domainId={analysisData?.domain?.id}
                                   >
                                     {label}
-                                  </StatuteLink>
+                                  </SourceLink>
                                   {!isLast && ", "}
                                 </span>
                               );

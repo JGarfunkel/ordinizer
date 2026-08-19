@@ -398,7 +398,29 @@ export interface Realm {
       stateCode?: string;
     };
     matrixScoreDisplay?: 'number' | 'horizontal' | 'vertical' | 'none';
+    /**
+     * Overrides the default score-color gradient with explicit range → color shading.
+     * Scored on the same 0-10 display scale as overallScore. Reuses the same range
+     * syntax as DataDomainScoring.scoreMapping:
+     *   ">N"   value > N
+     *   ">=N"  value >= N
+     *   "<N"   value < N
+     *   "N-M"  N ≤ value ≤ M  (leading-zero tokens: "01" = 0.1, "05" = 0.5)
+     */
+    scoreMapping?: Record<string, string>;
   };
+  /** Overrides for <meta property="og:*"> tags; falls back to name/displayName/description when omitted */
+  ogMeta?: RealmOgMeta;
+}
+
+export interface RealmOgMeta {
+  title?: string;
+  description?: string;
+  image?: string;
+  url?: string;
+  siteName?: string;
+  type?: string;
+  [property: string]: string | undefined;
 }
 
 export type MapClickBehavior = 'floatingPopup' | 'sidebar';

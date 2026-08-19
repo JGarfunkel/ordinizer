@@ -9,6 +9,7 @@ import { useBasePath } from "../contexts/BasePathContext";
 import { useRealms, useRealmsConfig } from "../hooks/useRealms";
 import { useEntities } from "../hooks/useEntities";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { useOgMeta } from "../hooks/useOgMeta";
 import type { Entity, EntityDomain, Realm, MetaAnalysis, Analysis, DomainDataFile } from "@civillyengaged/ordinizer-core";
 import { AppHeader } from "./home/AppHeader";
 import { EntityCombobox } from "./home/EntityCombobox";
@@ -321,6 +322,11 @@ export default function Home() {
     ? `${selectionTitle} – ${currentRealm.displayName}`
     : selectionTitle ?? currentRealm?.displayName;
   useDocumentTitle(pageTitle);
+  useOgMeta(currentRealm ? {
+    title: currentRealm.displayName,
+    description: currentRealm.description,
+    ...currentRealm.ogMeta,
+  } : null);
 
   const handleEntityChange = (value: string) => {
     // console.log('Dropdown municipality selection:', value);
@@ -652,6 +658,7 @@ export default function Home() {
             scoreData={scoreData as ScoreData | undefined}
             usesStateCode={usesStateCode}
             municipalities={municipalities}
+            realmId={selectedRealmId}
             selectedEntityId={selectedEntityId}
             selectedEntity={selectedEntity}
             selectedDomain={selectedDomain}

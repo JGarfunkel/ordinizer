@@ -85,6 +85,7 @@ export function CombinedMatrixPanel({ realmId, currentRealm, buildPath }: Combin
           <CombinedMatrixTable
             matrixData={matrixData}
             realmId={realmId}
+            realm={currentRealm}
             buildPath={buildPath}
             documentType={documentType}
             entityType={entityType}

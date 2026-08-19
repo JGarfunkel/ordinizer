@@ -5,7 +5,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { ChevronUp, ChevronDown, X, Map, MapPin } from "lucide-react";
 import { Entity, EntityDomain, Realm, DomainDataFile, DomainLegend, LayoutOptions } from "@civillyengaged/ordinizer-core";
-import { getEnvironmentalScoreLegend, getStateCodeLegendItem, MAP_STATE_COLORS } from '../lib/scoreColors';
+import { getRealmScoreLegend, getStateCodeLegendItem, MAP_STATE_COLORS } from '../lib/scoreColors';
 import { getEntityScoreColor, buildScoringLegend } from '../lib/domainScoring';
 import { apiPath } from '../lib/apiConfig';
 import { useRealmEntities } from '../hooks/useRealmEntities';
@@ -737,7 +737,7 @@ export default function EntityMap({
                 <div className="mb-3">
                   <h5 className="text-xs font-medium text-gray-600 mb-1">Strength Scores</h5>
                   <div className="space-y-1 text-xs">
-                    {getEnvironmentalScoreLegend().map((item, index) => (
+                    {getRealmScoreLegend(realm).map((item, index) => (
                       <div key={index} className="flex items-center gap-2">
                         <div className="w-3 h-3 rounded" style={{backgroundColor: item.color}}></div>
                         <span>{item.label}</span>

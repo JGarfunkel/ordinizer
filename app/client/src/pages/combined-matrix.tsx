@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from "../ui";
-import { getEnvironmentalScoreLegend, getStateCodeLegendItem } from '../lib/scoreColors';
+import { getRealmScoreLegend, getStateCodeLegendItem } from '../lib/scoreColors';
 import { Button } from "../ui";
 import { ArrowLeft, Printer } from 'lucide-react';
 import { apiPath } from "../lib/apiConfig";
@@ -130,6 +130,7 @@ export default function CombinedMatrix() {
               <CombinedMatrixTable
                 matrixData={matrixData}
                 realmId={realmId}
+                realm={currentRealm}
                 buildPath={buildPath}
                 documentType={documentType}
                 entityType={entityType}
@@ -165,7 +166,7 @@ export default function CombinedMatrix() {
             <div>
               <h5 className="text-sm font-medium text-gray-700 mb-2">{scoreText}s</h5>
               <div className="space-y-1">
-                {getEnvironmentalScoreLegend().map((item, index) => (
+                {getRealmScoreLegend(currentRealm).map((item, index) => (
                   <div key={index} className="flex items-center gap-2">
                     <div className="w-4 h-4 rounded" style={{backgroundColor: item.color}}></div>
                     <span className="text-sm">{item.label}</span>

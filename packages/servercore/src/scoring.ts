@@ -5,6 +5,7 @@
 
 import type { Analysis, Entity, EntitySummary, DomainSummary, QuestionScore,
               Realm, MatrixData, RulesetSource, MatrixEntity, QuestionWithScore } from '@civillyengaged/ordinizer-core';
+import { getColorFromScoring } from '@civillyengaged/ordinizer-core';
 import type { IStorageReadOnly } from './storage.js';
 
 export type { QuestionWithScore };
@@ -150,7 +151,13 @@ export class ScoringEngine {
    */
   getScoreColor(score: number, options: ScoreOptions = {}): string {
     const realm = this.realmConfig;
-    
+
+    // ui.scoreMapping takes priority: explicit range → color shading (0-10 display scale)
+    if (realm?.ui?.scoreMapping) {
+      const mapped = getColorFromScoring(score * 10, realm.ui.scoreMapping);
+      if (mapped) return mapped;
+    }
+
     // Use gradient from realm config or options, fallback to environmental green gradient
     if (options.colorGradient || realm?.scoring?.colorGradient) {
       const gradient = options.colorGradient || realm?.scoring?.colorGradient!;
